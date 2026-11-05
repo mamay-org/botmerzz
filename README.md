@@ -54,7 +54,7 @@ See [.env.example](.env.example) for database, port, timezone and optional provi
 
 - `npm start` — run the dashboard server.
 - `npm run migrate` — apply versioned MySQL migrations.
-- `npm run admin:create` — create the single administrator with hidden password input.
+- `npm run admin:create` — create the first administrator with hidden password input. Authenticated admins can add, update, or deactivate other accounts from the Admin dashboard tab; password changes revoke all active sessions for that account.
 - `npm run dispatch` — process one due slot and exit; invoke from a scheduler/cron, not as a persistent worker.
 - `npm test` — run unit and HTTP tests.
 - `npm run test:integration` — run database-backed integration checks when DB settings are present.

@@ -76,6 +76,7 @@ services:
     image: kedai-merzz-threads:test
     environment:
       NODE_ENV: test
+      ALLOW_DESTRUCTIVE_DB_TESTS: "true"
       PORT: ${PORT:-3000}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}

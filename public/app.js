@@ -2,12 +2,40 @@
   'use strict';
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const days = [[1, 'Isn'], [2, 'Sen'], [3, 'Sel'], [4, 'Rab'], [5, 'Kha'], [6, 'Jum'], [7, 'Sab']];
+  const days = [[1, 'Sen'], [2, 'Sel'], [3, 'Rab'], [4, 'Kam'], [5, 'Jum'], [6, 'Sab'], [7, 'Min']];
   const state = { csrf: '', data: null };
   const escapeText = (value) => String(value ?? '');
   const show = (selector, text) => { const el = $(selector); el.textContent = text; el.hidden = false; };
   const hide = (selector) => { $(selector).hidden = true; };
-  const errorText = (error) => error?.message || 'Permintaan tidak berjaya. Cuba lagi.';
+  const errors = {
+    INVALID_EMAIL: 'Format email tidak valid.', INVALID_PASSWORD: 'Kata sandi harus terdiri dari 12 sampai 256 karakter.',
+    ADMIN_EXISTS: 'Email tersebut sudah digunakan oleh akun admin lain.', LAST_ADMIN: 'Admin aktif terakhir tidak dapat dinonaktifkan.',
+    CANNOT_DEACTIVATE_SELF: 'Anda tidak dapat menonaktifkan akun yang sedang digunakan.', ADMIN_NOT_FOUND: 'Akun admin tidak ditemukan.',
+    INVALID_ADMIN: 'Data akun admin tidak valid.', EMPTY_ADMIN_UPDATE: 'Tidak ada perubahan untuk disimpan.',
+    AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
+  };
+  const errorText = (error) => errors[error?.message] || error?.message || 'Permintaan gagal. Silakan coba lagi.';
+  const onboardingLabels = {
+    brand: 'Nama dan gaya komunikasi brand sudah diisi',
+    games: 'Daftar game top-up sudah diisi',
+    guardrails: 'Batasan AI sudah disetujui klien',
+    links: 'Tautan halaman utama sudah diisi',
+    facts: 'Informasi top-up dan akun sudah diperbarui',
+    thread: 'Akun Threads testing aktif di Tebar',
+    ai: 'Penyedia AI sudah dikonfigurasi',
+  };
+  const statusLabels = {
+    pending: 'Menunggu', generating: 'Membuat konten', ready: 'Siap diterbitkan',
+    publishing: 'Sedang diterbitkan', published: 'Berhasil diterbitkan',
+    failed: 'Gagal', skipped: 'Dilewati', canceled: 'Dibatalkan',
+    partial: 'Sebagian berhasil', unknown: 'Belum diketahui', scheduled: 'Terjadwal',
+  };
+  const activityLabels = {
+    post_published: 'Posting berhasil diterbitkan', publish_accepted: 'Posting diterima penyedia',
+    publish_failed: 'Penerbitan gagal', publish_outcome_unknown: 'Status penerbitan belum diketahui',
+    ai_generation_failed: 'Pembuatan konten AI gagal', automation_paused: 'Otomasi dijeda',
+    slot_skipped: 'Jadwal posting dilewati', post_cancellation: 'Pembatalan posting',
+  };
 
   async function api(path, options = {}) {
     const headers = { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) };
@@ -74,7 +102,7 @@
       const form = $(`#fact-${service}-form`);
       setFormValues(form, { ...fact, attributes: (fact.attributes || []).join('\n') });
       const updated = state.data?.facts?.[service]?.updatedAt;
-      $('[data-updated]', form).textContent = updated ? `Dikemas kini ${new Date(updated).toLocaleString('ms-MY')}` : 'Belum dikemas kini';
+      $('[data-updated]', form).textContent = updated ? `Diperbarui ${new Date(updated).toLocaleString('id-ID')}` : 'Belum diperbarui';
     }
   }
 
@@ -83,7 +111,7 @@
     list.replaceChildren(...items.map((item) => {
       const li = document.createElement('li');
       if (!item.complete) li.classList.add('incomplete');
-      li.textContent = item.label || item.key || 'Keperluan onboarding';
+      li.textContent = onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal';
       return li;
     }));
     const missing = items.filter((item) => !item.complete).length;
@@ -95,13 +123,13 @@
     const body = $('#posts-table');
     const rows = posts.map((post) => {
       const tr = document.createElement('tr');
-      const time = document.createElement('td'); time.textContent = post.scheduledAt || post.createdAt ? new Date(post.scheduledAt || post.createdAt).toLocaleString('ms-MY') : '—';
-      const pillar = document.createElement('td'); pillar.textContent = post.pillar === 'account' ? 'Akaun ML' : post.pillar === 'topup' ? 'Top-up' : '—';
-      const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = escapeText(post.status || 'unknown'); statusCell.append(badge);
+      const time = document.createElement('td'); time.textContent = post.scheduledAt || post.createdAt ? new Date(post.scheduledAt || post.createdAt).toLocaleString('id-ID') : '—';
+      const pillar = document.createElement('td'); pillar.textContent = post.pillar === 'account' ? 'Akun ML' : post.pillar === 'topup' ? 'Top-up' : '—';
+      const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = statusLabels[post.status] || 'Belum diketahui'; statusCell.append(badge);
       const caption = document.createElement('td'); caption.textContent = post.caption || post.errorCode || '—';
       tr.append(time, pillar, statusCell, caption); return tr;
     });
-    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.textContent = 'Belum ada sejarah penerbitan.'; row.append(cell); rows.push(row); }
+    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
     body.replaceChildren(...rows);
   }
 
@@ -109,25 +137,49 @@
     const target = $('#activity-list');
     const rows = events.map((event) => {
       const row = document.createElement('div'); row.className = 'activity-item';
-      const time = document.createElement('time'); time.textContent = event.createdAt ? new Date(event.createdAt).toLocaleString('ms-MY') : '—';
-      const title = document.createElement('strong'); title.textContent = escapeText(event.event || event.action || 'Aktiviti');
+      const time = document.createElement('time'); time.textContent = event.createdAt ? new Date(event.createdAt).toLocaleString('id-ID') : '—';
+      const title = document.createElement('strong'); title.textContent = activityLabels[event.event || event.action] || 'Aktivitas sistem';
       const details = document.createElement('span'); details.textContent = escapeText(event.message || event.code || event.status || event.errorCode || '');
       row.append(time, title, details); return row;
     });
-    if (!rows.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Belum ada aktiviti.'; rows.push(empty); }
+    if (!rows.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Belum ada aktivitas.'; rows.push(empty); }
     target.replaceChildren(...rows);
+  }
+
+  async function loadAdmins() {
+    const target = $('#admin-list');
+    target.replaceChildren(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Memuat daftar admin…' }));
+    const { admins = [] } = await api('/api/admins');
+    if (!admins.length) { target.replaceChildren(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Belum ada akun admin.' })); return; }
+    target.replaceChildren(...admins.map((admin) => {
+      const form = document.createElement('form'); form.className = 'panel form-grid admin-row'; form.dataset.adminId = String(admin.id);
+      const heading = document.createElement('div'); heading.className = 'panel-heading full';
+      const title = document.createElement('div'); const email = document.createElement('h2'); email.textContent = admin.email;
+      const status = document.createElement('p'); status.className = 'muted'; status.textContent = admin.active ? 'Aktif' : 'Dinonaktifkan';
+      title.append(email, status); heading.append(title);
+      const emailLabel = document.createElement('label'); emailLabel.textContent = 'Email admin';
+      const emailInput = document.createElement('input'); emailInput.name = 'email'; emailInput.type = 'email'; emailInput.required = true; emailInput.maxLength = 254; emailInput.value = admin.email; emailLabel.append(emailInput);
+      form.dataset.originalEmail = admin.email;
+      const passwordLabel = document.createElement('label'); passwordLabel.textContent = 'Kata sandi baru (opsional)';
+      const passwordInput = document.createElement('input'); passwordInput.name = 'password'; passwordInput.type = 'password'; passwordInput.autocomplete = 'new-password'; passwordInput.minLength = 12; passwordInput.maxLength = 256; passwordLabel.append(passwordInput);
+      const footer = document.createElement('div'); footer.className = 'form-footer full';
+      const save = document.createElement('button'); save.className = 'button primary'; save.type = 'submit'; save.textContent = 'Simpan perubahan';
+      const toggle = document.createElement('button'); toggle.className = `button ${admin.active ? 'danger' : 'quiet'}`; toggle.type = 'button'; toggle.dataset.active = String(admin.active); toggle.textContent = admin.active ? 'Nonaktifkan' : 'Aktifkan kembali';
+      footer.append(save, toggle); form.append(heading, emailLabel, passwordLabel, footer);
+      return form;
+    }));
   }
 
   function render(data) {
     state.data = data;
     const automation = data.automation || {};
-    $('#automation-label').textContent = automation.enabled ? 'Automasi aktif' : 'Automasi dimatikan';
-    $('#automation-reason').textContent = automation.enabled ? 'Job akan berjalan mengikut jadual.' : 'Selesaikan onboarding sebelum mengaktifkan.';
+    $('#automation-label').textContent = automation.enabled ? 'Otomasi aktif' : 'Otomasi nonaktif';
+    $('#automation-reason').textContent = automation.enabled ? 'Tugas berjalan sesuai jadwal.' : 'Selesaikan onboarding sebelum mengaktifkan.';
     const dot = $('#automation-state'); dot.className = `state-dot ${automation.enabled ? 'on' : automation.paused ? 'paused' : 'off'}`;
-    const control = $('#automation-button'); control.textContent = automation.enabled ? 'Jeda kecemasan' : 'Aktifkan automasi'; control.className = `button ${automation.enabled ? 'danger' : 'primary'}`;
+    const control = $('#automation-button'); control.textContent = automation.enabled ? 'Jeda darurat' : 'Aktifkan otomasi'; control.className = `button ${automation.enabled ? 'danger' : 'primary'}`;
     const provider = data.provider || {};
-    $('#provider-status').textContent = provider.connected ? (provider.status || 'Disambungkan') : 'Belum disambungkan';
-    $('#provider-account').textContent = provider.username ? `@${provider.username}` : 'Sambungkan melalui Tebar';
+    $('#provider-status').textContent = provider.connected ? (provider.status || 'Terhubung') : 'Belum terhubung';
+    $('#provider-account').textContent = provider.username ? `@${provider.username}` : 'Hubungkan melalui Tebar';
     $('#metric-success').textContent = String(data.metrics?.success30d ?? 0);
     $('#metric-clicks').textContent = data.metrics?.clicks?.available ? String(data.metrics.clicks.value) : 'Belum tersedia';
     $('#metric-failed').textContent = String(data.metrics?.attention ?? 0);
@@ -151,6 +203,33 @@
     try { await api('/api/session/logout', { method: 'POST', body: '{}' }); } finally { state.csrf = ''; setAuthenticated(false); }
   });
 
+  $('#admin-create-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const form = event.currentTarget;
+    try {
+      await api('/api/admins', { method: 'POST', body: JSON.stringify({ email: value(form, 'email'), password: value(form, 'password') }) });
+      form.reset(); show('#global-success', 'Akun admin berhasil ditambahkan.'); await loadAdmins();
+    } catch (error) { show('#global-error', errorText(error)); }
+  });
+  $('#admin-list').addEventListener('submit', async (event) => {
+    const form = event.target.closest('form[data-admin-id]'); if (!form) return;
+    event.preventDefault();
+    const changes = {}; const email = value(form, 'email'); if (email !== form.dataset.originalEmail) changes.email = email; const password = value(form, 'password'); if (password) changes.password = password;
+    if (!Object.keys(changes).length) { show('#global-success', 'Tidak ada perubahan untuk disimpan.'); return; }
+    try {
+      const result = await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify(changes) });
+      if (result.sessionRevoked) { state.csrf = ''; setAuthenticated(false); show('#login-error', 'Akun diperbarui. Masuk kembali dengan email atau kata sandi baru.'); return; }
+      show('#global-success', 'Perubahan akun admin berhasil disimpan.'); await loadAdmins();
+    } catch (error) { show('#global-error', errorText(error)); }
+  });
+  $('#admin-list').addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-active]'); if (!button) return;
+    const form = button.closest('form[data-admin-id]'); const active = button.dataset.active !== 'true';
+    if (!active && !window.confirm('Nonaktifkan akun ini? Semua sesi login akun akan dihentikan.')) return;
+    try { await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify({ active }) }); show('#global-success', active ? 'Akun admin diaktifkan kembali.' : 'Akun admin dinonaktifkan.'); await loadAdmins(); }
+    catch (error) { show('#global-error', errorText(error)); }
+  });
+  $('#admins-refresh-button').addEventListener('click', () => loadAdmins().catch((error) => show('#global-error', errorText(error))));
+
   $('#content-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget;
     const settings = state.data.settings || {};
@@ -158,14 +237,14 @@
     settings.gameWhitelist = lines(value(form, 'gameWhitelist'));
     settings.trackedLinks = { ...(settings.trackedLinks || {}), topup: value(form, 'trackedTopup'), account: value(form, 'trackedAccount') };
     settings.guardrails = { ...(settings.guardrails || {}), approved: form.elements.guardrailsApproved.checked, forbiddenClaims: lines(value(form, 'forbiddenClaims')), approvedClaims: lines(value(form, 'approvedClaims')) };
-    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Panduan jenama berjaya disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
   });
 
   $('#schedule-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget; const settings = state.data.settings || {};
     settings.schedule = { intervalHours: Number(value(form, 'intervalHours')), timezone: value(form, 'timezone'), activeDays: $$('input[name="activeDays"]:checked', form).map((input) => Number(input.value)), activeStart: value(form, 'activeStart'), activeEnd: value(form, 'activeEnd') };
     settings.priceMode = value(form, 'priceMode');
-    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Jadual berjaya disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Jadwal berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
   });
 
   $$('.fact-form').forEach((form) => form.addEventListener('submit', async (event) => {
@@ -174,17 +253,17 @@
       ? { game: value(form, 'game'), denomination: value(form, 'denomination'), price: value(form, 'price'), availability: value(form, 'availability') }
       : { game: 'Mobile Legends', price: value(form, 'price'), availability: value(form, 'availability'), attributes: lines(value(form, 'attributes')) };
     Object.keys(summary).forEach((key) => { if (!summary[key] || (Array.isArray(summary[key]) && !summary[key].length)) delete summary[key]; });
-    try { await api(`/api/facts/${service}`, { method: 'PUT', body: JSON.stringify({ summary, active: true }) }); show('#global-success', 'Fakta produk berjaya disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try { await api(`/api/facts/${service}`, { method: 'PUT', body: JSON.stringify({ summary, active: true }) }); show('#global-success', 'Informasi produk berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
   }));
 
   $('#automation-button').addEventListener('click', async () => {
     try {
       if (state.data?.automation?.enabled) {
         const result = await api('/api/automation/pause', { method: 'POST', body: '{}' });
-        show('#global-success', result.message || 'Automasi dijeda.');
+        show('#global-success', result.message || 'Otomasi dijeda.');
       } else {
-        if (!window.confirm('Aktifkan penerbitan automatik untuk workspace yang sedang disambungkan?')) return;
-        await api('/api/automation/enable', { method: 'POST', body: '{}' }); show('#global-success', 'Automasi berjaya diaktifkan.');
+        if (!window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung?')) return;
+        await api('/api/automation/enable', { method: 'POST', body: '{}' }); show('#global-success', 'Otomasi berhasil diaktifkan.');
       }
       await refresh();
     } catch (error) { show('#global-error', errorText(error)); }
@@ -194,6 +273,7 @@
   $$('.tab').forEach((button) => button.addEventListener('click', () => {
     $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
     $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${button.dataset.tab}`));
+    if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
   }));
 
   buildDays();

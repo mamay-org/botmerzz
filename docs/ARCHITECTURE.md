@@ -31,7 +31,7 @@ Each slot has a unique scheduled instant and durable state: pending, generating,
 
 ## Authentication and secret boundaries
 
-- One administrator row is created by a local bootstrap command; the schema retains a user ID for audit events.
+- The initial administrator is created by a local bootstrap command. Active admins have equal permissions; account changes are audited and password/email changes revoke sessions. Admin deactivation is soft and preserves references in audit history.
 - Passwords use Node's scrypt with a random salt. Session tokens are random, stored as hashes in MySQL, expire server-side, and rotate on login.
 - Mutating dashboard requests require same-origin validation and a per-session CSRF token. Cookies are secure in deployed HTTPS environments, HTTP-only, and SameSite strict.
 - Tebar, OpenRouter, Telegram, and database credentials are environment-only. The dashboard never returns their values.

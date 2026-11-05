@@ -1,0 +1,12 @@
+SET @merzz_ddl = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='admins' AND index_name='singleton_key') > 0, 'ALTER TABLE admins DROP INDEX singleton_key', 'SELECT 1');
+PREPARE merzz_migration_stmt FROM @merzz_ddl;
+EXECUTE merzz_migration_stmt;
+DEALLOCATE PREPARE merzz_migration_stmt;
+SET @merzz_ddl = IF((SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='admins' AND constraint_name='admins_chk_1' AND constraint_type='CHECK') > 0, 'ALTER TABLE admins DROP CHECK admins_chk_1', 'SELECT 1');
+PREPARE merzz_migration_stmt FROM @merzz_ddl;
+EXECUTE merzz_migration_stmt;
+DEALLOCATE PREPARE merzz_migration_stmt;
+SET @merzz_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='admins' AND column_name='singleton_key') > 0, 'ALTER TABLE admins DROP COLUMN singleton_key', 'SELECT 1');
+PREPARE merzz_migration_stmt FROM @merzz_ddl;
+EXECUTE merzz_migration_stmt;
+DEALLOCATE PREPARE merzz_migration_stmt;

@@ -74,10 +74,45 @@ function createRepository(pool) {
     const [rows] = await pool.execute('SELECT id,email,password_hash,active FROM admins WHERE email=? LIMIT 1', [email]);
     const row = rows[0]; return row && { id: row.id, email: row.email, passwordHash: row.password_hash, active: Boolean(row.active) };
   }
-  async function createAdmin({ email, passwordHash }) {
+  async function listAdmins() {
+    const [rows] = await pool.execute('SELECT id,email,active,created_at FROM admins ORDER BY created_at,id');
+    return rows.map((row) => ({ id: Number(row.id), email: row.email, active: Boolean(row.active), createdAt: row.created_at }));
+  }
+  async function createAdmin({ email, passwordHash, actorId }) {
     const conn = await pool.getConnection();
-    try { await conn.execute('INSERT INTO admins (singleton_key,email,password_hash,active) VALUES (1,?,?,TRUE)', [email,passwordHash]); const [rows] = await conn.execute('SELECT id,email,active FROM admins WHERE email=?', [email]); return rows[0]; }
-    catch (error) { if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('ADMIN_EXISTS'), { code: 'ADMIN_EXISTS' }); throw error; } finally { conn.release(); }
+    try { await conn.beginTransaction(); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await conn.execute('SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
+    catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('ADMIN_EXISTS'), { code: 'ADMIN_EXISTS' }); throw error; } finally { conn.release(); }
+  }
+  async function updateAdmin(id, { email, passwordHash, active }, actorId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query('SELECT id FROM settings WHERE id=1 FOR UPDATE');
+      const [[target]] = await conn.execute('SELECT id,email,active FROM admins WHERE id=? FOR UPDATE', [id]);
+      if (!target) { await conn.rollback(); return null; }
+      if (active === false && target.active) {
+        const [[count]] = await conn.query('SELECT COUNT(*) AS total FROM admins WHERE active=TRUE');
+        if (Number(count.total) <= 1) throw Object.assign(new Error('LAST_ADMIN'), { code: 'LAST_ADMIN' });
+      }
+      const emailChanged = email !== undefined && email !== target.email;
+      const passwordChanged = passwordHash !== undefined;
+      const activeChanged = active !== undefined && Boolean(target.active) !== active;
+      if (!emailChanged && !passwordChanged && !activeChanged) {
+        await conn.rollback();
+        return { id: Number(target.id), email: target.email, active: Boolean(target.active), credentialsChanged: false };
+      }
+      const fields = []; const values = [];
+      if (emailChanged) { fields.push('email=?'); values.push(email); }
+      if (passwordChanged) { fields.push('password_hash=?'); values.push(passwordHash); }
+      if (activeChanged) { fields.push('active=?'); values.push(active); }
+      values.push(id); await conn.execute(`UPDATE admins SET ${fields.join(',')} WHERE id=?`, values);
+      if (emailChanged || passwordChanged || (active === false && activeChanged)) await conn.execute('DELETE FROM sessions WHERE admin_id=?', [id]);
+      await audit(conn, actorId, active === false ? 'admin.deactivated' : active === true ? 'admin.reactivated' : 'admin.updated', { targetAdminId: Number(id), emailChanged, passwordReset: passwordChanged });
+      const [[updated]] = await conn.execute('SELECT id,email,active,created_at FROM admins WHERE id=?', [id]);
+      await conn.commit();
+      return { id: Number(updated.id), email: updated.email, active: Boolean(updated.active), createdAt: updated.created_at, credentialsChanged: emailChanged || passwordChanged };
+    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('ADMIN_EXISTS'), { code: 'ADMIN_EXISTS' }); throw error; }
+    finally { conn.release(); }
   }
   async function createSession({ tokenHash, adminId, csrfToken, expiresAt }) { await pool.execute('INSERT INTO sessions (token_hash,admin_id,csrf_token,expires_at) VALUES (?,?,?,?)', [tokenHash,adminId,csrfToken,expiresAt]); }
   async function getSession(tokenHash, now = new Date()) {
@@ -202,7 +237,7 @@ function createRepository(pool) {
   async function getDailySummary({localDate,timezone}) { const counts=await getDailySummaryCounts(localDate,timezone);return {published:counts.published||0,failed:counts.failed||0,skipped:counts.skipped||0}; }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await pool.execute('SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,createAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

@@ -1,6 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const enabled=Boolean(process.env.DB_HOST&&process.env.DB_USER&&process.env.DB_NAME);
+const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
 
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
@@ -9,6 +9,8 @@ test('MySQL migrations and repository are reachable in integration environment',
     await runMigrations(pool);
     await pool.execute("DELETE FROM schema_migrations WHERE version='002_notification_outbox.sql'");
     assert.deepEqual(await runMigrations(pool),['002_notification_outbox.sql']);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='003_multi_admin.sql'");
+    assert.deepEqual(await runMigrations(pool),['003_multi_admin.sql']);
     const repo=createRepository(pool);
     assert.equal(await repo.healthCheck(),true);
     const settings=await repo.getSettings();assert.equal(settings.automationEnabled,false);
@@ -22,6 +24,22 @@ test('MySQL migrations and repository are reachable in integration environment',
     await repo.markNotificationSent(notice.id);
     assert.equal(await repo.getNotificationStatus(dedupeKey),'sent');
     const {createHash,randomUUID}=require('node:crypto');
+    const {hashPassword}=require('../src/auth');
+    await pool.execute('DELETE FROM admins');
+    const first=await repo.createAdmin({email:`first-${randomUUID()}@example.test`,passwordHash:await hashPassword('first secure password')});
+    const second=await repo.createAdmin({email:`second-${randomUUID()}@example.test`,passwordHash:await hashPassword('second secure password'),actorId:first.id});
+    assert.equal((await repo.listAdmins()).length,2);
+    const sessionToken=randomUUID().replaceAll('-','').padEnd(64,'a').slice(0,64);
+    await repo.createSession({tokenHash:sessionToken,adminId:second.id,csrfToken:'c'.repeat(64),expiresAt:new Date(Date.now()+3600000)});
+    const unchanged=await repo.updateAdmin(second.id,{email:second.email},first.id);
+    assert.equal(unchanged.credentialsChanged,false);
+    assert.ok(await repo.getSession(sessionToken));
+    const changed=await repo.updateAdmin(second.id,{email:`changed-${randomUUID()}@example.test`,passwordHash:await hashPassword('updated secure password')},first.id);
+    assert.equal(changed.active,true);
+    assert.equal(await repo.getSession(sessionToken),null);
+    await repo.updateAdmin(second.id,{active:false},first.id);
+    await assert.rejects(repo.updateAdmin(first.id,{active:false},first.id),error=>error.code==='LAST_ADMIN');
+    await pool.execute('DELETE FROM admins');
     const profileId=`test-profile-${randomUUID()}`;const accountId=`test-account-${randomUUID()}`;const eventId=randomUUID();
     await repo.setProviderTarget({accountId,profileId});
     await repo.applyWebhookEvent({eventId,payloadHash:createHash('sha256').update(eventId).digest('hex'),type:'account.disconnected',profileId,data:{account:{id:accountId}},accountId,notificationCode:'account_disconnected'});

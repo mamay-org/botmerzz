@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="ms">
+<html lang="id">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Kedai Merzz · Threads Control</title>
+  <title>Kedai Merzz · Panel Threads</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -12,107 +12,117 @@
   <main class="shell">
     <section id="login-view" class="login-card" aria-labelledby="login-title">
       <div class="brand-mark">KM</div>
-      <p class="eyebrow">KEDAI MERZZ · STAGING CONTROL</p>
-      <h1 id="login-title">Threads Control</h1>
-      <p class="muted">Log masuk untuk mengurus jadual, kandungan dan status automasi.</p>
+      <p class="eyebrow">KEDAI MERZZ · PANEL STAGING</p>
+      <h1 id="login-title">Panel Threads</h1>
+      <p class="muted">Masuk untuk mengelola jadwal, konten, dan status otomasi.</p>
       <form id="login-form" class="stack">
-        <label>E-mel pentadbir<input name="email" type="email" autocomplete="username" required maxlength="254"></label>
-        <label>Kata laluan<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
-        <button class="button primary" type="submit">Log masuk</button>
+        <label>Email administrator<input name="email" type="email" autocomplete="username" required maxlength="254"></label>
+        <label>Kata sandi<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+        <button class="button primary" type="submit">Masuk</button>
         <p id="login-error" class="notice error" role="alert" hidden></p>
       </form>
     </section>
 
     <section id="app-view" hidden>
       <header class="topbar">
-        <div class="brand-lockup"><div class="brand-mark small">KM</div><div><strong>Kedai Merzz</strong><span>Threads Control · Development / Staging</span></div></div>
-        <div class="top-actions"><span id="environment-badge" class="pill neutral">STAGING</span><button id="logout-button" class="button quiet">Log keluar</button></div>
+        <div class="brand-lockup"><div class="brand-mark small">KM</div><div><strong>Kedai Merzz</strong><span>Panel Threads · Pengembangan / Staging</span></div></div>
+        <div class="top-actions"><span id="environment-badge" class="pill neutral">STAGING</span><button id="logout-button" class="button quiet">Keluar</button></div>
       </header>
 
       <div class="page-heading">
-        <div><p class="eyebrow">PAPAN KAWALAN</p><h1>Automasi kandungan</h1><p class="muted">Pantau sambungan dan kawal penerbitan dari satu tempat.</p></div>
-        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Automasi dimatikan</strong><small id="automation-reason">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan automasi</button></div>
+        <div><p class="eyebrow">DASHBOARD</p><h1>Otomasi konten</h1><p class="muted">Pantau koneksi dan kelola penerbitan dari satu tempat.</p></div>
+        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Otomasi nonaktif</strong><small id="automation-reason">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan otomasi</button></div>
       </div>
 
       <div id="global-error" class="notice error" role="alert" hidden></div>
       <div id="global-success" class="notice success" role="status" hidden></div>
 
-      <section class="metrics" aria-label="Ringkasan operasi">
-        <article class="metric"><span>Threads</span><strong id="provider-status">Belum disambungkan</strong><small id="provider-account">Sambungkan melalui Tebar</small></article>
-        <article class="metric"><span>Post berjaya</span><strong id="metric-success">0</strong><small>30 hari terakhir</small></article>
-        <article class="metric"><span>Klik Threads</span><strong id="metric-clicks">Belum tersedia</strong><small>30 hari terakhir · metrik akaun Tebar</small></article>
-        <article class="metric"><span>Perlu perhatian</span><strong id="metric-failed">0</strong><small>Gagal atau status tidak pasti</small></article>
-        <article class="metric"><span>Fakta segar</span><strong id="metric-facts">0 / 2</strong><small>Harga / stok sah selama 24 jam</small></article>
+      <section class="metrics" aria-label="Ringkasan operasional">
+        <article class="metric"><span>Threads</span><strong id="provider-status">Belum terhubung</strong><small id="provider-account">Hubungkan melalui Tebar</small></article>
+        <article class="metric"><span>Posting berhasil</span><strong id="metric-success">0</strong><small>30 hari terakhir</small></article>
+        <article class="metric"><span>Klik Threads</span><strong id="metric-clicks">Belum tersedia</strong><small>30 hari terakhir · metrik akun Tebar</small></article>
+        <article class="metric"><span>Perlu perhatian</span><strong id="metric-failed">0</strong><small>Gagal atau status belum pasti</small></article>
+        <article class="metric"><span>Fakta terbaru</span><strong id="metric-facts">0 / 2</strong><small>Harga / stok berlaku 24 jam</small></article>
       </section>
 
       <section class="panel onboarding-panel">
-        <div class="panel-heading"><div><p class="eyebrow">SEBELUM MULA</p><h2>Senarai onboarding</h2></div><span id="onboarding-count" class="pill warning">Belum lengkap</span></div>
+        <div class="panel-heading"><div><p class="eyebrow">SEBELUM MULAI</p><h2>Daftar onboarding</h2></div><span id="onboarding-count" class="pill warning">Belum lengkap</span></div>
         <ul id="onboarding-list" class="checklist"></ul>
       </section>
 
-      <nav class="tabs" aria-label="Bahagian dashboard">
-        <button class="tab active" data-tab="content">Kandungan & jenama</button>
-        <button class="tab" data-tab="schedule">Jadual</button>
-        <button class="tab" data-tab="facts">Produk & fakta</button>
-        <button class="tab" data-tab="activity">Sejarah & log</button>
+      <nav class="tabs" aria-label="Bagian dashboard">
+        <button class="tab active" data-tab="content">Konten & brand</button>
+        <button class="tab" data-tab="schedule">Jadwal</button>
+        <button class="tab" data-tab="facts">Produk & informasi</button>
+        <button class="tab" data-tab="activity">Riwayat & catatan</button>
+        <button class="tab" data-tab="admins">Admin</button>
       </nav>
 
       <section id="tab-content" class="tab-panel active">
         <form id="content-form" class="panel form-grid">
-          <div class="panel-heading full"><div><p class="eyebrow">ARAHAN BERSTRUKTUR</p><h2>Suara jenama dan guardrail</h2><p class="muted">AI hanya menerima panduan dan whitelist yang disimpan di sini.</p></div></div>
-          <label>Nama jenama<input name="brandName" maxlength="120" placeholder="Kedai Merzz"></label>
+          <div class="panel-heading full"><div><p class="eyebrow">PANDUAN TERSTRUKTUR</p><h2>Karakter brand dan batasan AI</h2><p class="muted">AI hanya menggunakan panduan dan daftar yang disimpan di sini.</p></div></div>
+          <label>Nama merek<input name="brandName" maxlength="120" placeholder="Kedai Merzz"></label>
           <label>Gaya komunikasi<input name="voice" maxlength="500" placeholder="Ramah, santai gamer, informatif"></label>
-          <label class="full">Insight pelanggan<textarea name="audienceNotes" rows="4" maxlength="2000" placeholder="Soalan, kebimbangan dan perkara yang pelanggan Malaysia hargai…"></textarea></label>
-          <label class="full">Game top-up yang diluluskan <span class="field-hint">Satu nama setiap baris</span><textarea name="gameWhitelist" rows="4" maxlength="3000" placeholder="Mobile Legends"></textarea></label>
-          <label>Tautan tracked top-up<input name="trackedTopup" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=topup"></label>
-          <label>Tautan tracked jual akaun<input name="trackedAccount" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=account"></label>
-          <label class="full">Tuntutan yang dilarang <span class="field-hint">Satu frasa setiap baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% selamat"></textarea></label>
-          <label class="full">Tuntutan yang diluluskan <span class="field-hint">Satu frasa setiap baris; tuntutan tetap perlu disokong fakta</span><textarea name="approvedClaims" rows="3" maxlength="3000"></textarea></label>
-          <label class="check-row full"><input name="guardrailsApproved" type="checkbox"><span>Guardrail ini telah disemak dan diluluskan oleh klien</span></label>
-          <div class="form-footer full"><span class="muted">Jangan masukkan kata laluan, token, atau data pelanggan di sini.</span><button class="button primary" type="submit">Simpan panduan</button></div>
+          <label class="full">Wawasan pelanggan<textarea name="audienceNotes" rows="4" maxlength="2000" placeholder="Pertanyaan, kekhawatiran, dan hal yang dihargai pelanggan Malaysia…"></textarea></label>
+          <label class="full">Game top-up yang disetujui <span class="field-hint">Satu nama per baris</span><textarea name="gameWhitelist" rows="4" maxlength="3000" placeholder="Mobile Legends"></textarea></label>
+          <label>Tautan top-up berpelacak<input name="trackedTopup" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=topup"></label>
+          <label>Tautan jual akun berpelacak<input name="trackedAccount" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=account"></label>
+          <label class="full">Klaim yang dilarang <span class="field-hint">Satu frasa per baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% aman"></textarea></label>
+          <label class="full">Klaim yang disetujui <span class="field-hint">Satu frasa per baris; klaim harus didukung informasi yang benar</span><textarea name="approvedClaims" rows="3" maxlength="3000"></textarea></label>
+          <label class="check-row full"><input name="guardrailsApproved" type="checkbox"><span>Batasan AI ini sudah ditinjau dan disetujui klien</span></label>
+          <div class="form-footer full"><span class="muted">Jangan masukkan kata sandi, token, atau data pelanggan di sini.</span><button class="button primary" type="submit">Simpan panduan</button></div>
         </form>
       </section>
 
       <section id="tab-schedule" class="tab-panel">
         <form id="schedule-form" class="panel form-grid">
-          <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Jadual aktif</h2><p class="muted">Slot di luar waktu aktif akan dilangkau dan tidak dibuat susulan.</p></div></div>
-          <label>Jarak antara post (jam)<input name="intervalHours" type="number" min="6" max="168" step="1" required><span class="field-hint">Minimum 6 jam</span></label>
-          <label>Zon waktu<select name="timezone"><option value="Asia/Kuala_Lumpur">Malaysia · MYT</option><option value="Asia/Jakarta">Indonesia · WIB</option><option value="Asia/Singapore">Singapore · SGT</option><option value="UTC">UTC</option></select></label>
+          <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Jadwal aktif</h2><p class="muted">Slot di luar jam aktif akan dilewati tanpa posting susulan.</p></div></div>
+          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="6" max="168" step="1" required><span class="field-hint">Minimal 6 jam</span></label>
+          <label>Zona waktu<select name="timezone"><option value="Asia/Kuala_Lumpur">Malaysia · MYT</option><option value="Asia/Jakarta">Indonesia · WIB</option><option value="Asia/Singapore">Singapura · SGT</option><option value="UTC">UTC</option></select></label>
           <fieldset class="full"><legend>Hari aktif</legend><div class="day-picks" id="active-days"></div></fieldset>
-          <label>Mula waktu aktif<input name="activeStart" type="time" required></label>
-          <label>Tamat waktu aktif<input name="activeEnd" type="time" required></label>
-          <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa fakta semasa</option><option value="MIXED">MIXED · kira-kira 1 daripada 4 post</option><option value="ON">ON · gunakan fakta segar</option></select></label>
-          <div class="form-footer full"><span class="muted">Fakta harga dan stok luput selepas 24 jam.</span><button class="button primary" type="submit">Simpan jadual</button></div>
+          <label>Mulai jam aktif<input name="activeStart" type="time" required></label>
+          <label>Akhir jam aktif<input name="activeEnd" type="time" required></label>
+          <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa informasi terbaru</option><option value="MIXED">MIXED · sekitar 1 dari 4 posting</option><option value="ON">ON · gunakan informasi terbaru</option></select></label>
+          <div class="form-footer full"><span class="muted">Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
         </form>
-        <div class="notice info"><strong>Jeda kecemasan</strong><span>Matikan job akan datang serta meminta Tebar membatalkan post terjadual yang masih boleh dibatalkan. Semak hasil setiap pembatalan di log.</span></div>
+        <div class="notice info"><strong>Jeda darurat</strong><span>Hentikan tugas berikutnya dan minta Tebar membatalkan posting terjadwal yang masih bisa dibatalkan. Periksa hasilnya di log.</span></div>
       </section>
 
       <section id="tab-facts" class="tab-panel">
-        <div class="notice info"><strong>Fakta luput automatik</strong><span>Harga, stok dan maklumat jualan hanya disebut jika dikemas kini dalam 24 jam. Tanpa fakta segar, post menggunakan kandungan umum.</span></div>
+        <div class="notice info"><strong>Informasi kedaluwarsa otomatis</strong><span>Harga, stok, dan informasi penjualan hanya disebut jika diperbarui dalam 24 jam. Jika sudah kedaluwarsa, posting akan menggunakan konten umum.</span></div>
         <div class="fact-grid">
           <form id="fact-topup-form" class="panel stack fact-form" data-service="topup">
-            <div><p class="eyebrow">TOP-UP</p><h2>Ringkasan servis</h2><p class="muted">Game, nominal dan harga permulaan yang disahkan klien.</p></div>
+            <div><p class="eyebrow">TOP-UP</p><h2>Ringkasan layanan</h2><p class="muted">Game, nominal, dan harga awal yang disetujui klien.</p></div>
             <label>Game<input name="game" maxlength="100" placeholder="Mobile Legends"></label>
             <label>Ringkasan nominal<input name="denomination" maxlength="120" placeholder="400 Diamond"></label>
             <label>Harga MYR<input name="price" inputmode="decimal" maxlength="12" placeholder="30.00"></label>
             <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Tersedia"></label>
-            <p class="fact-updated" data-updated>Belum dikemas kini</p><button class="button primary" type="submit">Simpan fakta top-up</button>
+            <p class="fact-updated" data-updated>Belum diperbarui</p><button class="button primary" type="submit">Simpan info top-up</button>
           </form>
           <form id="fact-account-form" class="panel stack fact-form" data-service="account">
-            <div><p class="eyebrow">AKAUN MOBILE LEGENDS</p><h2>Ringkasan servis</h2><p class="muted">Hanya harga, ketersediaan dan atribut yang diluluskan klien.</p></div>
+            <div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Ringkasan layanan</h2><p class="muted">Hanya harga, ketersediaan, dan atribut yang disetujui klien.</p></div>
             <label>Harga MYR<input name="price" inputmode="decimal" maxlength="12" placeholder=""></label>
             <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Hubungi kami untuk pilihan terkini"></label>
-            <label>Atribut diluluskan <span class="field-hint">Satu atribut setiap baris</span><textarea name="attributes" rows="3" maxlength="1000" placeholder="Rank atau skin yang disahkan"></textarea></label>
-            <p class="fact-updated" data-updated>Belum dikemas kini</p><button class="button primary" type="submit">Simpan fakta akaun</button>
+            <label>Atribut yang disetujui <span class="field-hint">Satu atribut per baris</span><textarea name="attributes" rows="3" maxlength="1000" placeholder="Rank atau skin yang sudah diverifikasi"></textarea></label>
+            <p class="fact-updated" data-updated>Belum diperbarui</p><button class="button primary" type="submit">Simpan info akun</button>
           </form>
         </div>
       </section>
 
       <section id="tab-activity" class="tab-panel">
-        <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Post terkini</h2></div><button id="refresh-button" class="button quiet">Muat semula</button></div><div class="table-wrap"><table><thead><tr><th>Masa</th><th>Tema</th><th>Status</th><th>Kandungan</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
-        <div class="panel log-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEM</p><h2>Aktiviti terkini</h2></div></div><div id="activity-list" class="activity-list"></div></div>
+        <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Posting terbaru</h2></div><button id="refresh-button" class="button quiet">Muat ulang</button></div><div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Tema</th><th>Status</th><th>Konten</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
+        <div class="panel log-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEM</p><h2>Aktivitas terbaru</h2></div></div><div id="activity-list" class="activity-list"></div></div>
       </section>
-      <footer class="footer">Development / staging workspace · Tiada akses akaun production klien</footer>
+      <section id="tab-admins" class="tab-panel">
+        <form id="admin-create-form" class="panel form-grid">
+          <div class="panel-heading full"><div><p class="eyebrow">AKSES DASHBOARD</p><h2>Tambah admin</h2><p class="muted">Setiap admin dapat mengelola seluruh pengaturan dan akun admin lainnya.</p></div></div>
+          <label>Email admin<input name="email" type="email" autocomplete="off" required maxlength="254"></label>
+          <label>Kata sandi awal<input name="password" type="password" autocomplete="new-password" minlength="12" required maxlength="256"><span class="field-hint">Minimal 12 karakter. Sampaikan kata sandi ini secara aman.</span></label>
+          <div class="form-footer full"><span class="muted">Kata sandi tidak dapat dilihat lagi setelah akun dibuat.</span><button class="button primary" type="submit">Tambah admin</button></div>
+        </form>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AKUN ADMIN</p><h2>Kelola akun</h2></div><button id="admins-refresh-button" class="button quiet" type="button">Muat ulang</button></div><div id="admin-list" class="admin-list"></div></section>
+      </section>
+      <footer class="footer">Lingkungan pengembangan / staging · Tidak terhubung ke akun production klien</footer>
     </section>
   </main>
 </body>

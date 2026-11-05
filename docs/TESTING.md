@@ -6,7 +6,7 @@ Use Node.js 20.6 or newer. Install dependencies with `npm ci`, then run `npm tes
 
 ## Docker integration checks
 
-Run `docker compose up --build --wait` to start the app and MySQL. The compose health checks verify database readiness and the app's readiness endpoint. Run the test profile against its separate test-only MySQL service; it cannot modify the dashboard's local database. The app container must report unhealthy if it cannot reach the database or migrations are unavailable.
+Run `docker compose up --build --wait` to start the app and MySQL. The compose health checks verify database readiness and the app's readiness endpoint. Run the test profile against its separate test-only MySQL service; it cannot modify the dashboard's local database. Database integration tests require `NODE_ENV=test`, `DB_NAME=merzz_test`, and the explicit `ALLOW_DESTRUCTIVE_DB_TESTS=true` flag because they reset test-only administrator rows and migration metadata. Never set that flag against a development or production database. The app container must report unhealthy if it cannot reach the database or migrations are unavailable.
 
 ## Required coverage
 

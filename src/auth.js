@@ -34,11 +34,30 @@ function createAuth({ repository, clock = () => new Date(), sessionHours = 12, m
   }
   const keyFor = (email, ip) => `${String(ip || 'unknown').slice(0, 64)}:${String(email || '').toLowerCase().slice(0, 254)}`;
   return {
-    async createAdmin({ email, password }) {
+    async createAdmin({ email, password, actorId }) {
       if (typeof email !== 'string' || email.length > 254 || !EMAIL_RE.test(email)) throw safeError('INVALID_EMAIL');
       const passwordHash = await hashPassword(password);
-      try { return await repository.createAdmin({ email: email.trim().toLowerCase(), passwordHash }); }
+      try { return await repository.createAdmin({ email: email.trim().toLowerCase(), passwordHash, actorId }); }
       catch (error) { if (error.code === 'ADMIN_EXISTS' || error.code === 'ER_DUP_ENTRY') throw safeError('ADMIN_EXISTS', 409); throw error; }
+    },
+    async updateAdmin(id, changes, actorId) {
+      const normalized = {};
+      if (changes.email !== undefined) {
+        if (typeof changes.email !== 'string' || changes.email.length > 254 || !EMAIL_RE.test(changes.email)) throw safeError('INVALID_EMAIL');
+        normalized.email = changes.email.trim().toLowerCase();
+      }
+      if (changes.password !== undefined && changes.password !== '') normalized.passwordHash = await hashPassword(changes.password);
+      if (changes.active !== undefined) {
+        if (typeof changes.active !== 'boolean') throw safeError('INVALID_ADMIN_STATUS');
+        normalized.active = changes.active;
+      }
+      if (!Object.keys(normalized).length) throw safeError('EMPTY_ADMIN_UPDATE');
+      try { return await repository.updateAdmin(id, normalized, actorId); }
+      catch (error) {
+        if (error.code === 'ADMIN_EXISTS' || error.code === 'ER_DUP_ENTRY') throw safeError('ADMIN_EXISTS', 409);
+        if (error.code === 'LAST_ADMIN') throw safeError('LAST_ADMIN', 409);
+        throw error;
+      }
     },
     async login({ email, password, ip }) {
       const now = clock();
