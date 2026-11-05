@@ -36,6 +36,22 @@
     ai_generation_failed: 'Pembuatan konten AI gagal', automation_paused: 'Otomasi dijeda',
     slot_skipped: 'Jadwal posting dilewati', post_cancellation: 'Pembatalan posting',
   };
+  function addPasswordToggle(input) {
+    if (!input?.parentNode || input.dataset.visibilityToggle === 'ready') return;
+    const wrapper = document.createElement('span'); wrapper.className = 'password-field';
+    input.parentNode.insertBefore(wrapper, input); wrapper.append(input); input.dataset.visibilityToggle = 'ready';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'password-toggle';
+    button.setAttribute('aria-label', 'Tampilkan kata sandi'); button.setAttribute('aria-pressed', 'false');
+    const eye = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+    const eyeOff = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A11.5 11.5 0 0 1 12 5c6.4 0 10 7 10 7a16 16 0 0 1-3.1 3.8M6.2 6.2C3.5 8 2 12 2 12s3.6 7 10 7a11 11 0 0 0 4-.7"></path></svg>';
+    button.innerHTML = eye;
+    button.addEventListener('click', () => {
+      const visible = input.type === 'password'; input.type = visible ? 'text' : 'password';
+      button.setAttribute('aria-label', visible ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi');
+      button.setAttribute('aria-pressed', String(visible)); button.innerHTML = visible ? eyeOff : eye; input.focus();
+    });
+    wrapper.append(button);
+  }
 
   async function api(path, options = {}) {
     const headers = { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) };
@@ -151,20 +167,24 @@
     target.replaceChildren(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Memuat daftar admin…' }));
     const { admins = [] } = await api('/api/admins');
     if (!admins.length) { target.replaceChildren(Object.assign(document.createElement('p'), { className: 'muted', textContent: 'Belum ada akun admin.' })); return; }
+    const activeAdminCount = admins.filter((admin) => admin.active).length;
     target.replaceChildren(...admins.map((admin) => {
       const form = document.createElement('form'); form.className = 'panel form-grid admin-row'; form.dataset.adminId = String(admin.id);
       const heading = document.createElement('div'); heading.className = 'panel-heading full';
       const title = document.createElement('div'); const email = document.createElement('h2'); email.textContent = admin.email;
-      const status = document.createElement('p'); status.className = 'muted'; status.textContent = admin.active ? 'Aktif' : 'Dinonaktifkan';
+      const status = document.createElement('p'); status.className = 'muted'; status.id = `admin-status-${admin.id}`;
+      status.textContent = admin.active && activeAdminCount === 1 ? 'Admin aktif terakhir tidak dapat dinonaktifkan.' : admin.active ? 'Aktif' : 'Dinonaktifkan';
       title.append(email, status); heading.append(title);
       const emailLabel = document.createElement('label'); emailLabel.textContent = 'Email admin';
       const emailInput = document.createElement('input'); emailInput.name = 'email'; emailInput.type = 'email'; emailInput.required = true; emailInput.maxLength = 254; emailInput.value = admin.email; emailLabel.append(emailInput);
       form.dataset.originalEmail = admin.email;
       const passwordLabel = document.createElement('label'); passwordLabel.textContent = 'Kata sandi baru (opsional)';
-      const passwordInput = document.createElement('input'); passwordInput.name = 'password'; passwordInput.type = 'password'; passwordInput.autocomplete = 'new-password'; passwordInput.minLength = 12; passwordInput.maxLength = 256; passwordLabel.append(passwordInput);
+      const passwordInput = document.createElement('input'); passwordInput.name = 'password'; passwordInput.type = 'password'; passwordInput.autocomplete = 'new-password'; passwordInput.minLength = 12; passwordInput.maxLength = 256; passwordLabel.append(passwordInput); addPasswordToggle(passwordInput);
       const footer = document.createElement('div'); footer.className = 'form-footer full';
       const save = document.createElement('button'); save.className = 'button primary'; save.type = 'submit'; save.textContent = 'Simpan perubahan';
       const toggle = document.createElement('button'); toggle.className = `button ${admin.active ? 'danger' : 'quiet'}`; toggle.type = 'button'; toggle.dataset.active = String(admin.active); toggle.textContent = admin.active ? 'Nonaktifkan' : 'Aktifkan kembali';
+      toggle.disabled = admin.active && activeAdminCount === 1;
+      toggle.setAttribute('aria-describedby', status.id);
       footer.append(save, toggle); form.append(heading, emailLabel, passwordLabel, footer);
       return form;
     }));
@@ -276,6 +296,7 @@
     if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
   }));
 
+  $$('input[type="password"]').forEach(addPasswordToggle);
   buildDays();
   api('/api/session').then((data) => {
     if (!data.authenticated) { setAuthenticated(false); return; }

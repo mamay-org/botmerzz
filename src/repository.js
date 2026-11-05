@@ -80,7 +80,7 @@ function createRepository(pool) {
   }
   async function createAdmin({ email, passwordHash, actorId }) {
     const conn = await pool.getConnection();
-    try { await conn.beginTransaction(); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await conn.execute('SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
+    try { await conn.beginTransaction(); await conn.query('SELECT id FROM settings WHERE id=1 FOR UPDATE'); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await conn.execute('SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
     catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('ADMIN_EXISTS'), { code: 'ADMIN_EXISTS' }); throw error; } finally { conn.release(); }
   }
   async function updateAdmin(id, { email, passwordHash, active }, actorId) {
@@ -90,9 +90,9 @@ function createRepository(pool) {
       await conn.query('SELECT id FROM settings WHERE id=1 FOR UPDATE');
       const [[target]] = await conn.execute('SELECT id,email,active FROM admins WHERE id=? FOR UPDATE', [id]);
       if (!target) { await conn.rollback(); return null; }
-      if (active === false && target.active) {
-        const [[count]] = await conn.query('SELECT COUNT(*) AS total FROM admins WHERE active=TRUE');
-        if (Number(count.total) <= 1) throw Object.assign(new Error('LAST_ADMIN'), { code: 'LAST_ADMIN' });
+      if (active === false && Boolean(target.active)) {
+        const [activeAdmins] = await conn.execute('SELECT id FROM admins WHERE active=TRUE FOR UPDATE');
+        if (activeAdmins.length <= 1) throw Object.assign(new Error('LAST_ADMIN'), { code: 'LAST_ADMIN' });
       }
       const emailChanged = email !== undefined && email !== target.email;
       const passwordChanged = passwordHash !== undefined;
@@ -117,7 +117,7 @@ function createRepository(pool) {
   async function createSession({ tokenHash, adminId, csrfToken, expiresAt }) { await pool.execute('INSERT INTO sessions (token_hash,admin_id,csrf_token,expires_at) VALUES (?,?,?,?)', [tokenHash,adminId,csrfToken,expiresAt]); }
   async function getSession(tokenHash, now = new Date()) {
     const [rows] = await pool.execute('SELECT s.csrf_token,s.expires_at,a.id,a.email FROM sessions s JOIN admins a ON a.id=s.admin_id WHERE s.token_hash=? AND s.expires_at>? AND a.active=TRUE LIMIT 1', [tokenHash,now]);
-    const row=rows[0]; return row && { admin: { id: row.id,email:row.email }, csrfToken:row.csrf_token,expiresAt:row.expires_at };
+    const row=rows[0]; return row ? { admin: { id: row.id,email:row.email }, csrfToken:row.csrf_token,expiresAt:row.expires_at } : null;
   }
   async function deleteSession(tokenHash) { await pool.execute('DELETE FROM sessions WHERE token_hash=?', [tokenHash]); }
   async function deleteAdminSessions(adminId) { await pool.execute('DELETE FROM sessions WHERE admin_id=?', [adminId]); }

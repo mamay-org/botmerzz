@@ -39,6 +39,7 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.equal(await repo.getSession(sessionToken),null);
     await repo.updateAdmin(second.id,{active:false},first.id);
     await assert.rejects(repo.updateAdmin(first.id,{active:false},first.id),error=>error.code==='LAST_ADMIN');
+    assert.deepEqual((await repo.listAdmins()).filter(admin=>admin.active).map(admin=>admin.id),[first.id]);
     await pool.execute('DELETE FROM admins');
     const profileId=`test-profile-${randomUUID()}`;const accountId=`test-account-${randomUUID()}`;const eventId=randomUUID();
     await repo.setProviderTarget({accountId,profileId});
