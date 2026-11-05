@@ -1,0 +1,27 @@
+{
+  "name": "kedai-merzz-threads-automation",
+  "version": "2.0.0",
+  "description": "Staging-ready AI-powered Threads marketing automation for Kedai Merzz",
+  "main": "src/index.js",
+  "bin": {
+    "merzz-threads": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js server",
+    "migrate": "node src/cli.js migrate",
+    "admin:create": "node src/cli.js admin:create",
+    "dispatch": "node src/cli.js dispatch",
+    "test": "node --test test/*.test.js",
+    "test:integration": "node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "express": "^5.3.0",
+    "luxon": "^3.7.2",
+    "mysql2": "^3.24.6"
+  }
+}

@@ -1,0 +1,131 @@
+name: kedai-merzz-threads
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:?Copy .env.example to .env and set DB_NAME}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in .env}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
+      TZ: UTC
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    networks:
+      - backend
+    # Deliberately no host port: MySQL is reachable only by app containers.
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kedai-merzz-threads:local
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
+      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:?Set DB_NAME in .env}
+      DB_USER: ${DB_USER:?Set DB_USER in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      TEBAR_API_KEY: ${TEBAR_API_KEY:-}
+      TEBAR_PROFILE_ID: ${TEBAR_PROFILE_ID:-}
+      TEBAR_ACCOUNT_ID: ${TEBAR_ACCOUNT_ID:-}
+      TEBAR_WEBHOOK_SECRET: ${TEBAR_WEBHOOK_SECRET:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    command: ["sh", "-c", "npm run migrate && npm start"]
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3000}:${PORT:-3000}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 25s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - backend
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    image: kedai-merzz-threads:test
+    environment:
+      NODE_ENV: test
+      PORT: ${PORT:-3000}
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
+      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
+      DB_HOST: db-test
+      DB_PORT: 3306
+      DB_NAME: merzz_test
+      DB_USER: merzz_test
+      DB_PASSWORD: ${TEST_DB_PASSWORD:-test-password-only}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      TEBAR_API_KEY: ""
+      TEBAR_PROFILE_ID: ""
+      TEBAR_ACCOUNT_ID: ""
+      TEBAR_WEBHOOK_SECRET: ""
+      OPENROUTER_API_KEY: ""
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_CHAT_ID: ""
+    command: ["sh", "-c", "npm run check && npm test && npm run test:integration"]
+    depends_on:
+      db-test:
+        condition: service_healthy
+    networks:
+      - backend
+
+  db-test:
+    profiles: ["test"]
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: merzz_test
+      MYSQL_USER: merzz_test
+      MYSQL_PASSWORD: ${TEST_DB_PASSWORD:-test-password-only}
+      MYSQL_ROOT_PASSWORD: ${TEST_DB_ROOT_PASSWORD:-root-test-password-only}
+      TZ: UTC
+    volumes:
+      - mysql_test_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    networks:
+      - backend
+
+volumes:
+  mysql_data:
+  mysql_test_data:
+
+networks:
+  backend:
+    driver: bridge
