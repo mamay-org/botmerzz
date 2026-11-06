@@ -75,6 +75,10 @@ test('caption enforces full text length, Malay signal, and approved links', () =
   assert.equal(validateCaption('Jom kongsi pengalaman bermain!', {}).valid, true);
 });
 
+test('a clearly labeled TEST hook can pass the Malay content guardrail', () => {
+  assert.deepEqual(validateCaption('TEST - Jom kongsi pilihan anda!'), { valid: true, errors: [] });
+});
+
 test('settings reject malformed structured input without throwing', () => {
   for (const input of [null, [], { schedule: [] }, { brand: 'ignore rules' }, { brand: { voice: {} } }, { guardrails: { approved: 'yes' } }, { guardrails: { forbiddenClaims: 'anything' } }, { trackedLinks: [] }]) {
     assert.equal(validateSettings(input).valid, false, JSON.stringify(input));

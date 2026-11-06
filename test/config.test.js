@@ -9,6 +9,9 @@ test("database-backed runtime starts paused without provider credentials", () =>
   assert.equal(config.automationEnabled, false);
   assert.equal(config.timezone, "Asia/Kuala_Lumpur");
   assert.equal(config.intervalHours, 6);
+  assert.equal(config.schedulerEnabled, false);
+  assert.equal(config.schedulerIntervalSeconds, 60);
+  assert.equal(config.trustProxy, false);
   assert.equal(config.tebar.apiKey, undefined);
   assert.equal(config.openRouter.apiKey, undefined);
   assert.equal(config.telegram.botToken, undefined);
@@ -51,6 +54,19 @@ test("production requires an explicit HTTPS origin", () => {
 
 test("environment cannot enable automation at startup", () => {
   assert.equal(loadEnv({ ...database, AUTOMATION_ENABLED: "true" }).automationEnabled, false);
+});
+
+test("scheduler requires an explicit boolean and enforces a bounded polling interval", () => {
+  assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "true" }).schedulerEnabled, true);
+  assert.equal(loadEnv({ ...database, SCHEDULER_ENABLED: "false", SCHEDULER_INTERVAL_SECONDS: "30" }).schedulerIntervalSeconds, 30);
+  for (const extra of [{ SCHEDULER_ENABLED: "yes" }, { SCHEDULER_INTERVAL_SECONDS: "14" }, { SCHEDULER_INTERVAL_SECONDS: "3601" }]) {
+    assert.throws(() => loadEnv({ ...database, ...extra }), /Invalid configuration/);
+  }
+});
+
+test("proxy trust is explicit and boolean", () => {
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "true" }).trustProxy, true);
+  assert.throws(() => loadEnv({ ...database, TRUST_PROXY: "yes" }), /TRUST_PROXY/);
 });
 
 test("ports and connection pool limits must be bounded integers", () => {

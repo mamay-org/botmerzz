@@ -1,0 +1,85 @@
+name: ${COMPOSE_PROJECT_NAME:-botmerzz-staging}
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:?Set DB_NAME in the private VPS environment}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in the private VPS environment}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the private VPS environment}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in the private VPS environment}
+      TZ: UTC
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+    networks:
+      - backend
+
+  app:
+    image: ${APP_IMAGE:?Set APP_IMAGE to a digest-pinned or full commit-SHA GHCR reference}
+    pull_policy: always
+    command: ["node", "src/cli.js", "server"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      BASE_URL: ${BASE_URL:?Set the public HTTPS origin, without a path}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
+      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:?Set DB_NAME in the private VPS environment}
+      DB_USER: ${DB_USER:?Set DB_USER in the private VPS environment}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the private VPS environment}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      TEBAR_API_KEY: ${TEBAR_API_KEY:-}
+      TEBAR_PROFILE_ID: ${TEBAR_PROFILE_ID:-}
+      TEBAR_ACCOUNT_ID: ${TEBAR_ACCOUNT_ID:-}
+      TEBAR_WEBHOOK_SECRET: ${TEBAR_WEBHOOK_SECRET:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${HOST_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 220s
+    mem_limit: 512m
+    cpus: 1.0
+    networks:
+      - backend
+      - egress
+
+volumes:
+  mysql_data:
+
+networks:
+  backend:
+    internal: true
+  egress:
+    driver: bridge

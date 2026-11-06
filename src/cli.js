@@ -12,6 +12,7 @@ const { generatePost } = require('./content-service');
 const { createLogger } = require('./logger');
 const { createOutboxNotifier } = require('./notifications');
 const { getClickMetric } = require('./insights');
+const { createScheduler } = require('./scheduler');
 
 async function askHidden(prompt) {
   stdout.write(prompt);
@@ -92,6 +93,7 @@ async function main(argv = process.argv.slice(2)) {
     services.aiConfigured = Boolean(config.openRouter.apiKey);
     const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
     const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
+    let scheduler = null;
     services.getClickMetric = async (state) => {
       if (!tebar || !config.tebar.accountId) return { available: false, value: null, reason: 'not_configured' };
       try { return await getClickMetric({ publisher: tebar, accountId: config.tebar.accountId, timezone: state.settings?.schedule?.timezone || config.timezone }); }
@@ -108,14 +110,51 @@ async function main(argv = process.argv.slice(2)) {
       if (!tebar) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
       return pauseAutomation({ repository, publisher: tebar, notifier, accountId: config.tebar.accountId, adminId });
     };
+    if (config.schedulerEnabled) {
+      const generator = config.openRouter.apiKey ? require('./providers/openrouter').createOpenRouterClient(config.openRouter) : null;
+      scheduler = createScheduler({
+        intervalMs: config.schedulerIntervalSeconds * 1000,
+        logger,
+        run: async () => {
+          if (!tebar) return { skipped: 'tebar_not_configured' };
+          const state = await repository.getRuntimeState();
+          return runDispatcher({
+            repository,
+            publisher: tebar,
+            notifier,
+            content: generatePost,
+            contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
+            timezone: state.settings?.schedule?.timezone || config.timezone,
+            minimumIntervalHours: state.settings?.schedule?.intervalHours || config.intervalHours,
+          });
+        },
+      });
+    }
+    services.schedulerStatus = () => scheduler?.status() || {
+      enabled: false, running: false, intervalSeconds: config.schedulerIntervalSeconds,
+      lastStartedAt: null, lastCompletedAt: null, lastResult: null, lastErrorCode: null,
+    };
     const app = createServer({ config, repository, auth, services });
-    const server = app.listen(config.port, () => logger.info('server.started', { port: config.port, environment: config.nodeEnv }));
+    const server = app.listen(config.port, () => {
+      logger.info('server.started', { port: config.port, environment: config.nodeEnv, schedulerEnabled: config.schedulerEnabled });
+      if (scheduler) scheduler.start();
+    });
     let closing = false;
     const close = () => {
       if (closing) return;
       closing = true;
-      server.close(async () => { await pool.end(); process.exit(0); });
-      setTimeout(() => process.exit(1), 10000).unref();
+      const hardStop = setTimeout(() => process.exit(1), 200000).unref();
+      void scheduler?.stop();
+      server.close(async () => {
+        try {
+          await scheduler?.stop();
+          await pool.end();
+          clearTimeout(hardStop);
+          process.exit(0);
+        } catch {
+          process.exit(1);
+        }
+      });
     };
     process.once('SIGTERM', close); process.once('SIGINT', close);
   } catch (error) { await pool.end(); throw error; }

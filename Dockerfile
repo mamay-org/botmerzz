@@ -4,18 +4,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
-ENV NODE_ENV=production PORT=3000
-WORKDIR /app
-COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
-COPY --chown=node:node package.json ./
-COPY --chown=node:node src ./src
-COPY --chown=node:node public ./public
-COPY --chown=node:node migrations ./migrations
-USER node
-EXPOSE 3000
-CMD ["npm", "start"]
-
 FROM node:22-bookworm-slim AS test-dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -32,3 +20,17 @@ COPY --chown=node:node public ./public
 COPY --chown=node:node migrations ./migrations
 USER node
 CMD ["npm", "test"]
+
+# Keep the runtime image as the default build target. CI and GHCR must never
+# publish the test stage (which contains dev dependencies and runs tests).
+FROM node:22-bookworm-slim AS runtime
+ENV NODE_ENV=production PORT=3000
+WORKDIR /app
+COPY --from=dependencies --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json ./
+COPY --chown=node:node src ./src
+COPY --chown=node:node public ./public
+COPY --chown=node:node migrations ./migrations
+USER node
+EXPOSE 3000
+CMD ["npm", "start"]

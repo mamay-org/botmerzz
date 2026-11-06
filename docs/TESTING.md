@@ -6,17 +6,17 @@ Use Node.js 20.6 or newer. Install dependencies with `npm ci`, then run `npm tes
 
 ## Docker integration checks
 
-Run `docker compose up --build --wait` to start the app and MySQL. The compose health checks verify database readiness and the app's readiness endpoint. Run the test profile against its separate test-only MySQL service; it cannot modify the dashboard's local database. Database integration tests require `NODE_ENV=test`, `DB_NAME=merzz_test`, and the explicit `ALLOW_DESTRUCTIVE_DB_TESTS=true` flag because they reset test-only administrator rows and migration metadata. Never set that flag against a development or production database. The app container must report unhealthy if it cannot reach the database or migrations are unavailable.
+Run `docker compose up --build --wait` to start the app and MySQL. The compose health checks verify database readiness and the app's readiness endpoint. Run the test profile against its separate test-only MySQL service; it cannot modify the dashboard's local database. Database integration tests require `NODE_ENV=test`, `DB_NAME=merzz_test`, and the explicit `ALLOW_DESTRUCTIVE_DB_TESTS=true` flag because they reset test-only administrator rows and migration metadata. Never set that flag against a development or production database. Use a test-only Compose environment file, not a deployment `.env`.
 
 ## Required coverage
 
 - Policy: Malay text constraints, approved game/fact rendering, stale facts, all price modes, active hours and IANA timezones.
 - Auth/API: password hashing, login throttling, session rotation/expiry, CSRF and same-origin enforcement, validation and safe errors.
-- Dispatcher: concurrent claims, unique slot/idempotency key, no catch-up, pause races, generation retry, unknown provider outcome reconciliation, cancellation and summary dedupe.
+- Dispatcher: concurrent claims, unique slot/idempotency key, no catch-up, pause races, generation retry, unknown provider outcome reconciliation, cancellation and summary dedupe. Unknown outcomes without provider IDs must not be replayed and must block later posts.
 - Adapters: mock Tebar/OpenRouter/Telegram responses, redaction, malformed success responses, rate limits and network failures.
-- Database: migrations against the supported MySQL version, transaction and duplicate-claim behavior, persistence after app restart.
+- Database: migrations against the supported MySQL version, simultaneous MySQL claims with one winner, durable prepared payload/idempotency-key recovery after a fresh pool connection, and persistence after app restart.
 - Container: non-root runtime, health checks, configurable port, graceful termination, image build and restart with durable database volume.
 
 ## Live staging acceptance
 
-After automated checks pass, configure a separate Tebar staging workspace and the developer's test Threads account. Verify authorization, one end-to-end text post, webhook delivery, pause/cancel behavior and Telegram messages with non-sensitive test content. Record actual outcomes. Never use client production credentials for this test suite.
+After automated checks pass and approval is given, configure a separate Tebar staging workspace and authorized test Threads account. Verify API read authorization, one explicitly labeled text post, provider status and permalink, then confirm the post exists on the intended Threads account. Verify webhook delivery, pause/cancel behavior, scheduled-time delta and Telegram messages with non-sensitive test content. Record actual outcomes. Never use client production credentials for this test suite.

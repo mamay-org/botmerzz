@@ -4,7 +4,7 @@ const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&
 
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
-  const config=loadEnv();const pool=createPool(config);
+  const config=loadEnv();let pool=createPool(config);
   try {
     await runMigrations(pool);
     await pool.execute("DELETE FROM schema_migrations WHERE version='002_notification_outbox.sql'");
@@ -52,6 +52,14 @@ test('MySQL migrations and repository are reachable in integration environment',
     const eventKey=createHash('sha256').update(`tebar:${eventId}`).digest('hex');
     const [[queued]]=await pool.execute('SELECT COUNT(*) count FROM notification_outbox WHERE dedupe_key=?',[eventKey]);
     assert.equal(Number(queued.count),1);
+    const publishedEventId=randomUUID();const publishedPostId=`post-${randomUUID()}`;const publishedSlotId=randomUUID();
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_post_id,request_payload) VALUES (?,?,'published',?,?)",[
+      publishedSlotId,new Date(Date.now()+Math.floor(Math.random()*1000)),publishedPostId,JSON.stringify({targets:[{account_id:accountId}]}),
+    ]);
+    await repo.applyWebhookEvent({eventId:publishedEventId,payloadHash:createHash('sha256').update(publishedEventId).digest('hex'),type:'post.published',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'published'},accountId,notificationCode:'post_published'});
+    const publishedDedupeKey=createHash('sha256').update(`post_published:slot:${publishedSlotId}`).digest('hex');
+    const [[publishedNotice]]=await pool.execute('SELECT message FROM notification_outbox WHERE dedupe_key=?',[publishedDedupeKey]);
+    assert.match(publishedNotice.message,/post_published/);
     const unrelatedId=randomUUID();
     await repo.applyWebhookEvent({eventId:unrelatedId,payloadHash:createHash('sha256').update(unrelatedId).digest('hex'),type:'account.disconnected',profileId:`other-${profileId}`,data:{account:{id:accountId}},accountId,notificationCode:'account_disconnected'});
     const unrelatedKey=createHash('sha256').update(`tebar:${unrelatedId}`).digest('hex');
@@ -64,6 +72,54 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),true);
     await repo.finishDailySummary({localDate,timezone:'Asia/Kuala_Lumpur',status:'sent'});
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),false);
+
+    const [[previousSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
+    const jsonValue=(value)=>typeof value==='string'?value:JSON.stringify(value);
+    const priorSettingsJson=jsonValue(previousSettings.settings_json);
+    const priorKnowledgeJson=jsonValue(previousSettings.knowledge_json);
+    let testSlotId;
+    try {
+      const testSettings={
+        schedule:{intervalHours:6,timezone:'Asia/Kuala_Lumpur',activeDays:[1,2,3,4,5,6,7],activeStart:'00:00',activeEnd:'00:00'},
+        priceMode:'OFF',gameWhitelist:['Mobile Legends'],brand:{name:'Kedai Merzz',voice:'Santai'},
+        guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},
+        trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'},
+        targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,
+      };
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[
+        JSON.stringify(testSettings),JSON.stringify({brand:testSettings.brand,guardrails:testSettings.guardrails}),
+      ]);
+      // This is an explicitly isolated destructive-test database. Remove prior
+      // integration-run slots so their cadence cannot affect the concurrency case.
+      await pool.execute('DELETE FROM slots');
+      const scheduledAt=new Date(Date.now()-1000);
+      const due=await repo.ensureDueSlot({scheduledAt});
+      testSlotId=due.id;
+      const claims=await Promise.all([
+        repo.claimDueSlot({now:new Date(),minimumIntervalHours:6}),
+        repo.claimDueSlot({now:new Date(),minimumIntervalHours:6}),
+      ]);
+      const winners=claims.filter(Boolean);
+      assert.equal(winners.length,1,'only one concurrent database claim may win');
+      const payload={content:'scheduler persistence test',targets:[{account_id:testSettings.targetAccountId}]};
+      const idempotencyKey=`restart-${randomUUID()}`;
+      await repo.savePreparedSlot(due.id,{requestPayload:payload,idempotencyKey,caption:payload.content,pillar:'topup'});
+      await pool.execute('UPDATE slots SET claimed_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 11 MINUTE) WHERE id=?',[due.id]);
+
+      await pool.end();
+      pool=createPool(config);
+      const afterRestart=createRepository(pool);
+      const reclaimed=await afterRestart.claimDueSlot({now:new Date(),minimumIntervalHours:6});
+      assert.equal(reclaimed.id,due.id);
+      assert.equal(reclaimed.status,'ready');
+      assert.deepEqual(reclaimed.requestPayload,payload);
+      assert.equal(reclaimed.idempotencyKey,idempotencyKey);
+    } finally {
+      if (testSlotId) await pool.execute('DELETE FROM slots WHERE id=?',[testSlotId]);
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[
+        priorSettingsJson,priorKnowledgeJson,previousSettings.automation_enabled,
+      ]);
+    }
   }
   finally { await pool.end(); }
 });

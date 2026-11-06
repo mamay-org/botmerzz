@@ -92,7 +92,7 @@ const HOOK_WORDS = Object.freeze(('jom kongsi pengalaman bermain apa apakah baga
   + 'anda korang kita saya kami nak mahu suka pilih pilihan main permainan pemain kawan rakan '
   + 'bersama dengan dan atau yang untuk dalam semasa selepas sebelum waktu masa hari ini '
   + 'hujung minggu santai seronok menarik cerita pendapat cara gaya kegemaran cabaran '
-  + 'pasukan strategi belajar cuba pernah paling lebih rasa kalau tentang pula boleh '
+  + 'pasukan strategi belajar cuba pernah paling lebih rasa kalau tentang pula boleh test ujian '
   + 'anda semua ada tak mana macam mula sedia bersedia jomlah').split(' '));
 
 function composeApprovedContent(context) {

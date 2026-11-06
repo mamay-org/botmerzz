@@ -25,13 +25,15 @@ async function verifyPassword(password, encoded) {
   } catch { return false; }
 }
 
-function createAuth({ repository, clock = () => new Date(), sessionHours = 12, maxFailures = 8, windowMs = 15 * 60 * 1000 }) {
+function createAuth({ repository, clock = () => new Date(), sessionHours = 12, maxFailures = 8, maxFailuresPerIp = 40, windowMs = 15 * 60 * 1000 }) {
   if (!repository) throw new TypeError('repository is required');
   const failures = new Map();
-  function pruneFailures(nowMs) {
-    for (const [key, item] of failures) if (item.until <= nowMs) failures.delete(key);
-    while (failures.size > 10000) failures.delete(failures.keys().next().value);
+  const ipFailures = new Map();
+  function pruneMap(map, nowMs) {
+    for (const [key, item] of map) if (item.until <= nowMs) map.delete(key);
+    while (map.size > 10000) map.delete(map.keys().next().value);
   }
+  function pruneFailures(nowMs) { pruneMap(failures, nowMs); pruneMap(ipFailures, nowMs); }
   const keyFor = (email, ip) => `${String(ip || 'unknown').slice(0, 64)}:${String(email || '').toLowerCase().slice(0, 254)}`;
   return {
     async createAdmin({ email, password, actorId }) {
@@ -63,13 +65,17 @@ function createAuth({ repository, clock = () => new Date(), sessionHours = 12, m
       const now = clock();
       pruneFailures(now.getTime());
       const key = keyFor(email, ip);
+      const ipKey = String(ip || 'unknown').slice(0, 64);
       const current = failures.get(key);
-      if (current && current.until > now.getTime() && current.count >= maxFailures) throw safeError('LOGIN_RATE_LIMITED', 429);
+      const ipCurrent = ipFailures.get(ipKey);
+      if ((current && current.count >= maxFailures) || (ipCurrent && ipCurrent.count >= maxFailuresPerIp)) throw safeError('LOGIN_RATE_LIMITED', 429);
       const admin = typeof email === 'string' ? await repository.getAdminByEmail(email.trim().toLowerCase()) : null;
       const valid = await verifyPassword(password, admin?.passwordHash || DUMMY_HASH);
       if (!admin || admin.active !== true || !valid) {
         const count = current && current.until > now.getTime() ? current.count + 1 : 1;
         failures.set(key, { count, until: now.getTime() + windowMs });
+        const ipCount = ipCurrent && ipCurrent.until > now.getTime() ? ipCurrent.count + 1 : 1;
+        ipFailures.set(ipKey, { count: ipCount, until: now.getTime() + windowMs });
         throw safeError('INVALID_CREDENTIALS', 401);
       }
       failures.delete(key);

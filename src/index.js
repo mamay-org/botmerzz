@@ -6,5 +6,7 @@ const { createPool } = require('./db');
 const { runMigrations } = require('./migrate');
 const { generatePost } = require('./content-service');
 const policy = require('./policy');
+const { createScheduler } = require('./scheduler');
+const { createIpRateLimiter } = require('./rate-limit');
 
-module.exports = { createServer, createRepository, createAuth, loadEnv, createPool, runMigrations, generatePost, policy };
+module.exports = { createServer, createRepository, createAuth, loadEnv, createPool, runMigrations, generatePost, createScheduler, createIpRateLimiter, policy };
