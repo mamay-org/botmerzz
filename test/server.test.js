@@ -49,3 +49,20 @@ test('admin management requires authentication and CSRF, supports create/update,
   const changed=await request(server,'/api/admins/2',{method:'PATCH',headers:{...base,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)},body:JSON.stringify({email:'changed@example.test',password:'long enough password'})});assert.equal(changed.status,200);assert.equal(JSON.parse(changed.body).sessionRevoked,false);
   const selfChanged=await request(server,'/api/admins/1',{method:'PATCH',headers:{...base,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)},body:JSON.stringify({email:'one-updated@example.test'})});assert.equal(selfChanged.status,200);assert.equal(JSON.parse(selfChanged.body).sessionRevoked,true);assert.match(selfChanged.headers['set-cookie'][0],/Max-Age=0/);
 });
+
+test('template API is authenticated, CSRF-protected, structured and rejects dynamic product facts',async t=>{
+  const templates=[];const calls=[];const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={getSettings:async()=>({gameWhitelist:['Mobile Legends']}),listTemplates:async()=>templates,getTemplate:async id=>templates.find(item=>item.id===id)||null,createTemplate:async input=>{calls.push(['create',input]);const item={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};templates.push(item);return item;},updateTemplate:async(id,patch)=>{calls.push(['update',id,patch]);const item=templates.find(entry=>entry.id===id);Object.assign(item,patch);return item;},deleteTemplate:async(id,actorId)=>{calls.push(['delete',id,actorId]);return templates.some(item=>item.id===id);}};
+  const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
+  const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const cookie=`${require('../src/server').COOKIE}=${'x'.repeat(43)}`;const headers={cookie,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
+  assert.equal((await request(server,'/api/templates')).status,401);assert.equal((await request(server,'/api/templates',{headers:{cookie}})).status,200);
+  const noCsrf=await request(server,'/api/templates',{method:'POST',headers:{cookie,origin:config.baseUrl},body:JSON.stringify({name:'ML Top-up',category:'topup',data:{game:'Mobile Legends'}})});assert.equal(noCsrf.status,403);
+  const unknownGame=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Game Lain',category:'topup',data:{game:'PUBG Mobile',denomination:'400 diamonds'}})});assert.equal(unknownGame.status,400);assert.equal(JSON.parse(unknownGame.body).error,'GAME_NOT_WHITELISTED');
+  const dynamicFact=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'ML Top-up',category:'topup',data:{game:'Mobile Legends',denomination:'400 diamonds',price:'MYR 30'}})});assert.equal(dynamicFact.status,400);
+  const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Gaya santai',category:'brand',data:{voice:'Ramah dan santai',guardrailsApproved:true}})});assert.equal(created.status,400);
+  const valid=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Top-up ML',category:'topup',data:{game:'Mobile Legends',denomination:'400 diamonds'}})});assert.equal(valid.status,201);assert.deepEqual(calls[0][1].data,{game:'Mobile Legends',denomination:'400 diamonds'});
+  const id=JSON.parse(valid.body).template.id;
+  const changed=await request(server,`/api/templates/${id}`,{method:'PATCH',headers,body:JSON.stringify({name:'Top-up ML 400'})});assert.equal(changed.status,200);assert.equal(JSON.parse(changed.body).template.name,'Top-up ML 400');
+  const deleted=await request(server,`/api/templates/${id}`,{method:'DELETE',headers});assert.equal(deleted.status,200,deleted.body);assert.equal(JSON.parse(deleted.body).deleted,true);
+});

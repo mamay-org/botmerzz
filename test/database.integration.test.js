@@ -29,6 +29,11 @@ test('MySQL migrations and repository are reachable in integration environment',
     const first=await repo.createAdmin({email:`first-${randomUUID()}@example.test`,passwordHash:await hashPassword('first secure password')});
     const second=await repo.createAdmin({email:`second-${randomUUID()}@example.test`,passwordHash:await hashPassword('second secure password'),actorId:first.id});
     assert.equal((await repo.listAdmins()).length,2);
+    const savedTemplate=await repo.createTemplate({name:`Account-${randomUUID()}`,category:'account',data:{attributes:['Rank Mythic']},actorId:first.id});
+    assert.deepEqual((await repo.listTemplates()).find(item=>item.id===savedTemplate.id).data,{attributes:['Rank Mythic']});
+    assert.equal((await repo.updateTemplate(savedTemplate.id,{name:`Updated-${randomUUID()}`,actorId:second.id})).updatedBy,second.id);
+    assert.equal(await repo.deleteTemplate(savedTemplate.id,first.id),true);
+    assert.equal(await repo.getTemplate(savedTemplate.id),null);
     const sessionToken=randomUUID().replaceAll('-','').padEnd(64,'a').slice(0,64);
     await repo.createSession({tokenHash:sessionToken,adminId:second.id,csrfToken:'c'.repeat(64),expiresAt:new Date(Date.now()+3600000)});
     const unchanged=await repo.updateAdmin(second.id,{email:second.email},first.id);

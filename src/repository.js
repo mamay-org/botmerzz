@@ -78,6 +78,55 @@ function createRepository(pool) {
     const [rows] = await pool.execute('SELECT id,email,active,created_at FROM admins ORDER BY created_at,id');
     return rows.map((row) => ({ id: Number(row.id), email: row.email, active: Boolean(row.active), createdAt: row.created_at }));
   }
+  function mapTemplate(row) {
+    return { id: row.id, name: row.name, category: row.category, data: json(row.data_json), createdBy: row.created_by == null ? null : Number(row.created_by), updatedBy: row.updated_by == null ? null : Number(row.updated_by), createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  async function listTemplates() {
+    const [rows] = await pool.execute('SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates ORDER BY category,name');
+    return rows.map(mapTemplate);
+  }
+  async function getTemplate(id) {
+    const [rows] = await pool.execute('SELECT id,name,category,data_json,created_by,updated_by,created_at,updated_at FROM templates WHERE id=?', [id]);
+    return rows[0] ? mapTemplate(rows[0]) : null;
+  }
+  async function createTemplate({ name, category, data, actorId }) {
+    const id = randomUUID(); const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.execute('INSERT INTO templates (id,name,category,data_json,created_by,updated_by) VALUES (?,?,?,?,?,?)', [id,name,category,JSON.stringify(data),actorId,actorId]);
+      await audit(conn, actorId, 'template.created', { templateId:id, name, category });
+      await conn.commit();
+      return await getTemplate(id);
+    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
+    finally { conn.release(); }
+  }
+  async function updateTemplate(id, { name, data, actorId }) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[existing]] = await conn.execute('SELECT name,category,data_json FROM templates WHERE id=? FOR UPDATE', [id]);
+      if (!existing) { await conn.rollback(); return null; }
+      const nextName = name === undefined ? existing.name : name;
+      const nextData = data === undefined ? json(existing.data_json) : data;
+      await conn.execute('UPDATE templates SET name=?,data_json=?,updated_by=? WHERE id=?', [nextName,JSON.stringify(nextData),actorId,id]);
+      await audit(conn, actorId, 'template.updated', { templateId:id, name:nextName, category:existing.category });
+      await conn.commit();
+      return await getTemplate(id);
+    } catch (error) { await conn.rollback(); if (error.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('TEMPLATE_EXISTS'), { code:'TEMPLATE_EXISTS' }); throw error; }
+    finally { conn.release(); }
+  }
+  async function deleteTemplate(id, actorId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[existing]] = await conn.execute('SELECT name,category FROM templates WHERE id=? FOR UPDATE', [id]);
+      if (!existing) { await conn.rollback(); return false; }
+      await conn.execute('DELETE FROM templates WHERE id=?', [id]);
+      await audit(conn, actorId, 'template.deleted', { templateId:id, name:existing.name, category:existing.category });
+      await conn.commit(); return true;
+    } catch (error) { await conn.rollback(); throw error; }
+    finally { conn.release(); }
+  }
   async function createAdmin({ email, passwordHash, actorId }) {
     const conn = await pool.getConnection();
     try { await conn.beginTransaction(); await conn.query('SELECT id FROM settings WHERE id=1 FOR UPDATE'); await conn.execute('INSERT INTO admins (email,password_hash,active) VALUES (?,?,TRUE)', [email,passwordHash]); const [rows] = await conn.execute('SELECT id,email,active,created_at FROM admins WHERE email=?', [email]); await audit(conn, actorId, 'admin.created', { targetAdminId: Number(rows[0].id), email }); await conn.commit(); return { ...rows[0], id: Number(rows[0].id), active: Boolean(rows[0].active), createdAt: rows[0].created_at }; }
@@ -237,7 +286,7 @@ function createRepository(pool) {
   async function getDailySummary({localDate,timezone}) { const counts=await getDailySummaryCounts(localDate,timezone);return {published:counts.published||0,failed:counts.failed||0,skipped:counts.skipped||0}; }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await pool.execute('SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,listAdmins,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};

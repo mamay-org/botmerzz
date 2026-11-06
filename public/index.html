@@ -52,6 +52,7 @@
 
       <nav class="tabs" aria-label="Bagian dashboard">
         <button class="tab active" data-tab="content">Konten & brand</button>
+        <button class="tab" data-tab="templates">Template</button>
         <button class="tab" data-tab="schedule">Jadwal</button>
         <button class="tab" data-tab="facts">Produk & informasi</button>
         <button class="tab" data-tab="activity">Riwayat & catatan</button>
@@ -70,8 +71,16 @@
           <label class="full">Klaim yang dilarang <span class="field-hint">Satu frasa per baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% aman"></textarea></label>
           <label class="full">Klaim yang disetujui <span class="field-hint">Satu frasa per baris; klaim harus didukung informasi yang benar</span><textarea name="approvedClaims" rows="3" maxlength="3000"></textarea></label>
           <label class="check-row full"><input name="guardrailsApproved" type="checkbox"><span>Batasan AI ini sudah ditinjau dan disetujui klien</span></label>
-          <div class="form-footer full"><span class="muted">Jangan masukkan kata sandi, token, atau data pelanggan di sini.</span><button class="button primary" type="submit">Simpan panduan</button></div>
+          <div class="form-footer full"><span class="muted">Jangan masukkan kata sandi, token, atau data pelanggan di sini.</span><div class="form-actions"><button class="button quiet" type="button" data-save-template="brand">Simpan sebagai template</button><button class="button primary" type="submit">Simpan panduan</button></div></div>
         </form>
+      </section>
+
+      <section id="tab-templates" class="tab-panel">
+        <div class="panel template-intro"><p class="eyebrow">PANDUAN SIAP PAKAI</p><h2>Template konten dan produk</h2><p class="muted">Pilih template untuk mengisi form. Periksa dan sesuaikan isinya, lalu simpan dari form terkait. Template tidak menyimpan harga atau stok.</p></div>
+        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">GAYA BAWAAN</p><h2>Gaya komunikasi</h2><p class="muted">Template bawaan hanya mengubah gaya komunikasi.</p></div></div><div id="builtin-template-list" class="template-grid"></div></section>
+        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">KONTEN & BRAND</p><h2>Template panduan tersimpan</h2><p class="muted">Dapat digunakan dan dikelola semua admin.</p></div></div><div id="brand-template-list" class="template-grid"></div></section>
+        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">TOP-UP</p><h2>Template produk top-up</h2><p class="muted">Game harus berasal dari whitelist. Harga dan ketersediaan diisi langsung di form produk.</p></div></div><div id="topup-template-list" class="template-grid"></div></section>
+        <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Template atribut akun</h2><p class="muted">Hanya menyimpan atribut akun yang telah disetujui, tanpa harga dan ketersediaan.</p></div></div><div id="account-template-list" class="template-grid"></div></section>
       </section>
 
       <section id="tab-schedule" class="tab-panel">
@@ -97,14 +106,14 @@
             <label>Ringkasan nominal<input name="denomination" maxlength="120" placeholder="400 Diamond"></label>
             <label>Harga MYR<input name="price" inputmode="decimal" maxlength="12" placeholder="30.00"></label>
             <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Tersedia"></label>
-            <p class="fact-updated" data-updated>Belum diperbarui</p><button class="button primary" type="submit">Simpan info top-up</button>
+            <p class="fact-updated" data-updated>Belum diperbarui</p><div class="form-actions"><button class="button quiet" type="button" data-save-template="topup">Simpan sebagai template</button><button class="button primary" type="submit">Simpan info top-up</button></div>
           </form>
           <form id="fact-account-form" class="panel stack fact-form" data-service="account">
             <div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Ringkasan layanan</h2><p class="muted">Hanya harga, ketersediaan, dan atribut yang disetujui klien.</p></div>
             <label>Harga MYR<input name="price" inputmode="decimal" maxlength="12" placeholder=""></label>
             <label>Ketersediaan<input name="availability" maxlength="120" placeholder="Hubungi kami untuk pilihan terkini"></label>
             <label>Atribut yang disetujui <span class="field-hint">Satu atribut per baris</span><textarea name="attributes" rows="3" maxlength="1000" placeholder="Rank atau skin yang sudah diverifikasi"></textarea></label>
-            <p class="fact-updated" data-updated>Belum diperbarui</p><button class="button primary" type="submit">Simpan info akun</button>
+            <p class="fact-updated" data-updated>Belum diperbarui</p><div class="form-actions"><button class="button quiet" type="button" data-save-template="account">Simpan sebagai template</button><button class="button primary" type="submit">Simpan info akun</button></div>
           </form>
         </div>
       </section>
@@ -122,6 +131,15 @@
         </form>
         <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AKUN ADMIN</p><h2>Kelola akun</h2></div><button id="admins-refresh-button" class="button quiet" type="button">Muat ulang</button></div><div id="admin-list" class="admin-list"></div></section>
       </section>
+      <dialog id="template-dialog" class="template-dialog" aria-labelledby="template-dialog-title">
+        <form id="template-dialog-form" class="stack">
+          <div><p class="eyebrow">TEMPLATE KUSTOM</p><h2 id="template-dialog-title">Simpan template</h2><p class="muted">Template dibagikan kepada semua admin. Kolom persetujuan guardrail tidak ikut disalin.</p></div>
+          <label>Nama template<input name="templateName" maxlength="80" required></label>
+          <div id="template-editor-fields" class="template-editor-fields"></div>
+          <div id="template-dialog-error" class="notice error" role="alert" hidden></div>
+          <div class="form-actions"><button id="template-dialog-cancel" class="button quiet" type="button">Batal</button><button class="button primary" type="submit">Simpan template</button></div>
+        </form>
+      </dialog>
       <footer class="footer">Lingkungan pengembangan / staging · Tidak terhubung ke akun production klien</footer>
     </section>
   </main>

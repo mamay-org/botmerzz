@@ -97,6 +97,14 @@ test("new database sessions set server timestamps to UTC before application quer
   }
 });
 
+test("template migration stores shared structured templates with admin audit references", async () => {
+  const sql = await fs.readFile(require.resolve('../migrations/004_templates.sql'),'utf8');
+  assert.match(sql,/CREATE TABLE IF NOT EXISTS templates/);
+  assert.match(sql,/data_json JSON NOT NULL/);
+  assert.match(sql,/category IN \('brand','topup','account'\)/);
+  assert.match(sql,/FOREIGN KEY \(created_by\) REFERENCES admins\(id\)/);
+});
+
 test("failed lock cleanup discards the connection instead of returning a held lock to the pool", async () => {
   const pool = fakePool({ unlockFails: true });
   await require("../src/migrate").runMigrations(pool);

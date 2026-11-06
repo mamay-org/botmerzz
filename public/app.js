@@ -3,7 +3,14 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const days = [[1, 'Sen'], [2, 'Sel'], [3, 'Rab'], [4, 'Kam'], [5, 'Jum'], [6, 'Sab'], [7, 'Min']];
-  const state = { csrf: '', data: null };
+  const state = { csrf: '', data: null, templates: [] };
+  let templateDialogState = null;
+  const builtinVoiceTemplates = [
+    { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
+    { id: 'voice-community', name: 'Santai-komunitas', description: 'Terasa seperti ngobrol dengan sesama pemain.', voice: 'Santai dan akrab seperti komunitas gamer Malaysia. Ajak interaksi dengan pertanyaan ringan, tanpa memaksa dan tanpa klaim produk yang tidak terverifikasi. Tulis dalam bahasa Melayu Malaysia.' },
+    { id: 'voice-concise', name: 'Ringkas-promosional', description: 'Pesan padat dengan CTA wajar, tanpa membuat promo.', voice: 'Ringkas, jelas, dan berorientasi informasi layanan. Gunakan ajakan bertindak yang wajar; jangan mengarang diskon, urgensi, harga, stok, atau promosi. Tulis dalam bahasa Melayu Malaysia.' },
+    { id: 'voice-educational', name: 'Edukatif-fokus kepercayaan', description: 'Bantu pelanggan memahami hal yang perlu diperiksa.', voice: 'Edukatif dan membangun kepercayaan. Jelaskan pertimbangan pembelian secara netral, akui batas informasi, hindari jaminan keamanan atau hasil yang tidak disetujui. Tulis dalam bahasa Melayu Malaysia.' },
+  ];
   const escapeText = (value) => String(value ?? '');
   const show = (selector, text) => { const el = $(selector); el.textContent = text; el.hidden = false; };
   const hide = (selector) => { $(selector).hidden = true; };
@@ -12,6 +19,9 @@
     ADMIN_EXISTS: 'Email tersebut sudah digunakan oleh akun admin lain.', LAST_ADMIN: 'Admin aktif terakhir tidak dapat dinonaktifkan.',
     CANNOT_DEACTIVATE_SELF: 'Anda tidak dapat menonaktifkan akun yang sedang digunakan.', ADMIN_NOT_FOUND: 'Akun admin tidak ditemukan.',
     INVALID_ADMIN: 'Data akun admin tidak valid.', EMPTY_ADMIN_UPDATE: 'Tidak ada perubahan untuk disimpan.',
+    INVALID_TEMPLATE: 'Data template tidak valid.', INVALID_TEMPLATE_DATA: 'Isi template tidak sesuai dengan jenisnya.',
+    TEMPLATE_EXISTS: 'Nama template tersebut sudah digunakan pada kategori ini.', TEMPLATE_NOT_FOUND: 'Template tidak ditemukan.',
+    GAME_NOT_WHITELISTED: 'Game harus lebih dulu disetujui di whitelist Konten & brand.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
   };
   const errorText = (error) => errors[error?.message] || error?.message || 'Permintaan gagal. Silakan coba lagi.';
@@ -120,6 +130,131 @@
       const updated = state.data?.facts?.[service]?.updatedAt;
       $('[data-updated]', form).textContent = updated ? `Diperbarui ${new Date(updated).toLocaleString('id-ID')}` : 'Belum diperbarui';
     }
+  }
+
+  function templateDataFromForm(category) {
+    if (category === 'brand') return {
+      brandName: value($('#content-form'), 'brandName'), voice: value($('#content-form'), 'voice'),
+      audienceNotes: value($('#content-form'), 'audienceNotes'), gameWhitelist: lines(value($('#content-form'), 'gameWhitelist')),
+      trackedTopup: value($('#content-form'), 'trackedTopup'), trackedAccount: value($('#content-form'), 'trackedAccount'),
+      forbiddenClaims: lines(value($('#content-form'), 'forbiddenClaims')), approvedClaims: lines(value($('#content-form'), 'approvedClaims')),
+    };
+    if (category === 'topup') return { game: value($('#fact-topup-form'), 'game').trim(), denomination: value($('#fact-topup-form'), 'denomination').trim() };
+    return { attributes: lines(value($('#fact-account-form'), 'attributes')) };
+  }
+
+  function savedGameWhitelist() { return state.data?.settings?.gameWhitelist || []; }
+
+  function applyTemplate(template) {
+    if (template.category === 'brand') {
+      const data = template.data || {};
+      setFormValues($('#content-form'), {
+        brandName: data.brandName, voice: data.voice, audienceNotes: data.audienceNotes,
+        gameWhitelist: (data.gameWhitelist || []).join('\n'), trackedTopup: data.trackedTopup, trackedAccount: data.trackedAccount,
+        forbiddenClaims: (data.forbiddenClaims || []).join('\n'), approvedClaims: (data.approvedClaims || []).join('\n'), guardrailsApproved: false,
+      });
+      show('#global-success', 'Template diterapkan ke form Konten & brand. Periksa lalu simpan panduan.');
+      activateTab('content'); $('#content-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (template.category === 'topup') {
+      if (!savedGameWhitelist().includes(template.data?.game)) { show('#global-error', 'Template tidak diterapkan. Simpan game tersebut di whitelist Konten & brand terlebih dahulu.'); return; }
+      setFormValues($('#fact-topup-form'), { game: template.data.game, denomination: template.data.denomination });
+      show('#global-success', 'Template diterapkan ke form Top-up. Lengkapi harga dan ketersediaan, lalu simpan.');
+      activateTab('facts'); $('#fact-topup-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    setFormValues($('#fact-account-form'), { attributes: (template.data?.attributes || []).join('\n') });
+    show('#global-success', 'Template diterapkan ke form atribut akun. Lengkapi harga dan ketersediaan, lalu simpan.');
+    activateTab('facts'); $('#fact-account-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderTemplateCards(target, templates, emptyText) {
+    const container = $(target);
+    if (!templates.length) { container.replaceChildren(Object.assign(document.createElement('p'), { className: 'muted template-empty', textContent: emptyText })); return; }
+    container.replaceChildren(...templates.map((template) => {
+      const card = document.createElement('article'); card.className = 'template-card';
+      const title = document.createElement('h3'); title.textContent = template.name;
+      const detail = document.createElement('p'); detail.className = 'muted';
+      detail.textContent = template.category === 'brand' ? 'Panduan konten dan brand' : template.category === 'topup' ? `${template.data?.game || 'Game'} · ${template.data?.denomination || 'Nominal'}` : `${(template.data?.attributes || []).length} atribut akun`;
+      const actions = document.createElement('div'); actions.className = 'template-card-actions';
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; apply.textContent = 'Terapkan'; apply.addEventListener('click', () => applyTemplate(template));
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'button quiet'; edit.textContent = 'Ubah'; edit.addEventListener('click', () => openTemplateDialog({ mode: 'edit', ...template }));
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button danger'; remove.textContent = 'Hapus'; remove.addEventListener('click', async () => {
+        if (!window.confirm(`Hapus template “${template.name}”?`)) return;
+        try { await api(`/api/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); await loadTemplates(); show('#global-success', 'Template berhasil dihapus.'); }
+        catch (error) { show('#global-error', errorText(error)); }
+      });
+      actions.append(apply, edit, remove); card.append(title, detail, actions); return card;
+    }));
+  }
+
+  async function loadTemplates() {
+    for (const id of ['#brand-template-list', '#topup-template-list', '#account-template-list']) $(id).replaceChildren(Object.assign(document.createElement('p'), { className: 'muted template-empty', textContent: 'Memuat template…' }));
+    const result = await api('/api/templates'); state.templates = result.templates || [];
+    renderTemplateCards('#brand-template-list', state.templates.filter((item) => item.category === 'brand'), 'Belum ada template konten & brand. Simpan dari form Konten & brand.');
+    renderTemplateCards('#topup-template-list', state.templates.filter((item) => item.category === 'topup'), 'Belum ada template top-up. Simpan dari form Produk & informasi.');
+    renderTemplateCards('#account-template-list', state.templates.filter((item) => item.category === 'account'), 'Belum ada template atribut akun. Simpan dari form Produk & informasi.');
+  }
+
+  function renderBuiltinTemplates() {
+    const target = $('#builtin-template-list');
+    target.replaceChildren(...builtinVoiceTemplates.map((template) => {
+      const card = document.createElement('article'); card.className = 'template-card builtin-template';
+      const title = document.createElement('h3'); title.textContent = template.name;
+      const detail = document.createElement('p'); detail.className = 'muted'; detail.textContent = template.description;
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; apply.textContent = 'Gunakan gaya ini';
+      apply.addEventListener('click', () => { $('#content-form').elements.voice.value = template.voice; activateTab('content'); $('#content-form').elements.voice.scrollIntoView({ behavior: 'smooth', block: 'center' }); show('#global-success', 'Gaya komunikasi diterapkan. Periksa lalu simpan panduan.'); });
+      card.append(title, detail, apply); return card;
+    }));
+  }
+
+  function editorControl(labelText, name, val, { multiline = false, options = null, hint = '' } = {}) {
+    const label = document.createElement('label'); label.append(document.createTextNode(labelText));
+    if (hint) { const note = document.createElement('span'); note.className = 'field-hint'; note.textContent = hint; label.append(note); }
+    const field = document.createElement(multiline ? 'textarea' : options ? 'select' : 'input'); field.name = name; field.value = Array.isArray(val) ? val.join('\n') : val || '';
+    if (multiline) field.rows = 3;
+    if (options) {
+      field.replaceChildren(...options.map((item) => { const option = document.createElement('option'); option.value = item; option.textContent = item; return option; }));
+      field.value = val && options.includes(val) ? val : '';
+    }
+    label.append(field); return label;
+  }
+
+  function openTemplateDialog({ mode, id = null, category, name = '', data = {} }) {
+    templateDialogState = { mode, id, category };
+    $('#template-dialog-title').textContent = mode === 'edit' ? 'Ubah template' : 'Simpan template';
+    const form = $('#template-dialog-form'); form.elements.templateName.value = name;
+    const fields = $('#template-editor-fields'); fields.replaceChildren();
+    if (category === 'brand') fields.append(
+      editorControl('Nama brand', 'brandName', data.brandName), editorControl('Gaya komunikasi', 'voice', data.voice),
+      editorControl('Wawasan pelanggan', 'audienceNotes', data.audienceNotes, { multiline: true }),
+      editorControl('Game top-up dalam whitelist', 'gameWhitelist', data.gameWhitelist, { multiline: true, hint: 'Simpan hanya game yang sudah ada di whitelist.' }),
+      editorControl('Tautan top-up', 'trackedTopup', data.trackedTopup), editorControl('Tautan akun', 'trackedAccount', data.trackedAccount),
+      editorControl('Klaim dilarang', 'forbiddenClaims', data.forbiddenClaims, { multiline: true }), editorControl('Klaim disetujui', 'approvedClaims', data.approvedClaims, { multiline: true }),
+    );
+    else if (category === 'topup') fields.append(
+      editorControl('Game', 'game', data.game, { options: savedGameWhitelist() }),
+      editorControl('Ringkasan nominal', 'denomination', data.denomination),
+    );
+    else fields.append(editorControl('Atribut akun', 'attributes', data.attributes, { multiline: true, hint: 'Satu atribut yang telah disetujui per baris.' }));
+    hide('#template-dialog-error'); $('#template-dialog').showModal();
+  }
+
+  function readTemplateEditor(category) {
+    const form = $('#template-dialog-form'); const val = (name) => new FormData(form).get(name) || '';
+    if (category === 'brand') return {
+      brandName: val('brandName'), voice: val('voice'), audienceNotes: val('audienceNotes'), gameWhitelist: lines(val('gameWhitelist')),
+      trackedTopup: val('trackedTopup'), trackedAccount: val('trackedAccount'), forbiddenClaims: lines(val('forbiddenClaims')), approvedClaims: lines(val('approvedClaims')),
+    };
+    if (category === 'topup') return { game: val('game'), denomination: val('denomination') };
+    return { attributes: lines(val('attributes')) };
+  }
+
+  function activateTab(name) {
+    const button = $(`.tab[data-tab="${name}"]`);
+    $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
+    $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${name}`));
   }
 
   function renderOnboarding(items = []) {
@@ -250,6 +385,24 @@
   });
   $('#admins-refresh-button').addEventListener('click', () => loadAdmins().catch((error) => show('#global-error', errorText(error))));
 
+  $$('[data-save-template]').forEach((button) => button.addEventListener('click', () => {
+    const category = button.dataset.saveTemplate;
+    const data = templateDataFromForm(category);
+    if (category === 'topup' && !savedGameWhitelist().includes(data.game)) { show('#global-error', 'Game perlu disimpan di whitelist Konten & brand terlebih dahulu.'); return; }
+    openTemplateDialog({ mode: 'create', category, data });
+  }));
+  $('#template-dialog-cancel').addEventListener('click', () => $('#template-dialog').close());
+  $('#template-dialog-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); hide('#template-dialog-error');
+    const form = event.currentTarget; const name = value(form, 'templateName').trim();
+    const payload = { name, data: readTemplateEditor(templateDialogState.category) };
+    try {
+      if (templateDialogState.mode === 'edit') await api(`/api/templates/${encodeURIComponent(templateDialogState.id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      else await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...payload, category: templateDialogState.category }) });
+      $('#template-dialog').close(); await loadTemplates(); show('#global-success', templateDialogState.mode === 'edit' ? 'Template diperbarui.' : 'Template disimpan dan dibagikan kepada semua admin.');
+    } catch (error) { show('#template-dialog-error', errorText(error)); }
+  });
+
   $('#content-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget;
     const settings = state.data.settings || {};
@@ -294,8 +447,10 @@
     $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
     $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${button.dataset.tab}`));
     if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
+    if (button.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
   }));
 
+  renderBuiltinTemplates();
   $$('input[type="password"]').forEach(addPasswordToggle);
   buildDays();
   api('/api/session').then((data) => {
