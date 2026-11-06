@@ -119,7 +119,7 @@ jobs:
           target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
           app_dir=/opt/botmerzz-staging
           [[ "${GITHUB_RUN_ID}" =~ ^[0-9]+$ ]]
-          auth_dir="/run/botmerzz-ghcr-${GITHUB_RUN_ID}"
+          auth_dir="${app_dir}/.ghcr-auth-${GITHUB_RUN_ID}"
           remote_compose="${app_dir}/compose.vps.yaml.next.${GITHUB_RUN_ID}"
           remote_script="${app_dir}/deploy-staging.sh.next.${GITHUB_RUN_ID}"
           ssh_args=(-i "${HOME}/.ssh/botmerzz-staging" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts")

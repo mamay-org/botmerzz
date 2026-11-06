@@ -23,7 +23,7 @@ image_ref="${2:-}"
   echo 'Invalid incoming deployment script path.' >&2
   exit 2
 }
-if [[ ! "${DOCKER_CONFIG:-}" =~ ^/run/botmerzz-ghcr-[0-9]+$ ]]; then
+if [[ ! "${DOCKER_CONFIG:-}" =~ ^/opt/botmerzz-staging/\.ghcr-auth-[0-9]+$ ]]; then
   echo 'Temporary GHCR Docker config is missing or has an invalid path.' >&2
   exit 2
 fi
