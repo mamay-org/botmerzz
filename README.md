@@ -1,6 +1,6 @@
 # Kedai Merzz Threads Automation
 
-An MVP dashboard and one-shot publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions and publish history in MySQL; OpenRouter generates a constrained conversation hook, while the application composes approved product facts and links. Tebar is the publishing adapter. Automation is off by default.
+An MVP dashboard and scheduled publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions and publish history in MySQL; OpenRouter generates a constrained conversation hook, while the application composes approved product facts and links. Tebar is the publishing adapter. Automation and the in-process scheduler are off by default.
 
 ## Run locally with Docker
 
@@ -55,19 +55,19 @@ See [.env.example](.env.example) for database, port, timezone and optional provi
 - `npm start` — run the dashboard server.
 - `npm run migrate` — apply versioned MySQL migrations.
 - `npm run admin:create` — create the first administrator with hidden password input. Authenticated admins can add, update, or deactivate other accounts from the Admin dashboard tab; password changes revoke all active sessions for that account.
-- `npm run dispatch` — process one due slot and exit; invoke from a scheduler/cron, not as a persistent worker.
+- `npm run dispatch` — process one due slot and exit for safe manual or cron invocation.
 - `npm test` — run unit and HTTP tests.
 - `npm run test:integration` — run database-backed integration checks when DB settings are present.
 
 ## Architecture
 
-The Express dashboard and one-shot dispatcher use the same MySQL repository. Domain policy and content generation are isolated from the Tebar, OpenRouter and Telegram adapters. The dispatcher persists exact post payloads and idempotency keys before publishing, atomically claims slots, and reconciles uncertain outcomes without blindly sending duplicates. Telegram delivery uses a durable outbox with deduplication and retries. Emergency pause disables new claims before attempting provider cancellation.
+The Express dashboard and dispatcher use the same MySQL repository. When `SCHEDULER_ENABLED=true`, the server polls for due work every minute by default; the database persists slots and serializes claims across restarts or concurrent processes. Domain policy and content generation are isolated from the Tebar, OpenRouter and Telegram adapters. The dispatcher persists exact post payloads and idempotency keys before publishing, and fails closed on an uncertain provider outcome until an operator reconciles it. Telegram delivery uses a durable outbox with deduplication and retries. Emergency pause disables new claims before attempting provider cancellation.
 
 See [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), [Docker workflow](docs/DOCKER.md), [deployment](docs/DEPLOYMENT.md), and [operations](docs/OPERATIONS.md).
 
 ## CI/CD and VPS
 
-GitHub Actions runs dependency audit, syntax checks, unit/integration tests against MySQL, and Docker build validation. After a successful CI run on `main`, a separate workflow publishes the tested commit to GHCR using its full commit SHA plus a moving `main` tag. Deploy the same immutable SHA image to staging and production when the VPS is configured.
+GitHub Actions runs dependency audit, syntax checks, unit/integration tests against MySQL, and Docker build validation. After a successful CI run on `main`, a separate workflow publishes the tested commit to GHCR using its full commit SHA plus a moving `main` tag, and records the content digest in the workflow summary. Prefer that digest in `APP_IMAGE` when deploying; use the full commit-SHA tag as the versioned fallback.
 
 No VPS deployment workflow is enabled. Host, SSH credentials, TLS/ingress, backup destination and monitoring have not been configured. Follow [deployment and rollback](docs/DEPLOYMENT.md) after those decisions are made; do not put production secrets in GitHub workflow files.
 
@@ -76,4 +76,4 @@ No VPS deployment workflow is enabled. Host, SSH credentials, TLS/ingress, backu
 - MVP posts text only; social listening, media generation, live inventory integration, website analytics and multi-admin roles are deferred.
 - Staging credentials and a test Threads account are needed for a live provider acceptance test. Automated tests use mocks.
 - Profile-visit metrics are not available from the documented Threads insights adapter; the dashboard shows Tebar's 30-day account click total when statistics permission and data are available.
-- Confirm the chosen VPS scheduler frequency before promising exact posting time. The dispatcher itself is finite and safe to invoke repeatedly.
+- The VPS Compose template keeps the scheduler disabled until explicitly enabled. Its one-minute polling interval is separate from the six-hour minimum business cadence; slots outside the allowed day/time window are skipped without catch-up.

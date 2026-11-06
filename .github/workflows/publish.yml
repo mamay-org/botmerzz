@@ -30,16 +30,27 @@ jobs:
         id: image
         shell: bash
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-      - name: Build and publish immutable SHA image
+      - name: Build and publish commit-SHA image
+        id: publish
         uses: docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991 # v6
         with:
           context: .
+          target: runtime
           push: true
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.event.workflow_run.head_sha }}
             ${{ steps.image.outputs.name }}:main
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Record pinned image reference
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "Commit: ${COMMIT_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA tag: ${IMAGE_NAME}:${COMMIT_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest-pinned image: ${IMAGE_NAME}@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
 
 # VPS deployment is intentionally not configured. Add a separately reviewed
 # workflow_dispatch deployment after VPS credentials, staging, and rollback are approved.

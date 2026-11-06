@@ -6,9 +6,11 @@ On a fresh checkout, copy `.env.example` to `.env`, set unique local MySQL crede
 
 ## VPS preparation
 
-Use the same immutable GHCR image digest/tag in staging and production. Install Docker Engine and the Compose plugin, configure a private `.env` on the VPS with restrictive file permissions, and keep database data in a named volume or managed database with tested backups. Put HTTPS termination and access controls in front of the app. Do not expose MySQL to the public network. Run migrations as a one-off deployment step before replacing the app container; take a backup first when a migration changes or removes data.
+Use `compose.vps.yaml` with the immutable GHCR commit-SHA image published after CI. Install Docker Engine and the Compose plugin, configure a private environment file on the VPS with mode `0600`, and keep database data in a named volume with tested backups. Set a unique `COMPOSE_PROJECT_NAME`, database credentials and `BASE_URL` for each environment. The app binds to loopback; put HTTPS termination and access controls in front of it. The database is on an internal Compose network with no host port. The CLI applies restart-safe migrations under an advisory lock before serving; take a database backup before a release that changes schema or data.
 
-Production deployment automation is intentionally disabled. VPS address, operating system, ingress/TLS setup, backup destination, and monitoring service still need to be chosen. No production credentials belong in GitHub workflow files.
+The staging Compose template defaults `SCHEDULER_ENABLED=false`. The app scheduler polls every 60 seconds when explicitly enabled, while the persisted business cadence remains no less than six hours. Do not enable the scheduler or dashboard automation until the staging Tebar profile, Threads account, approved facts and human approval are confirmed. Keep production and staging in separate Compose projects, MySQL volumes, credentials and provider workspaces. `TRUST_PROXY=true` is valid only behind one trusted reverse proxy; configure login and webhook request limits at that proxy.
+
+Production deployment automation is intentionally disabled. VPS address, operating system, ingress/TLS setup, backup destination, monitoring service and GHCR pull credentials still need to be chosen. No deployment credentials belong in GitHub workflow files.
 
 ## Backup and restore
 

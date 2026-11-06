@@ -2,7 +2,7 @@
 
 ## Runtime shape
 
-The application is a small Node.js web service plus a one-shot dispatcher. The dashboard and dispatcher share MySQL state. Docker Compose runs the app and MySQL for local validation; on a VPS, a host scheduler invokes the finite dispatcher and exits. The app does not depend on a persistent worker process.
+The application is a small Node.js web service with an optional in-process poller that invokes the finite dispatcher. The dashboard, dispatcher and poller share MySQL state. Docker Compose runs the app and MySQL; `SCHEDULER_ENABLED` explicitly controls whether the app polls. The default is disabled so a fresh deployment cannot publish until an operator enables it.
 
 Admin browser -> Node.js HTTP server -> session/CSRF checks -> application services -> MySQL repository and provider adapters.
 
@@ -23,11 +23,11 @@ The dispatcher calls the same application services. OpenRouter generates content
 
 Schedule settings contain the interval in hours (minimum 6), active weekdays, daily active-time window, and an IANA timezone. The user-facing default is Asia/Kuala_Lumpur; the engine stores due instants in UTC. A dispatcher invocation queries due work, atomically claims its slot, and exits. A slot outside the configured local active window is marked skipped and does not build a backlog.
 
-The product schedule and VPS cron trigger are separate. The cron trigger only checks for due work. Configure its frequency to meet the desired posting precision and 22:00 MYT summary; no VPS scheduler or precision has been selected yet.
+The product schedule and scheduler poll interval are separate. The poller checks for due work every 60 seconds by default (configurable from 15 to 3,600 seconds), while the product interval remains at least six hours. It runs immediately on startup and then polls; persisted slots survive restarts. The planner skips slots more than 15 minutes late and out-of-window slots instead of catching up. MySQL row locks and uniqueness constraints protect claims if more than one app process runs.
 
 ## Publish and recovery states
 
-Each slot has a unique scheduled instant and durable state: pending, generating, ready, publishing, published, failed, unknown, canceled, or skipped. The exact outbound body and Tebar idempotency key are stored before the request. Known provider IDs are reconciled through Tebar's status endpoint. An uncertain request is retried only with the same body/key or reconciled by provider ID. Cancellation requests only target posts Tebar reports as still scheduled/draft; cancellation races are recorded distinctly.
+Each slot has a unique scheduled instant and durable state: pending, generating, ready, publishing, published, failed, unknown, canceled, or skipped. The exact outbound body and Tebar idempotency key are stored before the request. Known provider IDs are reconciled through Tebar's status endpoint. A request with no known provider ID is never replayed automatically; unresolved slots block later publishing until an operator reconciles the outcome. Cancellation requests only target posts Tebar reports as still scheduled/draft; cancellation races are recorded distinctly.
 
 ## Authentication and secret boundaries
 
@@ -44,7 +44,7 @@ MySQL is chosen because the dashboard and one-shot dispatcher need durable trans
 
 ## Deployment constraints
 
-The Docker image is environment-neutral. Production deployment runs the same immutable GHCR SHA image with VPS environment variables, persistent MySQL, TLS termination, backups and a finite dispatcher schedule. Production deployment automation remains disabled until VPS details and credentials are approved.
+The runtime Docker image is environment-neutral and is the default build target. VPS Compose requires an immutable GHCR commit-SHA image, a private MySQL volume, HTTPS termination and protected environment variables. Publishing remains disabled by default; no VPS deployment workflow is configured.
 
 ## Provider capabilities and MVP limits
 

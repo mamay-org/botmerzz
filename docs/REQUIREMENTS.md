@@ -39,14 +39,14 @@ Build a staging-ready dashboard and automation service for publishing approved, 
 
 ## Non-functional requirements
 
-- Node.js 20.6 or newer; CommonJS preserves the existing project style and supports the one-shot dispatcher under a VPS scheduler.
-- MySQL-compatible durable storage shared by the dashboard and one-shot dispatcher.
+- Node.js 20.6 or newer; CommonJS preserves the existing project style and supports both the one-shot dispatcher command and the optional in-process poller.
+- MySQL-compatible durable storage shared by the dashboard, dispatcher and scheduler.
 - Secrets are read only from environment variables. The local environment file is ignored by Git and the example file contains no credentials.
 - HTTPS is required in deployed environments. Sessions use secure, HTTP-only, SameSite cookies, CSRF protection, login throttling, password hashing, and server-side expiry.
 - Validate dashboard inputs and provider webhook payloads. Escape user-controlled content in the browser.
 - Logs and Telegram messages must not include secrets, full authorization headers, or raw provider response bodies.
 - Use Asia/Kuala_Lumpur for product scheduling and daily summaries. Store instants in UTC and convert only at schedule boundaries.
-- No persistent worker is required. Deployment uses a finite cron command that exits after processing due work.
+- The app scheduler is opt-in through `SCHEDULER_ENABLED` and polls persisted MySQL jobs. The one-shot command remains available for manual runs or host cron; both paths use the same atomic slot claims.
 
 ## Onboarding gates before staging or production publishing
 

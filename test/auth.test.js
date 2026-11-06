@@ -27,6 +27,14 @@ test('login failures are generic and throttled per IP and email', async () => {
   time=2000; await assert.rejects(auth.login({email:'nobody@example.test',password:'not the password',ip:'1.2.3.4'}),e=>e.code==='INVALID_CREDENTIALS');
 });
 
+test('changing email addresses does not bypass the IP login limit', async () => {
+  const auth=createAuth({repository:{getAdminByEmail:async()=>null},maxFailures:20,maxFailuresPerIp:2});
+  for (const email of ['one@example.test','two@example.test']) {
+    await assert.rejects(auth.login({email,password:'not the password',ip:'203.0.113.7'}),e=>e.code==='INVALID_CREDENTIALS');
+  }
+  await assert.rejects(auth.login({email:'three@example.test',password:'not the password',ip:'203.0.113.7'}),e=>e.code==='LOGIN_RATE_LIMITED');
+});
+
 test('only duplicate administrator failures become a conflict', async () => {
   const auth=createAuth({repository:{createAdmin:async()=>{throw new Error('database unavailable');}}});
   await assert.rejects(auth.createAdmin({email:'admin@example.test',password:'correct horse battery staple'}),/database unavailable/);

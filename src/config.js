@@ -16,6 +16,11 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   const nodeEnv = env.NODE_ENV || "development";
   if (!["development", "test", "production"].includes(nodeEnv)) errors.push("NODE_ENV");
   const port = integer("PORT", 3000, 1, 65535);
+  if (env.TRUST_PROXY !== undefined && !["true", "false"].includes(env.TRUST_PROXY)) errors.push("TRUST_PROXY");
+  const trustProxy = env.TRUST_PROXY === "true";
+  if (env.SCHEDULER_ENABLED !== undefined && !["true", "false"].includes(env.SCHEDULER_ENABLED)) errors.push("SCHEDULER_ENABLED");
+  const schedulerEnabled = env.SCHEDULER_ENABLED === "true";
+  const schedulerIntervalSeconds = integer("SCHEDULER_INTERVAL_SECONDS", 60, 15, 3600);
   const timezone = env.TIMEZONE ?? "Asia/Kuala_Lumpur";
   try {
     new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
@@ -49,6 +54,7 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   if (errors.length) throw new Error(`Invalid configuration: ${[...new Set(errors)].join(", ")}`);
   return {
     nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone, intervalHours,
+    schedulerEnabled, schedulerIntervalSeconds, trustProxy,
     automationEnabled: false,
     db,
     tebar: {

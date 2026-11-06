@@ -9,6 +9,7 @@ const SAFE_ERROR_CODES = new Set([
   'rate_limited', 'network_error', 'invalid_response', 'provider_error',
   'generation_failed', 'content_validation_failed', 'onboarding_incomplete',
   'automation_paused', 'cancel_failed', 'post_not_editable', 'unknown_outcome',
+  'post_published',
 ]);
 
 function safeCode(value) {
@@ -47,12 +48,11 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts }) {
   for (const slot of slots) {
     if (!slot.providerPostId && (!slot.requestPayload || !slot.idempotencyKey)) continue;
     try {
-      // When Tebar gave no post ID, replay only the exact persisted body and
-      // Idempotency-Key. Tebar deduplicates this pair, so this is a safe
-      // reconciliation probe, not a new logical publish.
-      const post = slot.providerPostId
-        ? await publisher.getPost(slot.providerPostId)
-        : await publisher.publishNow(slot.requestPayload, slot.idempotencyKey);
+      // Without a provider ID, status is ambiguous. Never replay a mutation here:
+      // the original request may not have reached Tebar, so replay could create
+      // the first post after a pause or a restart.
+      if (!slot.providerPostId) continue;
+      const post = await publisher.getPost(slot.providerPostId);
       const expectedAccountId = slot.requestPayload?.targets?.[0]?.account_id;
       const status = providerSlotStatus(post, expectedAccountId);
       await repository.updateSlot(slot.id, {
@@ -63,7 +63,10 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts }) {
         completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? new Date().toISOString() : null,
       });
       checked++;
-      if (counts && (status === 'partial' || status === 'failed')) {
+      if (counts && status === 'published') {
+        counts.published++;
+        await sendNotice(notifier, 'post_published', { slotId: slot.id });
+      } else if (counts && (status === 'partial' || status === 'failed')) {
         counts.failed++;
         await sendNotice(notifier, 'provider_error', { slotId: slot.id });
       } else if (counts && status === 'unknown') counts.unknown++;
@@ -91,14 +94,20 @@ async function runDispatcher({
   const now = clock();
   const result = { claimed: 0, published: 0, skipped: 0, failed: 0, unknown: 0, reconciled: 0, summarySent: false };
 
+  const state = await repository.getRuntimeState();
   if (typeof notifier?.flush === 'function') {
     try { await notifier.flush(); } catch { /* Notification retries must not block publishing safety checks. */ }
   }
   result.reconciled = await reconcileUnsettled({ repository, publisher, notifier, counts: result });
   await maybeSendDailySummary({ repository, notifier, now, timezone, counts: result });
-
-  const state = await repository.getRuntimeState();
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
+
+  // A provider request with no definitive state blocks new posts until an
+  // operator can reconcile it. This is deliberately fail-closed.
+  if ((await repository.listUnsettledSlots()).length > 0) {
+    result.unknown++;
+    return result;
+  }
 
   const schedule = state.settings?.schedule || {};
   if (typeof repository.ensureNextDueSlot === 'function') {
@@ -199,6 +208,7 @@ async function runDispatcher({
           const status = providerSlotStatus(post, state.accountId);
           await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: null });
           result[status === 'published' ? 'published' : status === 'failed' ? 'failed' : 'unknown']++;
+          if (status === 'published') await sendNotice(notifier, 'post_published', { slotId: slot.id });
           return result;
         } catch {
           // Keep the provider ID and mark the outcome unknown for the next reconciliation run.
@@ -246,7 +256,10 @@ async function runDispatcher({
     } catch {
       // Activity logging is secondary to the durable slot state.
     }
-    if (status === 'published') result.published++;
+    if (status === 'published') {
+      result.published++;
+      await sendNotice(notifier, 'post_published', { slotId: slot.id });
+    }
     else if (status === 'failed' || status === 'partial') {
       result.failed++;
       await sendNotice(notifier, 'provider_error', { slotId: slot.id });

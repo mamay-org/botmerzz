@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('node:path');
 const { validateSettings, isFactFresh } = require('./policy');
+const { createIpRateLimiter } = require('./rate-limit');
 
 const COOKIE = 'merzz_admin';
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
@@ -61,12 +62,14 @@ function createServer({ config, repository, auth, services = {} }) {
   if (!config || !repository || !auth) throw new TypeError('config, repository, and auth are required');
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', config.trustProxy === true ? 1 : false);
+  const webhookRateLimit = createIpRateLimiter({ limit: 120, windowMs: 60_000 });
   app.use((req, res, next) => {
     res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Content-Security-Policy': "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
     if (config.nodeEnv === 'production') res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     next();
   });
-  app.post('/webhooks/tebar', express.raw({ type: 'application/json', limit: '256kb' }), async (req, res) => {
+  app.post('/webhooks/tebar', webhookRateLimit, express.raw({ type: 'application/json', limit: '256kb' }), async (req, res) => {
     if (!config.tebar?.webhookSecret) return res.status(404).json({ error: 'NOT_CONFIGURED' });
     try {
       const { handleTebarWebhook } = require('./webhook');
@@ -105,7 +108,13 @@ function createServer({ config, repository, auth, services = {} }) {
   }
   app.get('/health/live', (_req, res) => res.json({ status: 'ok' }));
   app.get('/health/ready', async (_req, res) => {
-    try { if (services.pool) await services.pool.query('SELECT 1'); else if (repository.healthCheck) await repository.healthCheck(); else await repository.getSettings(); return res.json({ status: 'ready' }); }
+    try {
+      if (services.pool) await services.pool.query('SELECT 1');
+      else if (repository.healthCheck) await repository.healthCheck();
+      else await repository.getSettings();
+      const scheduler = typeof services.schedulerStatus === 'function' ? services.schedulerStatus() : undefined;
+      return res.json({ status: 'ready', ...(scheduler ? { scheduler } : {}) });
+    }
     catch { return res.status(503).json({ status: 'not_ready' }); }
   });
   app.get('/api/session', async (req, res) => { const found = await session(req); return res.json(found ? { authenticated: true, csrfToken: found.csrfToken, admin: found.admin } : { authenticated: false }); });

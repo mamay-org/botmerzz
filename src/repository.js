@@ -253,9 +253,19 @@ function createRepository(pool) {
         await c.execute('UPDATE slots SET provider_status=?,status=?,completed_at=IF(?,UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=?',[providerStatus,providerStatus,final,postId]);
       }
       if(notificationCode&&profileId===configured.profileId&&accountId===configured.targetAccountId&&dataAccount===accountId) {
-        const message=`Kedai Merzz automation: ${notificationCode}. Semak status akaun dan log dashboard.`;
-        const dedupeKey=createHash('sha256').update(`tebar:${eventId}`).digest('hex');
-        await c.execute('INSERT IGNORE INTO notification_outbox (dedupe_key,message) VALUES (?,?)',[dedupeKey,message]);
+        let dedupeId=`tebar:${eventId}`;
+        let message=`Kedai Merzz automation: ${notificationCode}. Semak status akaun dan log dashboard.`;
+        if(notificationCode==='post_published') {
+          const [[slot]]=await c.execute("SELECT id FROM slots WHERE provider_post_id=? AND status='published' LIMIT 1",[postId]);
+          if(slot) {
+            dedupeId=`post_published:slot:${slot.id}`;
+            message=`Kedai Merzz automation: post_published. Slot: ${String(slot.id).slice(0,36)}.`;
+          } else message=null;
+        }
+        if(message) {
+          const dedupeKey=createHash('sha256').update(dedupeId).digest('hex');
+          await c.execute('INSERT IGNORE INTO notification_outbox (dedupe_key,message) VALUES (?,?)',[dedupeKey,message]);
+        }
       }
       await c.commit();
       return true;

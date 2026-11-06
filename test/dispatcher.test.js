@@ -231,18 +231,28 @@ test('reconciliation reads known provider IDs and persists provider status', asy
   assert.ok(calls.some((c) => c[0] === 'update' && c[1] === 'slot-2' && c[2].status === 'published'));
 });
 
-test('unknown publish without provider ID is safely reconciled with its exact persisted key and body', async () => {
+test('unknown publish without provider ID is not replayed and blocks new slots', async () => {
   const { calls, repository, publisher } = harness({ repository: {
     listUnsettledSlots: async () => [{ id: 'slot-unknown', status: 'unknown', requestPayload: { content: 'same payload', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'same-key' }],
-    getRuntimeState: async () => ({ automationEnabled: false }),
   } });
-  let sent;
-  publisher.publishNow = async (body, key) => { sent = { body, key }; return { id: 'post-recovered', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  let sends = 0;
+  repository.claimDueSlot = async () => assert.fail('unresolved publish must block new slots');
+  publisher.publishNow = async () => { sends++; assert.fail('ambiguous publish must not be replayed'); };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
-  assert.deepEqual(sent, { body: { content: 'same payload', targets: [{ account_id: 'acct-1' }] }, key: 'same-key' });
-  assert.equal(result.reconciled, 1);
-  assert.ok(calls.some((call) => call[0] === 'update' && call[1] === 'slot-unknown' && call[2].providerPostId === 'post-recovered'));
-  assert.equal(result.published, 0);
+  assert.equal(result.reconciled, 0);
+  assert.equal(result.unknown, 1);
+  assert.equal(sends, 0);
+  assert.equal(calls.some((call) => call[0] === 'update'), false);
+});
+
+test('confirmed publication sends one deduplicated success notice', async () => {
+  const { repository, publisher } = harness();
+  const notices = [];
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (...args) => notices.push(args) }, clock: fixedClock });
+  assert.equal(result.published, 1);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0][0], /post_published/);
+  assert.equal(notices[0][1], 'post_published:slot:slot-1');
 });
 
 test('reconciled partial post is counted as failure and sends a safe alert', async () => {

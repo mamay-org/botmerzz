@@ -51,6 +51,14 @@ test('failed post webhook queues a safe notification code transactionally', asyn
   assert.equal(event.notificationCode,'provider_error');
 });
 
+test('published post webhook signals a deduplicated success notice', async () => {
+  const publishedBody=Buffer.from(JSON.stringify({id:'evt-published',type:'post.published',profile_id:'profile-1',data:{post_id:'post-1',account_id:'acct-1',status:'published'}}));
+  let event;
+  const response=await handleTebarWebhook({rawBody:publishedBody,signature:signed(publishedBody),secret,clock:()=>now,accountId:'acct-1',repository:{applyWebhookEvent:async(input)=>{event=input;return true;}}});
+  assert.equal(response.notificationCode,'post_published');
+  assert.equal(event.notificationCode,'post_published');
+});
+
 test('account expiry and disconnection events use the documented nested account object', async () => {
   for (const type of ['account.expired','account.disconnected']) {
     const eventBody=Buffer.from(JSON.stringify({id:`evt-${type.replace('.','-')}`,type,profile_id:'profile-1',data:{account:{id:'acct-1',platform:'threads',status:'expired'}}}));
