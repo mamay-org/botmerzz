@@ -8,9 +8,70 @@ On a fresh checkout, copy `.env.example` to `.env`, set unique local MySQL crede
 
 Use `compose.vps.yaml` with the immutable GHCR commit-SHA image published after CI. Install Docker Engine and the Compose plugin, configure a private environment file on the VPS with mode `0600`, and keep database data in a named volume with tested backups. Set a unique `COMPOSE_PROJECT_NAME`, database credentials and `BASE_URL` for each environment. The app binds to loopback; put HTTPS termination and access controls in front of it. The database is on an internal Compose network with no host port. The CLI applies restart-safe migrations under an advisory lock before serving; take a database backup before a release that changes schema or data.
 
-The staging Compose template defaults `SCHEDULER_ENABLED=false`. The app scheduler polls every 60 seconds when explicitly enabled, while the persisted business cadence remains no less than six hours. Do not enable the scheduler or dashboard automation until the staging Tebar profile, Threads account, approved facts and human approval are confirmed. Keep production and staging in separate Compose projects, MySQL volumes, credentials and provider workspaces. `TRUST_PROXY=true` is valid only behind one trusted reverse proxy; configure login and webhook request limits at that proxy.
+The staging Compose template defaults `SCHEDULER_ENABLED=false`. The app scheduler polls every 60 seconds when explicitly enabled, while the persisted business cadence remains no less than six hours. Keep production and staging in separate Compose projects, MySQL volumes, credentials and provider workspaces. `TRUST_PROXY=true` is valid only behind one trusted reverse proxy; configure login and webhook request limits at that proxy.
 
-Production deployment automation is intentionally disabled. VPS address, operating system, ingress/TLS setup, backup destination, monitoring service and GHCR pull credentials still need to be chosen. No deployment credentials belong in GitHub workflow files.
+## Staging CI/CD
+
+The pipeline runs CI for pull requests to `main` and pushes to `main`. After a successful CI run caused by a push to `main`, GitHub Actions publishes a commit-SHA image and records its digest in the workflow summary. The staging deployment job uses that digest and the matching `compose.vps.yaml`; it is skipped unless the repository Actions variable `STAGING_DEPLOY_ENABLED` is exactly `true`. Production deployment is not configured.
+
+To enable staging deployment, first complete the VPS SSH setup below, then create the GitHub Environment `staging` and add these environment secrets:
+
+- `STAGING_SSH_HOST` — staging VPS host/IP.
+- `STAGING_SSH_USER` — dedicated deployment account.
+- `STAGING_SSH_PRIVATE_KEY` — private key for that account.
+- `STAGING_SSH_KNOWN_HOSTS` — verified SSH host-key line(s).
+
+Set the repository Actions variable `STAGING_DEPLOY_ENABLED` to `true` only after the secrets and SSH access are verified. Until that variable is enabled, pushes continue to run CI and publish GHCR images, but do not change the VPS. The workflow uses its short-lived `GITHUB_TOKEN` with package-read permission to pull the image; no long-lived GHCR token is required. Never put private keys or tokens in Git or chat.
+
+### VPS deployment account
+
+Run these commands as root on the VPS. The `docker` group can control Docker and is effectively root-equivalent; protect the account and its private key accordingly.
+
+```sh
+adduser --disabled-password --gecos "" botmerzz-deploy
+usermod -aG docker botmerzz-deploy
+install -d -o botmerzz-deploy -g botmerzz-deploy -m 700 /home/botmerzz-deploy/.ssh
+chown -R botmerzz-deploy:botmerzz-deploy /opt/botmerzz-staging
+chmod 700 /opt/botmerzz-staging
+chmod 600 /opt/botmerzz-staging/.env
+```
+
+Generate a dedicated Ed25519 key on a trusted workstation and keep its private half there until it is entered directly into the GitHub Environment secret:
+
+```sh
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/botmerzz-staging-deploy -C github-actions-botmerzz-staging
+cat ~/.ssh/botmerzz-staging-deploy.pub
+```
+
+Install the displayed **public** key on the VPS in `/home/botmerzz-deploy/.ssh/authorized_keys`, then set its owner to `botmerzz-deploy:botmerzz-deploy` and mode to `600`. Never copy the private key into `authorized_keys`.
+
+```sh
+install -o botmerzz-deploy -g botmerzz-deploy -m 600 /dev/null /home/botmerzz-deploy/.ssh/authorized_keys
+```
+
+Append the public key line from `botmerzz-staging-deploy.pub` to that file using a root editor or `tee`, then reapply owner and mode `600`.
+
+Pin the VPS host key instead of using runtime `ssh-keyscan`. On the VPS, read the SSH server fingerprint:
+
+```sh
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+On the trusted workstation, collect the host key and compare its fingerprint with the VPS value. Put the original full `ssh-keyscan` line(s) from `/tmp/botmerzz-known-hosts` into `STAGING_SSH_KNOWN_HOSTS` in `host ssh-ed25519 base64key` known-hosts format. The stripped `.pub` file is only for fingerprint comparison; it is not valid as the workflow's `known_hosts` secret.
+
+```sh
+ssh-keyscan -t ed25519 178.83.188.163 > /tmp/botmerzz-known-hosts
+awk '{print $2, $3}' /tmp/botmerzz-known-hosts > /tmp/botmerzz-host-key.pub
+ssh-keygen -lf /tmp/botmerzz-host-key.pub
+```
+
+Do not enable `STAGING_DEPLOY_ENABLED` until the dedicated user can authenticate and run Compose in `/opt/botmerzz-staging`. GitHub Environment secrets are managed in the repository settings; they are not checked into the repository.
+
+Each deployment keeps the same Compose project and database volume, updates only the app image to the published digest, and recreates the app service. It saves a compressed MySQL dump, the previous image reference, and the previous Compose file in `/opt/botmerzz-staging/backups` before replacing the app. These files use mode `600`; deployments prune files older than 30 days. No separate scheduled retention process is configured. The SQL dump remains on the same VPS and is not encrypted or offsite. This is a recovery aid, not a disaster-recovery backup; configure encrypted offsite backups before production.
+
+The deployment restarts the Node process. When `SCHEDULER_ENABLED=true`, the scheduler starts and performs an immediate tick; if dashboard automation is active and a slot is due, it may publish according to the existing schedule. Deployment does not add a new scheduled slot. Account for this when selecting deployment time.
+
+For manual rollback, choose the `.image` and matching `.compose.vps.yaml` files created for the deployment being rolled back. Their names share the `predeploy-<deployed-commit>-<UTC timestamp>` prefix; `.image` contains only the previous `APP_IMAGE` reference, so it does not expose the rest of `.env`. Restore the matching Compose file, set `APP_IMAGE` in `/opt/botmerzz-staging/.env` to the value in the `.image` file, then pull and recreate only the app with the existing Compose project and database volume. Do not use `docker compose down -v`. Image rollback cannot reverse an incompatible database migration; restore the matching pre-deployment SQL dump if required. Verify `/health/ready` and inspect the dashboard after rollback.
 
 ## Backup and restore
 

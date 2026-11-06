@@ -55,5 +55,7 @@ jobs:
         run: npm test
       - name: Database integration tests
         run: npm run test:integration
+      - name: Validate staging deployment script syntax
+        run: bash -n scripts/deploy-staging.sh
       - name: Validate Docker image build
         run: docker build --target runtime --tag kedai-merzz-threads:ci .
