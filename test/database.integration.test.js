@@ -101,6 +101,36 @@ test('MySQL migrations and repository are reachable in integration environment',
     await repo.finishDailySummary({localDate,timezone:'Asia/Kuala_Lumpur',status:'sent'});
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),false);
 
+    const mysqlDateSlotId=randomUUID();
+    const expectedIsoCompletedAt='2026-11-07T01:29:30.083Z';
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status) VALUES (?,?, 'pending')",[mysqlDateSlotId,new Date()]);
+    try {
+      await repo.updateSlot(mysqlDateSlotId,{completedAt:expectedIsoCompletedAt});
+      const [[isoCompletedAtRow]]=await pool.execute('SELECT completed_at FROM slots WHERE id=?',[mysqlDateSlotId]);
+      assert.equal(new Date(isoCompletedAtRow.completed_at).toISOString(),expectedIsoCompletedAt,'ISO completion timestamps persist as exact UTC milliseconds');
+      await assert.rejects(repo.updateSlot(mysqlDateSlotId,{completedAt:'not-a-valid-timestamp'}),{code:'INVALID_COMPLETED_AT'});
+
+      const reconciledSlotId=randomUUID();
+      const reconciledPostId=`post-${randomUUID()}`;
+      await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_post_id,request_payload) VALUES (?,?, 'publishing',?,?)",[
+        reconciledSlotId,new Date(),reconciledPostId,JSON.stringify({targets:[{account_id:'threads-account'}]}),
+      ]);
+      try {
+        const {reconcileUnsettled}=require('../src/dispatcher');
+        const reconciliationRepository={...repo,listUnsettledSlots:async()=>[{id:reconciledSlotId,providerPostId:reconciledPostId,requestPayload:{targets:[{account_id:'threads-account'}]}}]};
+        const reconciled=await reconcileUnsettled({repository:reconciliationRepository,publisher:{getPost:async()=>({
+          id:reconciledPostId,status:'published',targets:[{accountId:'threads-account',platform:'threads',status:'published',publishedAt:expectedIsoCompletedAt}],
+        })},clock:()=>new Date('2026-11-07T01:30:00.000Z')});
+        assert.equal(reconciled,1);
+        const [[reconciledCompletedAt]]=await pool.execute('SELECT completed_at FROM slots WHERE id=?',[reconciledSlotId]);
+        assert.equal(new Date(reconciledCompletedAt.completed_at).toISOString(),expectedIsoCompletedAt,'reconciliation provider time reaches MySQL as UTC datetime');
+      } finally {
+        await pool.execute('DELETE FROM slots WHERE id=?',[reconciledSlotId]);
+      }
+    } finally {
+      await pool.execute('DELETE FROM slots WHERE id=?',[mysqlDateSlotId]);
+    }
+
     const [[previousSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
     const jsonValue=(value)=>typeof value==='string'?value:JSON.stringify(value);
     const priorSettingsJson=jsonValue(previousSettings.settings_json);

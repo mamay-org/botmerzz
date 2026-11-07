@@ -7,6 +7,19 @@ const json = (value, fallback = {}) => {
   try { return JSON.parse(value); } catch { return fallback; }
 };
 const safeId = (value) => String(value);
+function normalizeCompletedAt(value) {
+  if (value === null) return null;
+  if (value instanceof Date) {
+    if (!Number.isFinite(value.getTime())) throw Object.assign(new TypeError('completedAt must be a valid date'), { code: 'INVALID_COMPLETED_AT' });
+    return value;
+  }
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+    throw Object.assign(new TypeError('completedAt must be an ISO timestamp, Date, or null'), { code: 'INVALID_COMPLETED_AT' });
+  }
+  const parsed = DateTime.fromISO(value, { setZone: true });
+  if (!parsed.isValid) throw Object.assign(new TypeError('completedAt must be a valid ISO timestamp'), { code: 'INVALID_COMPLETED_AT' });
+  return parsed.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+}
 
 function createRepository(pool) {
   if (!pool || typeof pool.execute !== 'function') throw new TypeError('mysql pool is required');
@@ -368,7 +381,7 @@ function createRepository(pool) {
     const [[state]]=await pool.execute('SELECT automation_enabled,settings_json FROM settings WHERE id=1');
     return Boolean(state?.automation_enabled)&&json(state?.settings_json).automationSessionId===sessionId;
   }
-  async function updateSlot(id,patch) { const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;const sql=keys.map(k=>`${allowed[k]}=?`).join(',');await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,[...keys.map(k=>patch[k]),id]); }
+  async function updateSlot(id,patch) { const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;const sql=keys.map(k=>`${allowed[k]}=?`).join(',');await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id]); }
   async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key})); }
   async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status})); }
   async function recordCancellation(providerPostId,{status,errorCode}={}) { await pool.execute('UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?=\'canceled\',\'canceled\',status),completed_at=IF(?=\'canceled\',UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=?',[status,errorCode,status,status,providerPostId]);await appendActivity({event:'post_cancellation',details:{status,errorCode:errorCode||null}}); }
