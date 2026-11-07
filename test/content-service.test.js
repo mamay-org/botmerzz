@@ -52,6 +52,25 @@ test('AI content direction is the primary creative brief while prompt policy rem
   assert.match(prompt.system, /Jangan tulis nama permainan, produk, harga/i);
 });
 
+test('optional hook vocabulary is prompt guidance and words outside it can pass safely', async () => {
+  let prompt;
+  const result = await generatePost({
+    ...base,
+    settings: {
+      ...base.settings,
+      guardrails: { ...base.settings.guardrails, hookVocabulary: ['Cerita pengalaman', 'Sembang santai'] },
+      brand: { ...base.settings.brand, contentDirection: 'Gunakan gaya pemerhatian yang santai.' },
+    },
+  }, {
+    generate: async (input) => { prompt = input; return 'Malam tadi saya terfikir tentang pengalaman bersama rakan.'; },
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(JSON.parse(prompt.user).hookVocabulary, ['Cerita pengalaman', 'Sembang santai']);
+  assert.equal(Object.hasOwn(JSON.parse(prompt.user), 'allowedWords'), false);
+  assert.match(prompt.system, /hookVocabulary diberikan, gunakannya sebagai inspirasi.{0,100}bukan daftar wajib/i);
+});
+
 test('recent published hooks are supplied and the prompt requests a distinct angle and structure', async () => {
   const hooks = [
     'Jom kongsi pengalaman bermain bersama kawan?',
@@ -146,7 +165,7 @@ test('hostile AI content direction cannot make unsupported claims pass validatio
   assert.equal(receivedContentDirection, contentDirection);
   assert.equal(result.status, 'skipped');
   assert.equal(result.reason, 'CONTENT_VALIDATION_FAILED');
-  assert.ok(result.errors.includes('FORBIDDEN_CLAIM') || result.errors.includes('UNAPPROVED_HOOK_WORD') || result.errors.includes('UNAPPROVED_QUANTITY_OR_CURRENCY'));
+  assert.ok(result.errors.includes('FORBIDDEN_CLAIM') || result.errors.includes('UNAPPROVED_QUANTITY_OR_CURRENCY'));
 });
 
 test('generated post appends normalized hashtags once after the approved link', async () => {
@@ -304,10 +323,12 @@ test('missing approved guardrails or tracked links skips before generation', asy
   }
 });
 
-test('generated hooks cannot introduce unknown games, price modifiers, quantities, or links', async () => {
+test('generated hooks cannot introduce configured forbidden claims, price modifiers, quantities, or links', async () => {
   for (const hook of ['Jom main League of Legends Wild Rift!', 'Jom beli MYR 30 juta.', 'Lima ratus Diamond untuk anda.', 'Jom lihat www.evil.test', 'Jom lihat evil.test', 'Jom lihat https:', 'Jom lihat ftp://evil.test']) {
     let calls = 0;
-    const result = await generatePost({ ...base, settings: { ...base.settings, priceMode: 'ON' } }, {
+    const settings = { ...base.settings, priceMode: 'ON', guardrails: { ...base.settings.guardrails,
+      forbiddenClaims: hook.includes('League of Legends') ? [...base.settings.guardrails.forbiddenClaims, 'League of Legends Wild Rift'] : base.settings.guardrails.forbiddenClaims } };
+    const result = await generatePost({ ...base, settings }, {
       generate: async () => { calls++; return hook; },
     });
     assert.equal(result.status, 'skipped', hook);

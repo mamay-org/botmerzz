@@ -71,8 +71,13 @@
           <label>Gaya komunikasi<input name="voice" maxlength="500" placeholder="Ramah, santai gamer, informatif"></label>
           <label class="full">
             Arahan konten AI
-            <span class="field-hint">Acuan utama untuk topik, sudut, dan gaya konten. Maksimal 7.000 karakter; arahan ini tidak dapat mengubah batas fakta dan klaim. Hook yang dibuat tetap harus memakai kosakata yang disetujui; arahan yang memerlukan kata lain dapat ditolak.</span>
+            <span class="field-hint">Acuan utama untuk topik, sudut, dan gaya konten. Maksimal 7.000 karakter; arahan ini tidak dapat mengubah batas fakta dan klaim.</span>
             <textarea name="contentDirection" rows="5" maxlength="7000" placeholder="Contoh: Utamakan soalan santai yang mengajak pemain berkongsi pengalaman bermain bersama kawan. Elakkan gaya jualan yang mendesak."></textarea>
+          </label>
+          <label class="full">
+            Kosakata hook yang disarankan
+            <span class="field-hint">Opsional; satu kata atau frasa per baris. Ini hanya panduan, bukan daftar wajib. AI boleh memakai kata lain yang aman.</span>
+            <textarea name="hookVocabulary" rows="3" maxlength="7000" placeholder="Contoh: cerita pengalaman&#10;sembang santai&#10;kenangan bermain"></textarea>
           </label>
           <label class="full">
             Wawasan pelanggan

@@ -5,6 +5,10 @@ const MAX_HASHTAG_LENGTH = 100;
 const MAX_APPROVED_ATTRIBUTE_COUNT = 20;
 const MAX_APPROVED_ATTRIBUTE_LENGTH = 100;
 const HASHTAG_PATTERN = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
+const NUMBER_WORDS = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|kosong|sifar|satu|dua|tiga|empat|lima|enam|tujuh|lapan|sembilan|sepuluh|sebelas|belas|puluh|ratus|seratus|seribu|ribu|sejuta|juta|bilion|setengah|separuh|suku)';
+const QUANTITY_UNITS = '(?:diamond|diamonds|crystal|crystals|coin|coins|point|points|akaun|accounts?|skin|skins|item|items|unit|units|buah|kali|ringgit|rm|myr|dollar|dollars|percent|peratus|level|rank)';
+const SPELLED_QUANTITY_PATTERN = new RegExp(`\\b${NUMBER_WORDS}(?:\\s+${NUMBER_WORDS})*\\s+${QUANTITY_UNITS}\\b`, 'i');
+const SPELLED_CURRENCY_PATTERN = new RegExp(`\\b(?:rm|myr|ringgit|dollar|dollars)\\s+${NUMBER_WORDS}(?:\\s+${NUMBER_WORDS})*\\b`, 'i');
 
 function hashtagKey(value) {
   return value.normalize('NFKC').replace(/^#+/u, '').replace(/\s+/gu, '').toLowerCase();
@@ -112,12 +116,25 @@ function validateSettings(input = {}) {
       brand[field] = value?.trim() || '';
     }
   }
-  const guardrails = { approved: input.guardrails?.approved === true };
+  const guardrails = { approved: input.guardrails?.approved === true, hookVocabulary: [] };
   if (input.guardrails?.approved !== undefined && typeof input.guardrails.approved !== 'boolean') errors['guardrails.approved'] = 'Use true or false.';
   for (const field of ['forbiddenClaims', 'approvedClaims']) {
     const values = input.guardrails?.[field] ?? [];
     if (!Array.isArray(values) || values.length > 100 || values.some((value) => typeof value !== 'string' || !value.trim() || value.length > 500)) errors[`guardrails.${field}`] = 'Use a list of claim phrases.';
     else guardrails[field] = [...new Set(values.map((value) => value.trim()))];
+  }
+  const hookVocabulary = input.guardrails?.hookVocabulary ?? [];
+  if (!Array.isArray(hookVocabulary) || hookVocabulary.length > 100
+    || hookVocabulary.some((value) => typeof value !== 'string' || !value.trim() || value.length > 500)) {
+    errors['guardrails.hookVocabulary'] = 'Use up to 100 suggested words or phrases, with up to 500 characters each.';
+  } else {
+    const seenVocabulary = new Set();
+    guardrails.hookVocabulary = hookVocabulary.map((value) => value.normalize('NFKC').trim()).filter((value) => {
+      const key = value.toLocaleLowerCase('ms');
+      if (seenVocabulary.has(key)) return false;
+      seenVocabulary.add(key);
+      return true;
+    });
   }
   if (Object.keys(errors).length) return { valid: false, errors };
   return { valid: true, errors: {}, settings: {
@@ -139,15 +156,6 @@ function isFactFresh(fact, now = new Date()) {
   const age = current.toMillis() - updated.toMillis();
   return updated.isValid && current.isValid && age >= 0 && age <= 24 * 60 * 60 * 1000;
 }
-
-// Restrict model output to generic engagement language. Products and factual copy
-// are composed from approved fields, never inferred from words in model output.
-const HOOK_WORDS = Object.freeze(('jom kongsi pengalaman bermain apa apakah bagaimana kenapa bila siapa '
-  + 'anda korang kita saya kami nak mahu suka pilih pilihan main permainan pemain kawan rakan '
-  + 'bersama dengan dan atau yang untuk dalam semasa selepas sebelum waktu masa hari ini '
-  + 'hujung minggu santai seronok menarik cerita pendapat cara gaya kegemaran cabaran '
-  + 'pasukan strategi belajar cuba pernah paling lebih rasa kalau tentang pula boleh test ujian '
-  + 'anda semua ada tak mana macam mula sedia bersedia jomlah').split(' '));
 
 function composeApprovedContent(context) {
   const pillar = context.pillar;
@@ -274,12 +282,10 @@ function validateCaption(text, context = {}) {
   if (!normalizedHook.trim()) errors.push('EMPTY_HOOK');
   if (/[:/@\\]|[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(normalizedHook)) errors.push('UNAPPROVED_LINK');
   if (/\p{N}|[$€£¥]/u.test(normalizedHook)) errors.push('UNAPPROVED_QUANTITY_OR_CURRENCY');
+  if (SPELLED_QUANTITY_PATTERN.test(normalizedHook) || SPELLED_CURRENCY_PATTERN.test(normalizedHook)) errors.push('UNAPPROVED_QUANTITY_OR_CURRENCY');
   if (!/^[a-z\s!?,.'’-]+$/.test(normalizedHook)) errors.push('INVALID_HOOK_CHARACTERS');
   if (Array.isArray(context.recentHooks) && stronglyOverlapsHook(normalizedHook, context.recentHooks)) errors.push('REPETITIVE_HOOK');
-  const words = normalizedHook.match(/[a-z]+/g) || [];
-  if (words.some((word) => !HOOK_WORDS.includes(word))) errors.push('UNAPPROVED_HOOK_WORD');
-  if (!words.some((word) => ['jom', 'jomlah', 'apa', 'apakah', 'bagaimana', 'kenapa', 'kongsi', 'anda', 'korang'].includes(word))) errors.push('MALAY_ENGAGEMENT_REQUIRED');
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT, HOOK_WORDS };
+module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };
