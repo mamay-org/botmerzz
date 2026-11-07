@@ -99,7 +99,7 @@
     const brand = settings.brand || {};
     const guardrails = settings.guardrails || {};
     setFormValues($('#content-form'), {
-      brandName: brand.name, voice: brand.voice, audienceNotes: brand.audienceNotes,
+      brandName: brand.name, voice: brand.voice, contentDirection: brand.contentDirection, audienceNotes: brand.audienceNotes,
       gameWhitelist: (settings.gameWhitelist || []).join('\n'),
       hashtags: (settings.hashtags || []).join('\n'),
       trackedTopup: settings.trackedLinks?.topup || '', trackedAccount: settings.trackedLinks?.account || '',
@@ -123,7 +123,7 @@
   function templateDataFromForm(category) {
     if (category === 'brand') return {
       brandName: value($('#content-form'), 'brandName'), voice: value($('#content-form'), 'voice'),
-      audienceNotes: value($('#content-form'), 'audienceNotes'), gameWhitelist: lines(value($('#content-form'), 'gameWhitelist')),
+      contentDirection: value($('#content-form'), 'contentDirection'), audienceNotes: value($('#content-form'), 'audienceNotes'), gameWhitelist: lines(value($('#content-form'), 'gameWhitelist')),
       trackedTopup: value($('#content-form'), 'trackedTopup'), trackedAccount: value($('#content-form'), 'trackedAccount'),
       forbiddenClaims: lines(value($('#content-form'), 'forbiddenClaims')), approvedClaims: lines(value($('#content-form'), 'approvedClaims')),
     };
@@ -137,7 +137,7 @@
     if (template.category === 'brand') {
       const data = template.data || {};
       setFormValues($('#content-form'), {
-        brandName: data.brandName, voice: data.voice, audienceNotes: data.audienceNotes,
+        brandName: data.brandName, voice: data.voice, contentDirection: data.contentDirection, audienceNotes: data.audienceNotes,
         gameWhitelist: (data.gameWhitelist || []).join('\n'), trackedTopup: data.trackedTopup, trackedAccount: data.trackedAccount,
         forbiddenClaims: (data.forbiddenClaims || []).join('\n'), approvedClaims: (data.approvedClaims || []).join('\n'), guardrailsApproved: false,
       });
@@ -202,6 +202,7 @@
     if (hint) { const note = document.createElement('span'); note.className = 'field-hint'; note.textContent = hint; label.append(note); }
     const field = document.createElement(multiline ? 'textarea' : options ? 'select' : 'input'); field.name = name; field.value = Array.isArray(val) ? val.join('\n') : val || '';
     if (multiline) field.rows = 3;
+    if (name === 'contentDirection') field.maxLength = 2000;
     if (options) {
       field.replaceChildren(...options.map((item) => { const option = document.createElement('option'); option.value = item; option.textContent = item; return option; }));
       field.value = val && options.includes(val) ? val : '';
@@ -216,6 +217,7 @@
     const fields = $('#template-editor-fields'); fields.replaceChildren();
     if (category === 'brand') fields.append(
       editorControl('Nama brand', 'brandName', data.brandName), editorControl('Gaya komunikasi', 'voice', data.voice),
+      editorControl('Arahan konten AI', 'contentDirection', data.contentDirection, { multiline: true, hint: 'Acuan utama untuk topik dan sudut konten; tetap mengikuti batas AI.' }),
       editorControl('Wawasan pelanggan', 'audienceNotes', data.audienceNotes, { multiline: true }),
       editorControl('Game top-up dalam whitelist', 'gameWhitelist', data.gameWhitelist, { multiline: true, hint: 'Simpan hanya game yang sudah ada di whitelist.' }),
       editorControl('Tautan top-up', 'trackedTopup', data.trackedTopup), editorControl('Tautan akun', 'trackedAccount', data.trackedAccount),
@@ -232,7 +234,7 @@
   function readTemplateEditor(category) {
     const form = $('#template-dialog-form'); const val = (name) => new FormData(form).get(name) || '';
     if (category === 'brand') return {
-      brandName: val('brandName'), voice: val('voice'), audienceNotes: val('audienceNotes'), gameWhitelist: lines(val('gameWhitelist')),
+      brandName: val('brandName'), voice: val('voice'), contentDirection: val('contentDirection'), audienceNotes: val('audienceNotes'), gameWhitelist: lines(val('gameWhitelist')),
       trackedTopup: val('trackedTopup'), trackedAccount: val('trackedAccount'), forbiddenClaims: lines(val('forbiddenClaims')), approvedClaims: lines(val('approvedClaims')),
     };
     if (category === 'topup') return { game: val('game'), denomination: val('denomination') };
@@ -394,7 +396,7 @@
   $('#content-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget;
     const settings = state.data.settings || {};
-    settings.brand = { name: value(form, 'brandName'), voice: value(form, 'voice'), audienceNotes: value(form, 'audienceNotes') };
+    settings.brand = { name: value(form, 'brandName'), voice: value(form, 'voice'), contentDirection: value(form, 'contentDirection'), audienceNotes: value(form, 'audienceNotes') };
     settings.gameWhitelist = lines(value(form, 'gameWhitelist'));
     settings.hashtags = lines(value(form, 'hashtags'));
     settings.trackedLinks = { ...(settings.trackedLinks || {}), topup: value(form, 'trackedTopup'), account: value(form, 'trackedAccount') };

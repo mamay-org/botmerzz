@@ -16,7 +16,7 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   assert.equal((await request(server,'/health/live')).status,200);assert.equal((await request(server,'/health/ready')).status,200);
   const malformedCookie=await request(server,'/api/session',{headers:{cookie:'merzz_admin=%E0%A4%A'}});assert.equal(malformedCookie.status,200);assert.deepEqual(JSON.parse(malformedCookie.body),{authenticated:false});
   assert.equal((await request(server,'/api/dashboard')).status,401);
-  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="intervalHours"[^>]*min="1"/);assert.match(staticPage.body,/name="hashtags"/);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00.*Malaysia/);
+  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="intervalHours"[^>]*min="1"/);assert.match(staticPage.body,/name="hashtags"/);assert.match(staticPage.body,/name="contentDirection"/);assert.match(staticPage.body,/Hook yang dibuat tetap harus memakai kosakata yang disetujui/);assert.match(staticPage.body,/Arahan yang memerlukan kata lain dapat ditolak/i);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00.*Malaysia/);
   assert.equal((await request(server,'/api/session/login',{method:'POST',headers:{origin:'https://evil.test'},body:'{}'})).status,403);
   const login=await request(server,'/api/session/login',{method:'POST',headers:{origin:config.baseUrl},body:JSON.stringify({email:'x',password:'y'})});assert.equal(login.status,200);token='a'.repeat(43);
   const cookie=login.headers['set-cookie'][0].split(';')[0];
@@ -33,8 +33,11 @@ test('settings and facts routes reject invalid data before persistence',async t=
   const hourly=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{intervalHours:1}})});assert.equal(hourly.status,200);assert.equal(JSON.parse(hourly.body).schedule.intervalHours,1);
   const invalidHashtag=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({hashtags:['#bad/tag']})});assert.equal(invalidHashtag.status,400);
   const hashtags=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({hashtags:[' #Kedai Merzz ','##kedaimerzz']})});assert.equal(hashtags.status,200);assert.deepEqual(JSON.parse(hashtags.body).hashtags,['#KedaiMerzz']);
-  const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,2);
-  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/hashtags:\s*\(settings\.hashtags\s*\|\|\s*\[\]\)/);assert.match(appSource,/settings\.hashtags\s*=\s*lines\(value\(form,\s*'hashtags'\)\)/);
+  const direction='  Utamakan soalan santai tentang pengalaman bermain bersama kawan.  ';
+  const savedDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:direction}})});assert.equal(savedDirection.status,200);assert.equal(JSON.parse(savedDirection.body).brand.contentDirection,direction.trim());
+  const invalidDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:'x'.repeat(2001)}})});assert.equal(invalidDirection.status,400);
+  const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,3);
+  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/hashtags:\s*\(settings\.hashtags\s*\|\|\s*\[\]\)/);assert.match(appSource,/settings\.hashtags\s*=\s*lines\(value\(form,\s*'hashtags'\)\)/);assert.match(appSource,/contentDirection:\s*brand\.contentDirection/);assert.match(appSource,/contentDirection:\s*value\(form,\s*'contentDirection'\)/);
 });
 
 test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
@@ -111,4 +114,17 @@ test('template API is authenticated, CSRF-protected, structured and rejects dyna
   const id=JSON.parse(valid.body).template.id;
   const changed=await request(server,`/api/templates/${id}`,{method:'PATCH',headers,body:JSON.stringify({name:'Top-up ML 400'})});assert.equal(changed.status,200);assert.equal(JSON.parse(changed.body).template.name,'Top-up ML 400');
   const deleted=await request(server,`/api/templates/${id}`,{method:'DELETE',headers});assert.equal(deleted.status,200,deleted.body);assert.equal(JSON.parse(deleted.body).deleted,true);
+});
+
+test('brand templates accept and preserve the bounded AI content direction',async t=>{
+  const templates=[];const calls=[];const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={getSettings:async()=>({gameWhitelist:['Mobile Legends']}),createTemplate:async input=>{calls.push(input);const item={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};templates.push(item);return item;}};
+  const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
+  const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
+  const direction='Ajukan soalan ringkas tentang pengalaman bermain.';
+  const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief santai',category:'brand',data:{contentDirection:direction}})});
+  assert.equal(created.status,201,created.body);assert.equal(calls[0].data.contentDirection,direction);assert.equal(JSON.parse(created.body).template.data.contentDirection,direction);
+  const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(2001)}})});
+  assert.equal(tooLong.status,400);
 });
