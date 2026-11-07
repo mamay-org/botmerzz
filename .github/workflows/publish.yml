@@ -122,11 +122,12 @@ jobs:
           auth_dir="${app_dir}/.ghcr-auth-${GITHUB_RUN_ID}"
           remote_compose="${app_dir}/compose.vps.yaml.next.${GITHUB_RUN_ID}"
           remote_script="${app_dir}/deploy-staging.sh.next.${GITHUB_RUN_ID}"
+          remote_retry_helper="${app_dir}/retry-command.sh.next.${GITHUB_RUN_ID}"
           ssh_args=(-i "${HOME}/.ssh/botmerzz-staging" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts")
 
           remote_cleanup() {
             ssh "${ssh_args[@]}" "${target}" \
-              "DOCKER_CONFIG='${auth_dir}' docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf -- '${auth_dir}'; rm -f -- '${remote_compose}' '${remote_script}'" \
+              "DOCKER_CONFIG='${auth_dir}' docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf -- '${auth_dir}'; rm -f -- '${remote_compose}' '${remote_script}' '${remote_retry_helper}'" \
               >/dev/null 2>&1 || true
           }
           trap remote_cleanup EXIT
@@ -135,13 +136,14 @@ jobs:
             "test -d '${app_dir}' && test -w '${app_dir}' && install -d -m 700 '${auth_dir}'"
           scp "${ssh_args[@]}" compose.vps.yaml "${target}:${remote_compose}"
           scp "${ssh_args[@]}" scripts/deploy-staging.sh "${target}:${remote_script}"
-          ssh "${ssh_args[@]}" "${target}" "chmod 700 '${remote_script}'"
+          scp "${ssh_args[@]}" scripts/retry-command.sh "${target}:${remote_retry_helper}"
+          ssh "${ssh_args[@]}" "${target}" "chmod 700 '${remote_script}' '${remote_retry_helper}'"
 
           printf '%s' "${GHCR_TOKEN}" | ssh "${ssh_args[@]}" "${target}" \
             "DOCKER_CONFIG='${auth_dir}' docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin"
 
           ssh "${ssh_args[@]}" "${target}" \
-            "DOCKER_CONFIG='${auth_dir}' /bin/bash '${remote_script}' '${COMMIT_SHA}' '${IMAGE_REF}' '${remote_compose}'"
+            "DOCKER_CONFIG='${auth_dir}' /bin/bash '${remote_script}' '${COMMIT_SHA}' '${IMAGE_REF}' '${remote_compose}' '${remote_retry_helper}'"
 
       - name: Record staging deployment
         if: success()

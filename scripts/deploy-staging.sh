@@ -6,6 +6,7 @@ readonly app_dir=/opt/botmerzz-staging
 readonly env_file="$app_dir/.env"
 readonly compose_file="$app_dir/compose.vps.yaml"
 readonly next_compose_file="${3:-}"
+readonly retry_helper_file="${4:-}"
 readonly deploy_script_file="${BASH_SOURCE[0]}"
 
 commit_sha="${1:-}"
@@ -17,6 +18,10 @@ image_ref="${2:-}"
 }
 [[ "$next_compose_file" =~ ^/opt/botmerzz-staging/compose\.vps\.yaml\.next\.[0-9]+$ ]] || {
   echo 'Invalid incoming Compose manifest path.' >&2
+  exit 2
+}
+[[ "$retry_helper_file" =~ ^/opt/botmerzz-staging/retry-command\.sh\.next\.[0-9]+$ ]] || {
+  echo 'Invalid incoming retry helper path.' >&2
   exit 2
 }
 [[ "$deploy_script_file" =~ ^/opt/botmerzz-staging/deploy-staging\.sh\.next\.[0-9]+$ ]] || {
@@ -58,7 +63,7 @@ cleanup() {
   [[ -z "$rollback_image_tmp" ]] || rm -f -- "$rollback_image_tmp"
   [[ -z "$rollback_compose_tmp" ]] || rm -f -- "$rollback_compose_tmp"
   [[ -z "$backup_tmp" ]] || rm -f -- "$backup_tmp"
-  rm -f -- "$next_compose_file" "$deploy_script_file"
+  rm -f -- "$next_compose_file" "$retry_helper_file" "$deploy_script_file"
 
   DOCKER_CONFIG="$DOCKER_CONFIG" docker logout ghcr.io >/dev/null 2>&1 || true
   rm -rf -- "$DOCKER_CONFIG"
@@ -66,8 +71,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ ! -f "$env_file" || ! -f "$compose_file" || ! -f "$next_compose_file" ]]; then
-  echo 'Staging environment or deployment compose file is missing.' >&2
+if [[ ! -f "$env_file" || ! -f "$compose_file" || ! -f "$next_compose_file" || ! -f "$retry_helper_file" ]]; then
+  echo 'Staging environment, Compose file, or retry helper is missing.' >&2
   exit 2
 fi
 if [[ ! -s "$DOCKER_CONFIG/config.json" ]]; then
@@ -151,7 +156,24 @@ changed=true
 
 mv -- "$next_compose_file" "$compose_file"
 docker compose --env-file "$env_file" -p botmerzz-staging -f "$compose_file" config --quiet
-docker compose --env-file "$env_file" -p botmerzz-staging -f "$compose_file" pull app
+if ! /bin/bash "$retry_helper_file" docker compose --env-file "$env_file" \
+  -p botmerzz-staging -f "$compose_file" pull app; then
+  echo 'GHCR image pull failed after retries; checking VPS host connectivity to ghcr.io.' >&2
+  if ghcr_status="$(curl --silent --show-error --connect-timeout 8 --max-time 15 \
+    --output /dev/null --write-out '%{http_code}' https://ghcr.io/v2/ 2>/dev/null)"; then
+    case "$ghcr_status" in
+      200|401)
+        echo "Host connectivity to ghcr.io is available (HTTP ${ghcr_status}); check Docker daemon networking, DNS, or proxy settings." >&2
+        ;;
+      *)
+        echo "Host GHCR connectivity probe returned HTTP ${ghcr_status}." >&2
+        ;;
+    esac
+  else
+    echo 'Host could not reach ghcr.io over HTTPS; check VPS outbound DNS, TCP 443, or provider firewall.' >&2
+  fi
+  exit 1
+fi
 docker compose --env-file "$env_file" -p botmerzz-staging -f "$compose_file" \
   up -d --no-deps --wait --wait-timeout 240 app
 
