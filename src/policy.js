@@ -1,5 +1,63 @@
 const { DateTime, IANAZone } = require('luxon');
 
+const MAX_HASHTAGS = 30;
+const MAX_HASHTAG_LENGTH = 100;
+const HASHTAG_PATTERN = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
+
+function hashtagKey(value) {
+  return value.normalize('NFKC').replace(/^#+/u, '').replace(/\s+/gu, '').toLowerCase();
+}
+
+function normalizeHashtags(input) {
+  if (!Array.isArray(input) || input.length > MAX_HASHTAGS) return null;
+  const normalized = [];
+  const seen = new Set();
+  for (const value of input) {
+    if (typeof value !== 'string' || [...value].length > MAX_HASHTAG_LENGTH) return null;
+    const trimmed = value.normalize('NFKC').trim();
+    if (!trimmed) continue;
+    const body = trimmed.replace(/^#+/u, '').replace(/\s+/gu, '');
+    if (!body || [...body].length > MAX_HASHTAG_LENGTH || !/^[\p{L}\p{N}_]+$/u.test(body)) return null;
+    const key = hashtagKey(body);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(`#${body}`);
+  }
+  return normalized;
+}
+
+function splitAroundText(text, excludedText) {
+  const index = excludedText ? text.lastIndexOf(excludedText) : -1;
+  if (index < 0) return { before: text, excluded: '', after: '', separated: false };
+  return {
+    before: text.slice(0, index),
+    excluded: excludedText,
+    after: text.slice(index + excludedText.length),
+    separated: true,
+  };
+}
+
+function joinAroundText(parts) {
+  return parts.separated ? `${parts.before}${parts.excluded}${parts.after}` : parts.before;
+}
+
+function canonicalizeHashtags(text) {
+  return text.replace(HASHTAG_PATTERN, (_match, body) => `#${body.normalize('NFKC')}`);
+}
+
+function appendHashtags(text, hashtags, excludedText = '') {
+  const normalized = normalizeHashtags(hashtags);
+  if (!normalized || !normalized.length) return text;
+  const parts = splitAroundText(text, excludedText);
+  parts.before = canonicalizeHashtags(parts.before);
+  parts.after = canonicalizeHashtags(parts.after);
+  const normalizedText = joinAroundText(parts);
+  const presentMatches = [...parts.before.matchAll(HASHTAG_PATTERN), ...parts.after.matchAll(HASHTAG_PATTERN)];
+  const present = new Set(presentMatches.map((match) => hashtagKey(match[1])));
+  const missing = normalized.filter((tag) => !present.has(hashtagKey(tag)));
+  return missing.length ? `${normalizedText}\n${missing.join(' ')}` : normalizedText;
+}
+
 function instant(value) {
   if (DateTime.isDateTime(value)) return value;
   if (value instanceof Date) return DateTime.fromJSDate(value, { zone: 'utc' });
@@ -14,16 +72,16 @@ function validateSettings(input = {}) {
   }
   if (Object.keys(errors).length) return { valid: false, errors };
   const source = input.schedule || {};
-  const intervalHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
+  const requestedIntervalHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
     ? Number(source.intervalHours) : source.intervalHours;
   const schedule = {
-    intervalHours: intervalHours === undefined ? 1 : intervalHours,
+    intervalHours: 1,
     timezone: source.timezone === undefined ? 'Asia/Kuala_Lumpur' : source.timezone,
     activeDays: [1, 2, 3, 4, 5, 6, 7],
     activeStart: '00:00',
     activeEnd: '00:00',
   };
-  if (typeof schedule.intervalHours !== 'number' || !Number.isFinite(schedule.intervalHours) || schedule.intervalHours < 1) {
+  if (requestedIntervalHours !== undefined && (typeof requestedIntervalHours !== 'number' || !Number.isFinite(requestedIntervalHours) || requestedIntervalHours < 1)) {
     errors['schedule.intervalHours'] = 'Minimum interval is one hour.';
   }
   if (typeof schedule.timezone !== 'string' || !IANAZone.isValidZone(schedule.timezone)) errors['schedule.timezone'] = 'Use a valid IANA timezone.';
@@ -31,6 +89,8 @@ function validateSettings(input = {}) {
   if (!['OFF', 'ON', 'MIXED'].includes(priceMode)) errors.priceMode = 'Use OFF, ON, or MIXED.';
   const gameWhitelist = input.gameWhitelist === undefined ? [] : input.gameWhitelist;
   if (!Array.isArray(gameWhitelist) || gameWhitelist.some((game) => typeof game !== 'string' || !game.trim() || game.length > 100)) errors.gameWhitelist = 'Use a list of game names.';
+  const hashtags = normalizeHashtags(input.hashtags === undefined ? [] : input.hashtags);
+  if (!hashtags) errors.hashtags = 'Use up to 30 hashtags with letters, numbers, or underscores.';
   const trackedLinks = input.trackedLinks || {};
   for (const pillar of ['topup', 'account']) {
     if (!trackedLinks[pillar]) continue;
@@ -54,7 +114,7 @@ function validateSettings(input = {}) {
   }
   if (Object.keys(errors).length) return { valid: false, errors };
   return { valid: true, errors: {}, settings: {
-    schedule, priceMode, gameWhitelist: [...new Set(gameWhitelist.map((game) => game.trim()))],
+    schedule, priceMode, gameWhitelist: [...new Set(gameWhitelist.map((game) => game.trim()))], hashtags,
     brand, guardrails, trackedLinks: { topup: trackedLinks.topup || '', account: trackedLinks.account || '' },
   } };
 }
@@ -118,17 +178,29 @@ function validateCaption(text, context = {}) {
   const errors = [];
   if (typeof text !== 'string' || !text.trim()) return { valid: false, errors: ['EMPTY_CAPTION'] };
   if ([...text].length > 500) errors.push('CAPTION_TOO_LONG');
+  const allowedHashtags = normalizeHashtags(context.hashtags ?? []);
+  if (!allowedHashtags) errors.push('INVALID_HASHTAGS');
+  const allowedKeys = new Set((allowedHashtags || []).map(hashtagKey));
+  const link = typeof context.trackedLink === 'string' ? context.trackedLink : '';
+  const captionParts = splitAroundText(text, link);
+  const hashMatches = [...captionParts.before.normalize('NFKC').matchAll(HASHTAG_PATTERN), ...captionParts.after.normalize('NFKC').matchAll(HASHTAG_PATTERN)];
+  for (const match of hashMatches) {
+    if (!allowedKeys.has(hashtagKey(match[1]))) errors.push('UNAPPROVED_HASHTAG');
+  }
   const normalized = text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
   for (const claim of context.forbiddenClaims || []) {
     if (typeof claim === 'string' && claim.trim() && normalized.includes(claim.normalize('NFKC').toLowerCase().trim())) errors.push('FORBIDDEN_CLAIM');
   }
-  let hook = text;
+  captionParts.before = captionParts.before.replace(HASHTAG_PATTERN, '');
+  captionParts.after = captionParts.after.replace(HASHTAG_PATTERN, '');
+  const withoutHashtags = joinAroundText(captionParts).replace(/\s+$/u, '');
+  let hook = withoutHashtags;
   if (context.trackedLink) {
     const approved = composeApprovedContent(context);
     if (!approved.valid) return { valid: false, errors: [...errors, ...approved.errors] };
     const suffix = `\n${approved.text}\n${context.trackedLink}`;
-    if (!text.endsWith(suffix)) return { valid: false, errors: [...errors, 'UNAPPROVED_FACT_OR_LINK'] };
-    hook = text.slice(0, -suffix.length);
+    if (!withoutHashtags.endsWith(suffix)) return { valid: false, errors: [...errors, 'UNAPPROVED_FACT_OR_LINK'] };
+    hook = withoutHashtags.slice(0, -suffix.length);
   }
   const normalizedHook = hook.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
   if (!normalizedHook.trim()) errors.push('EMPTY_HOOK');
@@ -141,4 +213,4 @@ function validateCaption(text, context = {}) {
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, HOOK_WORDS };
+module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, HOOK_WORDS };

@@ -11,9 +11,20 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.deepEqual(await runMigrations(pool),['002_notification_outbox.sql']);
     await pool.execute("DELETE FROM schema_migrations WHERE version='003_multi_admin.sql'");
     assert.deepEqual(await runMigrations(pool),['003_multi_admin.sql']);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='006_automation_sessions.sql'");
+    assert.deepEqual(await runMigrations(pool),['006_automation_sessions.sql']);
     const repo=createRepository(pool);
     assert.equal(await repo.healthCheck(),true);
-    const settings=await repo.getSettings();assert.equal(settings.automationEnabled,false);
+    const settings=await repo.getSettings();assert.equal(settings.automationEnabled,false);assert.deepEqual(settings.hashtags,[]);
+    const savedHashtags=await repo.saveSettings({...settings,hashtags:['#KedaiMerzz','#MobileLegends']},null);
+    assert.deepEqual(savedHashtags.hashtags,['#KedaiMerzz','#MobileLegends']);
+    const [[storedHashtagSettings]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
+    const storedHashtagJson=typeof storedHashtagSettings.settings_json==='string'?storedHashtagSettings.settings_json:JSON.stringify(storedHashtagSettings.settings_json);
+    assert.deepEqual(JSON.parse(storedHashtagJson).hashtags,['#KedaiMerzz','#MobileLegends']);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='005_hashtags_default.sql'");
+    assert.deepEqual(await runMigrations(pool),['005_hashtags_default.sql']);
+    assert.deepEqual((await repo.getSettings()).hashtags,['#KedaiMerzz','#MobileLegends']);
+    await repo.saveSettings({...await repo.getSettings(),hashtags:settings.hashtags},null);
     const facts=await repo.listFacts();assert.equal(typeof facts,'object');
     const dedupeKey=require('node:crypto').randomBytes(32).toString('hex');
     assert.equal(await repo.enqueueNotification({dedupeKey,message:'Integration test notification'}),true);
@@ -52,14 +63,31 @@ test('MySQL migrations and repository are reachable in integration environment',
     const eventKey=createHash('sha256').update(`tebar:${eventId}`).digest('hex');
     const [[queued]]=await pool.execute('SELECT COUNT(*) count FROM notification_outbox WHERE dedupe_key=?',[eventKey]);
     assert.equal(Number(queued.count),1);
-    const publishedEventId=randomUUID();const publishedPostId=`post-${randomUUID()}`;const publishedSlotId=randomUUID();
+    const publishedEventId=randomUUID();const publishedPostId=`post-${randomUUID()}`;const publishedSlotId=randomUUID();const webhookPublishedAt=new Date(Date.now()-2*60*1000);
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_post_id,request_payload) VALUES (?,?,'published',?,?)",[
       publishedSlotId,new Date(Date.now()+Math.floor(Math.random()*1000)),publishedPostId,JSON.stringify({targets:[{account_id:accountId}]}),
     ]);
-    await repo.applyWebhookEvent({eventId:publishedEventId,payloadHash:createHash('sha256').update(publishedEventId).digest('hex'),type:'post.published',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'published'},accountId,notificationCode:'post_published'});
+    await repo.applyWebhookEvent({eventId:publishedEventId,payloadHash:createHash('sha256').update(publishedEventId).digest('hex'),type:'post.published',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'published',published_at:webhookPublishedAt.toISOString()},accountId,notificationCode:'post_published'});
     const publishedDedupeKey=createHash('sha256').update(`post_published:slot:${publishedSlotId}`).digest('hex');
     const [[publishedNotice]]=await pool.execute('SELECT message FROM notification_outbox WHERE dedupe_key=?',[publishedDedupeKey]);
     assert.match(publishedNotice.message,/post_published/);
+    const [[publishedSnapshot]]=await pool.execute('SELECT status,provider_status,completed_at FROM slots WHERE id=?',[publishedSlotId]);
+    assert.equal(new Date(publishedSnapshot.completed_at).getTime(),webhookPublishedAt.getTime(),'webhook publication time anchors hourly cadence');
+    const delayedScheduledEventId=randomUUID();
+    await repo.applyWebhookEvent({eventId:delayedScheduledEventId,payloadHash:createHash('sha256').update(delayedScheduledEventId).digest('hex'),type:'post.scheduled',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'scheduled'},accountId,notificationCode:null});
+    const [[afterScheduledWebhook]]=await pool.execute('SELECT status,provider_status,completed_at FROM slots WHERE id=?',[publishedSlotId]);
+    assert.equal(afterScheduledWebhook.status,publishedSnapshot.status,'a delayed scheduled event cannot regress a terminal local status');
+    assert.equal(afterScheduledWebhook.provider_status,publishedSnapshot.provider_status,'a delayed scheduled event cannot replace the confirmed provider status');
+    assert.equal(new Date(afterScheduledWebhook.completed_at).getTime(),new Date(publishedSnapshot.completed_at).getTime(),'a delayed scheduled event cannot clear or move the completion timestamp');
+    const delayedCanceledEventId=randomUUID();
+    await repo.applyWebhookEvent({eventId:delayedCanceledEventId,payloadHash:createHash('sha256').update(delayedCanceledEventId).digest('hex'),type:'post.canceled',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'canceled'},accountId,notificationCode:'provider_error'});
+    const [[afterCanceledWebhook]]=await pool.execute('SELECT status,provider_status,completed_at FROM slots WHERE id=?',[publishedSlotId]);
+    assert.equal(afterCanceledWebhook.status,publishedSnapshot.status,'a stale cancellation cannot replace a terminal published outcome');
+    assert.equal(afterCanceledWebhook.provider_status,publishedSnapshot.provider_status);
+    assert.equal(new Date(afterCanceledWebhook.completed_at).getTime(),new Date(publishedSnapshot.completed_at).getTime());
+    const delayedCanceledKey=createHash('sha256').update(`tebar:${delayedCanceledEventId}`).digest('hex');
+    const [[delayedCanceledNotice]]=await pool.execute('SELECT COUNT(*) count FROM notification_outbox WHERE dedupe_key=?',[delayedCanceledKey]);
+    assert.equal(Number(delayedCanceledNotice.count),0,'a stale cancellation must not enqueue a fresh failure notice');
     const unrelatedId=randomUUID();
     await repo.applyWebhookEvent({eventId:unrelatedId,payloadHash:createHash('sha256').update(unrelatedId).digest('hex'),type:'account.disconnected',profileId:`other-${profileId}`,data:{account:{id:accountId}},accountId,notificationCode:'account_disconnected'});
     const unrelatedKey=createHash('sha256').update(`tebar:${unrelatedId}`).digest('hex');
@@ -84,7 +112,7 @@ test('MySQL migrations and repository are reachable in integration environment',
         priceMode:'OFF',gameWhitelist:['Mobile Legends'],brand:{name:'Kedai Merzz',voice:'Santai'},
         guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},
         trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'},
-        targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,
+        targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,automationSessionId:randomUUID(),
       };
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[
         JSON.stringify(testSettings),JSON.stringify({brand:testSettings.brand,guardrails:testSettings.guardrails}),
@@ -93,7 +121,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       // integration-run slots so their cadence cannot affect the concurrency case.
       await pool.execute('DELETE FROM slots');
       const scheduledAt=new Date(Date.now()-1000);
-      const due=await repo.ensureDueSlot({scheduledAt});
+      const due=await repo.ensureDueSlot({scheduledAt,sessionId:testSettings.automationSessionId});
       testSlotId=due.id;
       const claims=await Promise.all([
         repo.claimDueSlot({now:new Date(),minimumIntervalHours:6}),
@@ -116,81 +144,70 @@ test('MySQL migrations and repository are reachable in integration environment',
       assert.equal(reclaimed.idempotencyKey,idempotencyKey);
 
       await pool.execute('DELETE FROM slots');
-      const priorPostAt=new Date(Date.now()-30*60*1000);
-      const priorPostId=randomUUID();
-      const priorPublishedAt=new Date(Date.now()-10*60*1000);
-      await pool.execute("INSERT INTO slots (id,scheduled_at,status,completed_at) VALUES (?,?,'published',?)",[priorPostId,priorPostAt,priorPublishedAt]);
-      const stalePendingId=randomUUID();
-      await pool.execute("INSERT INTO slots (id,scheduled_at,status) VALUES (?,?,'pending')",[stalePendingId,new Date(Date.now()+5*3600000)]);
-      await pool.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1');
-      const cooldown=await afterRestart.setAutomationEnabled(true,null);
-      assert.equal(cooldown.changed,true);
-      assert.equal(cooldown.immediate,false);
-      assert.ok(new Date(cooldown.firstPostAt)-Date.now()>45*60*1000);
-      assert.ok(new Date(cooldown.firstPostAt)-Date.now()<55*60*1000);
-      const [[staleCount]]=await pool.execute("SELECT COUNT(*) count FROM slots WHERE status IN ('pending','generating','ready')");
-      assert.equal(Number(staleCount.count),0);
-      const cooldownDue=new Date(cooldown.firstPostAt);
-      const earlyCooldownPlan=await afterRestart.ensureNextDueSlot({now:new Date(cooldownDue.getTime()-10*60*1000),schedule:testSettings.schedule});
-      assert.ok(earlyCooldownPlan.slot);
-      assert.ok(Math.abs(new Date(earlyCooldownPlan.slot.scheduledAt)-cooldownDue)<5000);
-      const cooldownPlan=await afterRestart.ensureNextDueSlot({now:cooldownDue,schedule:testSettings.schedule});
-      assert.ok(cooldownPlan.slot);
-      assert.ok(Math.abs(new Date(cooldownPlan.slot.scheduledAt)-cooldownDue)<5000);
-      const firstActivationClaim=await afterRestart.claimDueSlot({now:cooldownDue,minimumIntervalHours:1});
-      assert.equal(firstActivationClaim.id,cooldownPlan.slot.id);
-      const [[afterCooldownSettings]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
-      const cooldownSettings=JSON.parse(jsonValue(afterCooldownSettings.settings_json));
-      assert.equal(cooldownSettings.activationFirstPostAt,undefined);
-      assert.ok(Math.abs(new Date(cooldownSettings.nextSlotAt)-cooldownDue-6*3600000)<5000);
+      await pool.execute('UPDATE settings SET automation_enabled=FALSE,settings_json=JSON_REMOVE(settings_json,\'$.automationSessionId\',\'$.nextSlotAt\',\'$.activationFirstPostAt\') WHERE id=1');
+      const oldSessionId=randomUUID();
+      const oldPublishedAt=new Date(Date.now()-10*60*1000);
+      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,completed_at) VALUES (?,?,?,'published',?)",[randomUUID(),new Date(Date.now()-30*60*1000),oldSessionId,oldPublishedAt]);
+      const firstActivation=await afterRestart.setAutomationEnabled(true,null);
+      assert.equal(firstActivation.changed,true);
+      assert.equal(firstActivation.immediate,true,'a new activation starts immediately despite recent history from another session');
+      assert.ok(Math.abs(new Date(firstActivation.firstPostAt)-Date.now())<5000);
+      const [[firstSessionRow]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
+      const firstSessionSettings=JSON.parse(jsonValue(firstSessionRow.settings_json));
+      const firstSessionId=firstSessionSettings.automationSessionId;
+      assert.match(firstSessionId,/^[0-9a-f-]{36}$/i);
+      const firstPlan=await afterRestart.ensureNextDueSlot({now:new Date(firstActivation.firstPostAt),schedule:testSettings.schedule});
+      assert.ok(firstPlan.slot);
+      assert.equal(firstPlan.slot.automationSessionId,firstSessionId);
+      const firstClaim=await afterRestart.claimDueSlot({now:new Date(firstActivation.firstPostAt),minimumIntervalHours:1});
+      assert.equal(firstClaim.id,firstPlan.slot.id);
+      assert.equal(firstClaim.automationSessionId,firstSessionId);
 
-      await pool.execute('DELETE FROM slots');
-      await pool.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1');
-      const inFlightId=randomUUID();
-      const inFlightStartedAt=new Date(Date.now()-30*60*1000);
-      await pool.execute("INSERT INTO slots (id,scheduled_at,status,publish_started_at) VALUES (?,?,'publishing',?)",[inFlightId,inFlightStartedAt,inFlightStartedAt]);
-      const delayedActivation=await afterRestart.setAutomationEnabled(true,null);
-      const delayedFirstAt=new Date(delayedActivation.firstPostAt);
-      const firstPendingBeforeCooldown=await afterRestart.ensureNextDueSlot({now:new Date(delayedFirstAt.getTime()-10*60*1000),schedule:testSettings.schedule});
-      assert.ok(firstPendingBeforeCooldown.slot);
-      assert.ok(Math.abs(new Date(firstPendingBeforeCooldown.slot.scheduledAt)-delayedFirstAt)<5000);
-      const providerCompletionAt=new Date(Date.now()+10*60*1000);
-      await pool.execute("UPDATE slots SET status='published',completed_at=? WHERE id=?",[providerCompletionAt,inFlightId]);
-      const reanchoredFirst=await afterRestart.ensureNextDueSlot({now:new Date(delayedFirstAt.getTime()-5*60*1000),schedule:testSettings.schedule});
-      assert.ok(reanchoredFirst.slot);
-      assert.ok(Math.abs(new Date(reanchoredFirst.slot.scheduledAt)-new Date(providerCompletionAt.getTime()+3600000))<5000);
-      const [[reanchoredSettingsRow]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
-      const reanchoredSettings=JSON.parse(jsonValue(reanchoredSettingsRow.settings_json));
-      assert.ok(Math.abs(new Date(reanchoredSettings.activationFirstPostAt)-new Date(reanchoredFirst.slot.scheduledAt))<5000);
-      const dueAfterProviderCompletion=await afterRestart.ensureNextDueSlot({now:new Date(reanchoredFirst.slot.scheduledAt),schedule:testSettings.schedule});
-      assert.ok(dueAfterProviderCompletion.slot);
-      assert.ok(Math.abs(new Date(dueAfterProviderCompletion.slot.scheduledAt)-new Date(providerCompletionAt.getTime()+3600000))<5000);
+      const failureAt=new Date(new Date(firstActivation.firstPostAt).getTime()+12*60*1000);
+      await afterRestart.updateSlot(firstClaim.id,{status:'failed',providerStatus:'failed',errorCode:'provider_error',completedAt:failureAt});
+      const retryDueAt=new Date(failureAt.getTime()+3600000);
+      const retryPlan=await afterRestart.ensureNextDueSlot({now:new Date(failureAt.getTime()+1000),schedule:testSettings.schedule});
+      assert.ok(retryPlan.slot);
+      assert.equal(retryPlan.slot.automationSessionId,firstSessionId);
+      assert.ok(Math.abs(new Date(retryPlan.slot.scheduledAt)-retryDueAt)<5000,'a confirmed failure anchors the next attempt one hour after confirmation');
 
-      await pool.execute('DELETE FROM slots');
-      await pool.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1');
-      const immediate=await afterRestart.setAutomationEnabled(true,null);
-      assert.equal(immediate.changed,true);
-      assert.equal(immediate.immediate,true);
-      assert.ok(Math.abs(new Date(immediate.firstPostAt)-Date.now())<5000);
-      const duePlan=await afterRestart.ensureNextDueSlot({now:new Date(),schedule:testSettings.schedule});
-      assert.ok(duePlan.slot);
-      assert.ok(Math.abs(new Date(duePlan.slot.scheduledAt)-Date.now())<10000);
-      const [[afterImmediateSettings]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
-      const nextAfterImmediate=JSON.parse(jsonValue(afterImmediateSettings.settings_json)).nextSlotAt;
-      assert.ok(Math.abs(new Date(nextAfterImmediate)-new Date(immediate.firstPostAt)-6*3600000)<5000);
-      const simulatedPublishedAt=new Date(new Date(immediate.firstPostAt).getTime()+20*60*1000);
-      await pool.execute("UPDATE slots SET status='published',completed_at=? WHERE id=?",[simulatedPublishedAt,duePlan.slot.id]);
-      const oneHourAfterActivation=new Date(new Date(immediate.firstPostAt).getTime()+3600000);
-      await pool.execute('UPDATE settings SET settings_json=JSON_SET(settings_json,\'$.schedule.intervalHours\',1,\'$.nextSlotAt\',?) WHERE id=1',[oneHourAfterActivation.toISOString()]);
-      const earlySlot=await afterRestart.ensureDueSlot({scheduledAt:oneHourAfterActivation});
-      assert.ok(earlySlot);
-      assert.equal(await afterRestart.claimDueSlot({now:oneHourAfterActivation,minimumIntervalHours:1}),null);
-      const [[heldEarlySlot]]=await pool.execute('SELECT status FROM slots WHERE id=?',[earlySlot.id]);
-      assert.equal(heldEarlySlot.status,'pending');
-      const nextHourly=await afterRestart.ensureNextDueSlot({now:oneHourAfterActivation,schedule:{...testSettings.schedule,intervalHours:1}});
-      assert.ok(nextHourly.slot);
-      assert.ok(Math.abs(new Date(nextHourly.slot.scheduledAt)-new Date(simulatedPublishedAt.getTime()+3600000))<5000);
-      assert.equal((await afterRestart.setAutomationEnabled(true,null)).changed,false);
+      assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
+      const [[pausedState]]=await pool.execute('SELECT settings_json,automation_enabled FROM settings WHERE id=1');
+      const pausedSettings=JSON.parse(jsonValue(pausedState.settings_json));
+      assert.equal(Boolean(pausedState.automation_enabled),false);
+      assert.equal(pausedSettings.nextSlotAt,undefined);
+      assert.equal(pausedSettings.activationFirstPostAt,undefined);
+      assert.equal(pausedSettings.automationSessionId,undefined);
+      const [[pausedSlots]]=await pool.execute('SELECT SUM(status=\'canceled\') canceled,SUM(status=\'failed\') failed FROM slots');
+      assert.equal(Number(pausedSlots.canceled),1,'pause cancels the unclaimed retry slot but preserves prior failure history');
+      assert.equal(Number(pausedSlots.failed),1);
+      assert.equal(await afterRestart.claimDueSlot({now:retryDueAt,minimumIntervalHours:1}),null);
+
+      const resumedAt=new Date();
+      const secondActivation=await afterRestart.setAutomationEnabled(true,null);
+      assert.equal(secondActivation.changed,true);
+      assert.equal(secondActivation.immediate,true,'reactivation does not inherit the prior session failure cooldown');
+      assert.ok(Math.abs(new Date(secondActivation.firstPostAt)-resumedAt)<5000);
+      const [[secondSessionRow]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
+      const secondSessionSettings=JSON.parse(jsonValue(secondSessionRow.settings_json));
+      const secondSessionId=secondSessionSettings.automationSessionId;
+      assert.notEqual(secondSessionId,firstSessionId);
+      const delayedFirstRunAt=new Date(new Date(secondActivation.firstPostAt).getTime()+20*60*1000);
+      const secondPlan=await afterRestart.ensureNextDueSlot({now:delayedFirstRunAt,schedule:testSettings.schedule});
+      assert.equal(secondPlan.slot.automationSessionId,secondSessionId);
+      assert.ok(Math.abs(new Date(secondPlan.slot.scheduledAt)-new Date(secondActivation.firstPostAt))<5000,'the activation-first slot remains available after a temporary verification block');
+      const secondClaim=await afterRestart.claimDueSlot({now:delayedFirstRunAt,minimumIntervalHours:1});
+      assert.equal(secondClaim.id,secondPlan.slot.id,'only the newest activation session can claim a slot');
+      assert.equal(secondClaim.automationSessionId,secondSessionId);
+      assert.equal((await afterRestart.setAutomationEnabled(true,null)).changed,false,'repeated enable does not create another session or immediate slot');
+
+      const successAt=new Date(delayedFirstRunAt.getTime()+9*60*1000);
+      await afterRestart.updateSlot(secondClaim.id,{status:'published',providerStatus:'published',completedAt:successAt});
+      const successNext=await afterRestart.ensureNextDueSlot({now:new Date(successAt.getTime()+1000),schedule:testSettings.schedule});
+      assert.ok(successNext.slot);
+      assert.ok(Math.abs(new Date(successNext.slot.scheduledAt)-new Date(successAt.getTime()+3600000))<5000,'success anchors the following post one hour after provider confirmation');
+
+      assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
     } finally {
       if (testSlotId) await pool.execute('DELETE FROM slots WHERE id=?',[testSlotId]);
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[

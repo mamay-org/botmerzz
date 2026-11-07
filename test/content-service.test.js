@@ -29,6 +29,69 @@ test('OFF omits facts and appends the pillar tracked link, using structured Mala
   assert.match(prompt.user, /Pemain santai/);
 });
 
+test('generated post appends normalized hashtags once after the approved link', async () => {
+  const settings = { ...base.settings, hashtags: [' #Kedai Merzz ', '##kedaimerzz', '#Mobile Legends'] };
+  const result = await generatePost({ ...base, settings }, {
+    generate: async () => 'Jom #KEDAImerzz kongsi pengalaman bermain!',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Jom #KEDAImerzz kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t\n#MobileLegends');
+  assert.equal((result.text.match(/#KEDAImerzz/gi) || []).length, 1);
+  assert.equal((result.text.match(/#MobileLegends/gi) || []).length, 1);
+});
+
+test('empty hashtag settings preserve the existing generated caption exactly', async () => {
+  const result = await generatePost({ ...base, settings: { ...base.settings, hashtags: [] } }, {
+    generate: async () => 'Jom kongsi pengalaman bermain!',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Jom kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t');
+});
+
+test('URL fragments are excluded from hashtag deduplication and configured tags are still appended', async () => {
+  const settings = {
+    ...base.settings,
+    trackedLinks: { ...base.settings.trackedLinks, topup: 'https://example.test/t#special' },
+    hashtags: ['#Special'],
+  };
+  const result = await generatePost({ ...base, settings }, {
+    generate: async () => 'Jom kongsi pengalaman bermain!',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Jom kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t#special\n#Special');
+});
+
+test('fullwidth hashtag marks and letters normalize before deduplication and validation', async () => {
+  const settings = { ...base.settings, hashtags: ['#KedaiMerzz'] };
+  const result = await generatePost({ ...base, settings }, {
+    generate: async () => 'Jom ＃ＫｅｄａｉＭｅｒｚｚ kongsi pengalaman bermain!',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Jom #KedaiMerzz kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t');
+});
+
+test('repeated hashtag prefixes normalize to one canonical marker', async () => {
+  const settings = { ...base.settings, hashtags: ['#KedaiMerzz'] };
+  const result = await generatePost({ ...base, settings }, {
+    generate: async () => 'Jom ##KedaiMerzz kongsi pengalaman bermain!',
+  });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Jom #KedaiMerzz kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t');
+});
+
+test('hashtag characters count toward final caption limit and are not truncated', async () => {
+  const hashtags = Array.from({ length: 6 }, (_, index) => `#${index}${'x'.repeat(89)}`);
+  let calls = 0;
+  const result = await generatePost({ ...base, settings: { ...base.settings, hashtags } }, {
+    generate: async () => { calls++; return 'Jom kongsi pengalaman bermain!'; },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reason, 'CONTENT_VALIDATION_FAILED');
+  assert.ok(result.errors.includes('CAPTION_TOO_LONG'));
+  assert.equal(result.text, undefined);
+});
+
 test('ON selects fresh facts and falls back to evergreen when all facts are stale', async () => {
   const context = { ...base, settings: { ...base.settings, priceMode: 'ON' } };
   let prompt;

@@ -40,7 +40,7 @@ async function handleTebarWebhook({ rawBody, signature, secret, repository, cloc
   const type=event.type.toLowerCase();
   const state=String(event.data.status||'').toLowerCase();
   const notificationCode=type.includes('account')&&(type.includes('expired')||type.includes('disconnected'))?'account_disconnected'
-    :type.includes('post')&&(type.includes('failed')||type.includes('partial')||state==='failed'||state==='partial')?'provider_error'
+    :type.includes('post')&&(type.includes('failed')||type.includes('partial')||type.includes('canceled')||state==='failed'||state==='partial'||state==='canceled')?'provider_error'
       :type==='post.published'||(type.includes('post')&&state==='published')?'post_published':null;
   try {
     const applied = await repository.applyWebhookEvent({

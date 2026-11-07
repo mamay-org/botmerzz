@@ -66,6 +66,7 @@
           <label>Gaya komunikasi<input name="voice" maxlength="500" placeholder="Ramah, santai gamer, informatif"></label>
           <label class="full">Wawasan pelanggan<textarea name="audienceNotes" rows="4" maxlength="2000" placeholder="Pertanyaan, kekhawatiran, dan hal yang dihargai pelanggan Malaysia…"></textarea></label>
           <label class="full">Game top-up yang disetujui <span class="field-hint">Satu nama per baris</span><textarea name="gameWhitelist" rows="4" maxlength="3000" placeholder="Mobile Legends"></textarea></label>
+          <label class="full">Hashtag otomatis <span class="field-hint">Satu hashtag per baris; awalan # dan spasi akan dinormalisasi. Hashtag yang sudah ada di konten tidak ditambahkan lagi.</span><textarea name="hashtags" rows="3" maxlength="6500" placeholder="#KedaiMerzz&#10;#MobileLegends"></textarea></label>
           <label>Tautan top-up berpelacak<input name="trackedTopup" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=topup"></label>
           <label>Tautan jual akun berpelacak<input name="trackedAccount" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=account"></label>
           <label class="full">Klaim yang dilarang <span class="field-hint">Satu frasa per baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% aman"></textarea></label>
@@ -86,7 +87,7 @@
       <section id="tab-schedule" class="tab-panel">
         <form id="schedule-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Interval penerbitan</h2><p class="muted">Penerbitan berjalan sepanjang hari, setiap hari. Saat otomasi diaktifkan, sistem langsung memproses utas pertama.</p></div></div>
-          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="1" max="168" step="1" required><span class="field-hint">Minimal 1 jam · maksimal 168 jam</span></label>
+          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="1" max="1" step="1" value="1" readonly required><span class="field-hint">Interval otomasi tetap 1 jam.</span></label>
           <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa informasi terbaru</option><option value="MIXED">MIXED · sekitar 1 dari 4 posting</option><option value="ON">ON · gunakan informasi terbaru</option></select></label>
           <div class="form-footer full"><span class="muted">Laporan Telegram dikirim sekitar pukul 22:00 waktu Malaysia. Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
         </form>
