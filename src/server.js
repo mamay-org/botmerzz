@@ -1,6 +1,6 @@
 const express = require('express');
 const path = require('node:path');
-const { validateSettings, isFactFresh } = require('./policy');
+const { validateSettings, isFactFresh, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT } = require('./policy');
 const { createIpRateLimiter } = require('./rate-limit');
 
 const COOKIE = 'merzz_admin';
@@ -248,7 +248,12 @@ function createServer({ config, repository, auth, services = {} }) {
       const settings = await repository.getSettings();
       if (typeof summary.game !== 'string' || !settings.gameWhitelist?.includes(summary.game)) return res.status(400).json({ error: 'GAME_NOT_WHITELISTED' });
     }
-    for (const [key, value] of Object.entries(summary)) if (!(typeof value === 'string' && value.length <= 200) && !(key === 'attributes' && Array.isArray(value) && value.length <= 20 && value.every((item) => typeof item === 'string' && item.length <= 100))) return res.status(400).json({ error: 'INVALID_FACT_FIELDS' });
+    for (const [key, value] of Object.entries(summary)) {
+      const valid = key === 'attributes'
+        ? Array.isArray(value) && value.length <= MAX_APPROVED_ATTRIBUTE_COUNT && value.every(isSafeApprovedAttribute)
+        : typeof value === 'string' && value.length <= 200;
+      if (!valid) return res.status(400).json({ error: 'INVALID_FACT_FIELDS' });
+    }
     try { return res.json(await repository.saveFact(service, { summary, active }, req.admin.id)); } catch (error) { return next(error); }
   });
   app.post('/api/automation/enable', authenticated, mutation, async (req, res, next) => {

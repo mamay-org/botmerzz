@@ -87,6 +87,48 @@ test('invalid AI result is recorded as a confirmed failure after content retry p
   assert.ok(calls.some((c) => c[0] === 'notice' && /content_validation_failed/.test(c[1])));
 });
 
+test('generation failure diagnostics are persisted and only allowlisted codes reach Telegram', async () => {
+  const { calls, repository, publisher } = harness();
+  publisher.publishNow = async () => assert.fail('must not publish');
+  const notices = [];
+  const runFailure = (diagnosticCode) => runDispatcher({
+    repository, publisher,
+    content: async () => ({ status: 'skipped', reason: 'GENERATION_FAILED', diagnosticCode, attempts: 2 }),
+    notifier: { send: async (message) => notices.push(message) },
+    clock: fixedClock,
+  });
+
+  assert.equal((await runFailure('ai_network_error')).failed, 1);
+  const safeActivity = calls.find((call) => call[0] === 'activity' && call[1].event === 'ai_generation_failed');
+  assert.equal(safeActivity[1].details.diagnosticCode, 'ai_network_error');
+  assert.ok(notices.some((message) => /generation_failed \(ai_network_error\)/.test(message)));
+
+  calls.length = 0;
+  notices.length = 0;
+  await runFailure('provider secret response');
+  const unsafeActivity = calls.find((call) => call[0] === 'activity' && call[1].event === 'ai_generation_failed');
+  assert.equal(unsafeActivity[1].details.diagnosticCode, 'content_service_error');
+  assert.ok(notices.every((message) => !/provider secret response/.test(message)));
+});
+
+test('stale generation slot details appear as a safe Telegram diagnostic', async () => {
+  const { repository, publisher } = harness({ repository: {
+    ensureNextDueSlot: async () => ({
+      slot: null, created: false, skippedCount: 0,
+      failedSlotIds: ['slot-stale'],
+      failedSlotDetails: [{ id: 'slot-stale', diagnosticCode: 'stale_generation' }],
+    }),
+  } });
+  const notices = [];
+  const result = await runDispatcher({
+    repository, publisher, content,
+    notifier: { send: async (message) => notices.push(message) },
+    clock: fixedClock,
+  });
+  assert.equal(result.failed, 1);
+  assert.ok(notices.some((message) => /generation_failed \(stale_generation\).*slot-stale/.test(message)));
+});
+
 test('uncertain publishing outcome is recorded unknown and is not blindly retried', async () => {
   const { calls, repository, publisher } = harness();
   let sends = 0;

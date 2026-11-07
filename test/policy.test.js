@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateSettings, isInActiveWindow, isFactFresh, validateCaption } = require('../src/policy');
+const { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent } = require('../src/policy');
 
 const now = '2026-11-05T04:00:00Z';
 const schedule = { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [4], activeStart: '09:00', activeEnd: '22:00' };
@@ -97,6 +97,56 @@ test('caption rejects forbidden claims, unapproved account attributes and games'
   }
   const account = { ...context, pillar: 'account', facts: [{ ...fact, pillar: 'account', attributes: ['Mythic', '100 skins'] }] };
   assert.equal(validateCaption('Jom kongsi pengalaman bermain!\nAkaun Mobile Legends: 400 Diamond; MYR 30; Mythic; 100 skins.\nhttps://example.test/topup', account).valid, true);
+});
+
+test('approved content omits unsafe stored attributes and keeps safe approved details', () => {
+  const result = composeApprovedContent({
+    now,
+    pillar: 'account',
+    facts: [{ id: 'account', pillar: 'account', game: 'Mobile Legends', active: true, updatedAt: now, attributes: ['Mythic ✨', 'Rank Mythic'] }],
+    gameWhitelist: ['Mobile Legends'],
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.text, 'Akaun Mobile Legends: Rank Mythic.');
+  assert.equal(result.factBearing, true);
+  assert.deepEqual(result.factIds, ['account']);
+});
+
+test('approved content falls back to evergreen product text when every stored attribute is unsafe', () => {
+  const result = composeApprovedContent({
+    now,
+    pillar: 'account',
+    facts: [{ id: 'account', pillar: 'account', game: 'Mobile Legends', active: true, updatedAt: now, attributes: ['Akaun ✨'] }],
+    gameWhitelist: ['Mobile Legends'],
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.text, 'Akaun Mobile Legends.');
+  assert.equal(result.factBearing, false);
+  assert.deepEqual(result.factIds, []);
+});
+
+test('approved content omits overlong and over-count legacy attributes at the shared API limits', () => {
+  const longAttribute = 'A'.repeat(101);
+  const overlong = composeApprovedContent({
+    now,
+    pillar: 'account',
+    facts: [{ id: 'account', pillar: 'account', game: 'Mobile Legends', active: true, updatedAt: now, attributes: [longAttribute, 'Rank Mythic'] }],
+    gameWhitelist: ['Mobile Legends'],
+  });
+  assert.equal(overlong.valid, true);
+  assert.equal(overlong.text, 'Akaun Mobile Legends: Rank Mythic.');
+  assert.doesNotMatch(overlong.text, /A{101}/);
+
+  const attributes = Array.from({ length: 20 }, (_, index) => `Rank ${index + 1}`).concat('Overflow Rank');
+  const excess = composeApprovedContent({
+    now,
+    pillar: 'account',
+    facts: [{ id: 'account', pillar: 'account', game: 'Mobile Legends', active: true, updatedAt: now, attributes }],
+    gameWhitelist: ['Mobile Legends'],
+  });
+  assert.equal(excess.valid, true);
+  assert.match(excess.text, /Rank 20/);
+  assert.doesNotMatch(excess.text, /Overflow Rank/);
 });
 
 test('caption enforces full text length, Malay signal, and approved links', () => {

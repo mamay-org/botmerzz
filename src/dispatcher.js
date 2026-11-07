@@ -12,6 +12,12 @@ const SAFE_ERROR_CODES = new Set([
   'automation_paused', 'cancel_failed', 'post_not_editable', 'unknown_outcome',
   'post_published',
 ]);
+const SAFE_DIAGNOSTIC_CODES = new Set([
+  'invalid_settings', 'approved_content_invalid', 'onboarding_incomplete', 'content_validation_failed',
+  'ai_not_configured', 'ai_invalid_request', 'ai_unauthorized', 'ai_rate_limited',
+  'ai_provider_error', 'ai_network_error', 'ai_invalid_response', 'ai_request_failed',
+  'content_service_error', 'stale_generation',
+]);
 
 function safeCode(value) {
   return SAFE_ERROR_CODES.has(value) ? value : 'system_error';
@@ -58,8 +64,9 @@ function makeIdempotencyKey(slot) {
 async function sendNotice(notifier, code, details = {}) {
   if (!notifier || typeof notifier.send !== 'function') return false;
   const slotText = details.slotId ? ` Slot: ${String(details.slotId).slice(0, 36)}.` : '';
+  const diagnostic = SAFE_DIAGNOSTIC_CODES.has(details.diagnosticCode) ? ` (${details.diagnosticCode})` : '';
   try {
-    await notifier.send(`Kedai Merzz automation: ${safeCode(code)}.${slotText}`, details.slotId ? `${safeCode(code)}:slot:${details.slotId}` : undefined);
+    await notifier.send(`Kedai Merzz automation: ${safeCode(code)}${diagnostic}.${slotText}`, details.slotId ? `${safeCode(code)}:slot:${details.slotId}` : undefined);
     return true;
   } catch {
     return false;
@@ -175,9 +182,12 @@ async function runDispatcher({
       result.skipped += planned.skippedCount;
       await repository.appendActivity({ event: 'missed_slots_skipped', details: { count: planned.skippedCount } });
     }
-    for (const failedSlotId of planned?.failedSlotIds || []) {
+    const failedSlotDetails = Array.isArray(planned?.failedSlotDetails) && planned.failedSlotDetails.length
+      ? planned.failedSlotDetails
+      : (planned?.failedSlotIds || []).map((id) => ({ id }));
+    for (const failedSlot of failedSlotDetails) {
       result.failed++;
-      await sendNotice(notifier, 'generation_failed', { slotId: failedSlotId });
+      await sendNotice(notifier, 'generation_failed', { slotId: failedSlot.id, diagnosticCode: failedSlot.diagnosticCode });
     }
     if (planned && !planned.slot) return result;
   } else {
@@ -229,20 +239,26 @@ async function runDispatcher({
         slot,
       }, contentGenerator ? { generate: contentGenerator } : undefined);
     } catch {
-      generated = { status: 'skipped', reason: 'GENERATION_FAILED', attempts: 2 };
+      generated = { status: 'skipped', reason: 'GENERATION_FAILED', diagnosticCode: 'content_service_error', attempts: 2 };
     }
   }
   if (!generated || generated.status !== 'ready' || typeof generated.text !== 'string') {
     const code = generated?.reason === 'CONTENT_VALIDATION_FAILED' ? 'content_validation_failed'
       : generated?.reason === 'ONBOARDING_INCOMPLETE' ? 'onboarding_incomplete' : 'generation_failed';
+    const reasonDiagnostic = generated?.reason === 'INVALID_SETTINGS' ? 'invalid_settings'
+      : generated?.reason === 'INVALID_APPROVED_FACTS' ? 'approved_content_invalid'
+        : generated?.reason === 'CONTENT_VALIDATION_FAILED' ? 'content_validation_failed'
+          : generated?.reason === 'ONBOARDING_INCOMPLETE' ? 'onboarding_incomplete' : null;
+    const diagnosticCode = SAFE_DIAGNOSTIC_CODES.has(generated?.diagnosticCode)
+      ? generated.diagnosticCode : reasonDiagnostic || 'content_service_error';
     if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
       && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
       result.skipped++;
       return result;
     }
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: code, completedAt: clock().toISOString() });
-    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, attempts: Math.min(2, generated?.attempts || 0) } });
-    await sendNotice(notifier, code, { slotId: slot.id });
+    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, diagnosticCode, attempts: Math.min(2, generated?.attempts || 0) } });
+    await sendNotice(notifier, code, { slotId: slot.id, diagnosticCode });
     result.failed++;
     return result;
   }

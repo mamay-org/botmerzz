@@ -284,7 +284,8 @@ function createRepository(pool) {
         await c.execute("UPDATE slots SET status='failed',error_code='stale_generation',completed_at=? WHERE id=? AND automation_session_id=? AND status='generating'",[current.toJSDate(),stale.id,sessionId]);
         await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'ai_generation_failed',?)",[stale.id,JSON.stringify({code:'generation_failed',reason:'stale_generation',attempts:0})]);
       }
-      const failedSlotIds=staleGenerations.map((slot)=>slot.id);
+      const failedSlotDetails=staleGenerations.map((slot)=>({id:slot.id,diagnosticCode:'stale_generation'}));
+      const failedSlotIds=failedSlotDetails.map((slot)=>slot.id);
       const [[lastPost]]=await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1",[sessionId]);
       let skippedCount=0;
       const [[pendingSlot]]=await c.execute("SELECT id,scheduled_at,status,automation_session_id FROM slots WHERE automation_session_id=? AND status='pending' ORDER BY scheduled_at LIMIT 1 FOR UPDATE",[sessionId]);
@@ -306,9 +307,9 @@ function createRepository(pool) {
             await c.execute('UPDATE slots SET scheduled_at=? WHERE id=? AND automation_session_id=?',[pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS'),pendingSlot.id,sessionId]);
           }
         }
-        if(pendingAt>current){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount,failedSlotIds,failedCount:failedSlotIds.length};}
+        if(pendingAt>current){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};}
         const active=isInActiveWindow(pendingAt.toJSDate(),{...checked.settings.schedule,timezone:zone});
-        if(isActivationFirstSlot||(active&&isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone})&&current.toMillis()-pendingAt.toMillis()<=15*60*1000)){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount:0,failedSlotIds,failedCount:failedSlotIds.length};}
+        if(isActivationFirstSlot||(active&&isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone})&&current.toMillis()-pendingAt.toMillis()<=15*60*1000)){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount:0,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};}
         await c.execute("UPDATE slots SET status='skipped',error_code=?,completed_at=? WHERE id=? AND automation_session_id=?",[active?'missed_slot':'outside_active_window',current.toJSDate(),pendingSlot.id,sessionId]);skippedCount++;
         if(isActivationFirstSlot){delete settings.activationFirstPostAt;activationFirstPostAt=null;await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);}
       }
@@ -335,11 +336,11 @@ function createRepository(pool) {
         settings.nextSlotAt=due.toUTC().toISO();
         if(isActivationFirstDue&&status!=='pending')delete settings.activationFirstPostAt;
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
-        if(status==='pending'){await c.commit();return {slot:{id:existing.id,automationSessionId:sessionId,scheduledAt:existing.scheduled_at,status:existing.status},created:insert.affectedRows===1,skippedCount,failedSlotIds,failedCount:failedSlotIds.length};}
+        if(status==='pending'){await c.commit();return {slot:{id:existing.id,automationSessionId:sessionId,scheduledAt:existing.scheduled_at,status:existing.status},created:insert.affectedRows===1,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};}
       }
       if(settings.nextSlotAt) await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
       await c.commit();
-      return {slot:null,created:false,skippedCount,failedSlotIds,failedCount:failedSlotIds.length};
+      return {slot:null,created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};
     } catch(e){await c.rollback();throw e;}finally{c.release();}
   }
   async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[]}) {
