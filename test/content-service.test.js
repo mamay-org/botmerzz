@@ -134,6 +134,21 @@ test('ON selects fresh facts and falls back to evergreen when all facts are stal
   assert.equal(stale.factBearing, false);
 });
 
+test('ON omits unsafe stored account attributes and still generates evergreen content', async () => {
+  const context = {
+    ...base,
+    settings: { ...base.settings, priceMode: 'ON' },
+    history: [{ pillar: 'topup', status: 'published', factBearing: false }],
+    facts: [{ ...base.facts[1], attributes: ['Mythic ✨'] }],
+  };
+  const result = await generatePost(context, { generate: async () => 'Jom kongsi pengalaman bermain!' });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.factBearing, true);
+  assert.deepEqual(result.factIds, [2]);
+  assert.equal(result.text, 'Jom kongsi pengalaman bermain!\nAkaun Mobile Legends: MYR 80.\nhttps://example.test/a');
+  assert.doesNotMatch(result.text, /Mythic/);
+});
+
 test('MIXED targets one fact-bearing post per four published posts', async () => {
   const settings = { ...base.settings, priceMode: 'MIXED' };
   const history = [];

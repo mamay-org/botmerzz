@@ -2,6 +2,8 @@ const { DateTime, IANAZone } = require('luxon');
 
 const MAX_HASHTAGS = 30;
 const MAX_HASHTAG_LENGTH = 100;
+const MAX_APPROVED_ATTRIBUTE_COUNT = 20;
+const MAX_APPROVED_ATTRIBUTE_LENGTH = 100;
 const HASHTAG_PATTERN = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
 
 function hashtagKey(value) {
@@ -148,8 +150,7 @@ function composeApprovedContent(context) {
   const fact = facts[0];
   const game = fact?.game || (pillar === 'account' ? 'Mobile Legends' : context.gameWhitelist?.[0]);
   const allowed = pillar === 'account' ? game === 'Mobile Legends' : context.gameWhitelist?.includes(game);
-  const safeField = (value) => typeof value === 'string' && value.trim() && value.length <= 200
-    && /^[\p{L}\p{N} ,.'()+/-]+$/u.test(value) && !/[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(value);
+  const safeField = isSafeApprovedField;
   if (!['topup', 'account'].includes(pillar) || !allowed || !safeField(game)) return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
   const details = [];
   if (fact) {
@@ -163,8 +164,9 @@ function composeApprovedContent(context) {
       details.push(`MYR ${raw}`);
     }
     if (fact.availability) details.push(fact.availability);
-    if (fact.attributes !== undefined && (!Array.isArray(fact.attributes) || fact.attributes.some((attribute) => !safeField(attribute)))) return { valid: false, errors: ['INVALID_APPROVED_ATTRIBUTE'] };
-    details.push(...(fact.attributes || []));
+    const safeAttributes = Array.isArray(fact.attributes)
+      ? fact.attributes.slice(0, MAX_APPROVED_ATTRIBUTE_COUNT).filter(isSafeApprovedAttribute) : [];
+    details.push(...safeAttributes);
   }
   const factBearing = details.length > 0;
   return {
@@ -172,6 +174,15 @@ function composeApprovedContent(context) {
     text: `${pillar === 'topup' ? 'Top-up' : 'Akaun'} ${game}${factBearing ? ': ' + details.join('; ') : ''}.`,
     factBearing, factIds: factBearing && fact.id !== undefined ? [fact.id] : [],
   };
+}
+
+function isSafeApprovedField(value) {
+  return typeof value === 'string' && value.trim() && value.length <= 200
+    && /^[\p{L}\p{N} ,.'()+/-]+$/u.test(value) && !/[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(value);
+}
+
+function isSafeApprovedAttribute(value) {
+  return typeof value === 'string' && value.length <= MAX_APPROVED_ATTRIBUTE_LENGTH && isSafeApprovedField(value);
 }
 
 function validateCaption(text, context = {}) {
@@ -213,4 +224,4 @@ function validateCaption(text, context = {}) {
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, HOOK_WORDS };
+module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT, HOOK_WORDS };
