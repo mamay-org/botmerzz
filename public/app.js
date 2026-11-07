@@ -101,6 +101,7 @@
     setFormValues($('#content-form'), {
       brandName: brand.name, voice: brand.voice, audienceNotes: brand.audienceNotes,
       gameWhitelist: (settings.gameWhitelist || []).join('\n'),
+      hashtags: (settings.hashtags || []).join('\n'),
       trackedTopup: settings.trackedLinks?.topup || '', trackedAccount: settings.trackedLinks?.account || '',
       forbiddenClaims: (guardrails.forbiddenClaims || []).join('\n'),
       approvedClaims: (guardrails.approvedClaims || []).join('\n'),
@@ -395,6 +396,7 @@
     const settings = state.data.settings || {};
     settings.brand = { name: value(form, 'brandName'), voice: value(form, 'voice'), audienceNotes: value(form, 'audienceNotes') };
     settings.gameWhitelist = lines(value(form, 'gameWhitelist'));
+    settings.hashtags = lines(value(form, 'hashtags'));
     settings.trackedLinks = { ...(settings.trackedLinks || {}), topup: value(form, 'trackedTopup'), account: value(form, 'trackedAccount') };
     settings.guardrails = { ...(settings.guardrails || {}), approved: form.elements.guardrailsApproved.checked, forbiddenClaims: lines(value(form, 'forbiddenClaims')), approvedClaims: lines(value(form, 'approvedClaims')) };
     try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }

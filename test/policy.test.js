@@ -7,7 +7,7 @@ const schedule = { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: 
 const fact = { id: 1, pillar: 'topup', game: 'Mobile Legends', active: true, updatedAt: now, price: 30, denomination: '400 Diamond' };
 const context = { now, pillar: 'topup', facts: [fact], gameWhitelist: ['Mobile Legends'], forbiddenClaims: ['termurah', '100% selamat'], approvedClaims: [], trackedLink: 'https://example.test/topup' };
 
-test('settings normalize 24-hour schedule defaults and enforce a one-hour minimum', () => {
+test('settings normalize 24-hour scheduling to the one-hour cadence', () => {
   const defaults = validateSettings({});
   assert.equal(defaults.settings.schedule.intervalHours, 1);
   assert.equal(defaults.settings.schedule.activeStart, '00:00');
@@ -15,6 +15,7 @@ test('settings normalize 24-hour schedule defaults and enforce a one-hour minimu
   const valid = validateSettings({ schedule: { ...schedule, intervalHours: '1', timezone: undefined }, priceMode: 'MIXED' });
   assert.equal(valid.valid, true);
   assert.equal(valid.settings.schedule.intervalHours, 1);
+  assert.equal(validateSettings({ schedule: { ...schedule, intervalHours: 6 } }).settings.schedule.intervalHours, 1);
   assert.equal(valid.settings.schedule.timezone, 'Asia/Kuala_Lumpur');
   assert.deepEqual(valid.settings.schedule.activeDays, [1, 2, 3, 4, 5, 6, 7]);
   assert.equal(valid.settings.schedule.activeStart, '00:00');
@@ -25,6 +26,31 @@ test('settings normalize 24-hour schedule defaults and enforce a one-hour minimu
   assert.equal(validateSettings({ schedule: { ...schedule, timezone: 'Mars/Olympus' } }).valid, false);
   assert.equal(validateSettings({ schedule: { ...schedule, activeDays: [], activeStart: '25:00', activeEnd: 'bad' } }).valid, true);
   assert.equal(validateSettings({ schedule, priceMode: 'ALWAYS' }).valid, false);
+});
+
+test('settings normalize hashtag prefixes, spacing, and case-insensitive duplicates', () => {
+  const checked = validateSettings({ hashtags: [' #Mobile Legends ', '##mobilelegends', ' #KedaiMerzz  '] });
+  assert.equal(checked.valid, true);
+  assert.deepEqual(checked.settings.hashtags, ['#MobileLegends', '#KedaiMerzz']);
+});
+
+test('settings reject malformed hashtag lists and unsafe tag characters', () => {
+  for (const hashtags of ['#KedaiMerzz', ['#tag!'], ['#tag/name'], [1], Array(31).fill('#tag')]) {
+    assert.equal(validateSettings({ hashtags }).valid, false, JSON.stringify(hashtags));
+  }
+});
+
+test('caption accepts configured hashtags and rejects tags outside the configured list', () => {
+  const caption = 'Jom #KedaiMerzz kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/topup\n#MobileLegends';
+  const contextWithHashtags = { ...context, facts: [], hashtags: ['#KedaiMerzz', '#MobileLegends'] };
+  assert.equal(validateCaption(caption, contextWithHashtags).valid, true);
+  assert.equal(validateCaption(caption.replace('#MobileLegends', '#OtherGame'), contextWithHashtags).valid, false);
+});
+
+test('approved tracked URL fragments are not parsed or removed as post hashtags', () => {
+  const trackedLink = 'https://example.test/topup/#section';
+  const caption = `Jom kongsi pengalaman bermain!\nTop-up Mobile Legends: 400 Diamond; MYR 30.\n${trackedLink}`;
+  assert.equal(validateCaption(caption, { ...context, trackedLink, hashtags: [] }).valid, true);
 });
 
 test('legacy active windows cannot restrict continuous 24-hour scheduling', () => {

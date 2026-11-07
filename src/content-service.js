@@ -1,4 +1,4 @@
-const { validateSettings, isFactFresh, validateCaption, composeApprovedContent, HOOK_WORDS } = require('./policy');
+const { validateSettings, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, HOOK_WORDS } = require('./policy');
 
 async function generatePost(context, { generate }) {
   const checked = validateSettings(context.settings);
@@ -17,7 +17,7 @@ async function generatePost(context, { generate }) {
     && (pillar === 'account' ? fact.game === 'Mobile Legends' : settings.gameWhitelist.includes(fact.game))) : [];
   const trackedLink = settings.trackedLinks[pillar];
   const validationContext = { now: context.now, pillar, facts, trackedLink,
-    gameWhitelist: settings.gameWhitelist, forbiddenClaims: settings.guardrails.forbiddenClaims };
+    gameWhitelist: settings.gameWhitelist, forbiddenClaims: settings.guardrails.forbiddenClaims, hashtags: settings.hashtags };
   const approved = composeApprovedContent(validationContext);
   if (!approved.valid) return { status: 'skipped', reason: 'INVALID_APPROVED_FACTS', pillar, attempts: 0, errors: approved.errors };
   const system = 'Anda penulis kandungan Threads dalam Bahasa Melayu Malaysia yang semula jadi dan mesra pemain. '
@@ -27,14 +27,16 @@ async function generatePost(context, { generate }) {
   const data = {
     voice: settings.brand.voice, audienceNotes: settings.brand.audienceNotes,
     allowedWords: HOOK_WORDS,
-    maxHookCharacters: 500 - [...trackedLink].length - [...approved.text].length - 2,
+    maxHookCharacters: Math.max(0, 500 - [...trackedLink].length - [...approved.text].length - 2
+      - (settings.hashtags.length ? 1 + settings.hashtags.reduce((count, tag) => count + [...tag].length, 0) + settings.hashtags.length - 1 : 0)),
   };
   let reason = 'GENERATION_FAILED';
   let errors = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const generated = await generate({ system, user: JSON.stringify({ ...data, ...(attempt > 1 ? { correction: errors.length ? errors : ['GENERATION_FAILED'] } : {}) }), maxTokens: 300 });
-      const text = typeof generated === 'string' ? `${generated.trim()}\n${approved.text}\n${trackedLink}` : '';
+      const content = typeof generated === 'string' ? `${generated.trim()}\n${approved.text}\n${trackedLink}` : '';
+      const text = typeof generated === 'string' ? appendHashtags(content, settings.hashtags, trackedLink) : '';
       const validation = validateCaption(text, validationContext);
       if (validation.valid) {
         return { status: 'ready', text, pillar, factBearing: approved.factBearing, factIds: approved.factIds, attempts: attempt };

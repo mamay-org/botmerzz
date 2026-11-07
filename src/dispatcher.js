@@ -27,6 +27,29 @@ function providerSlotStatus(post, expectedAccountId) {
   return 'publishing';
 }
 
+function confirmedCompletedAt(status, post, expectedAccountId, observedAt) {
+  if (!['published', 'failed', 'partial', 'canceled'].includes(status)) return null;
+  if (status === 'published') {
+    const target = post?.targets?.find((candidate) => candidate?.accountId === expectedAccountId
+      && String(candidate.platform || '').toLowerCase() === 'threads'
+      && candidate.status === 'published');
+    const publishedAt = target?.publishedAt;
+    if (publishedAt) {
+      const providerTime = new Date(publishedAt);
+      if (Number.isFinite(providerTime.getTime())) return providerTime.toISOString();
+    }
+  }
+  const observedTime = new Date(observedAt);
+  return Number.isFinite(observedTime.getTime()) ? observedTime.toISOString() : null;
+}
+
+async function providerOutcomeStatus(repository, slot, post, expectedAccountId) {
+  const status = providerSlotStatus(post, expectedAccountId);
+  if (post.status !== 'canceled' || !slot?.automationSessionId || typeof repository.isAutomationSessionActive !== 'function') return status;
+  try { return await repository.isAutomationSessionActive(slot.automationSessionId) ? 'failed' : 'canceled'; }
+  catch { return status; }
+}
+
 function makeIdempotencyKey(slot) {
   const id = String(slot.id || randomUUID()).replace(/[^A-Za-z0-9_-]/g, '_');
   return `km_${id}`.slice(0, 128);
@@ -43,7 +66,35 @@ async function sendNotice(notifier, code, details = {}) {
   }
 }
 
-async function reconcileUnsettled({ repository, publisher, notifier, counts }) {
+async function cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId }) {
+  if (!slot?.automationSessionId || typeof repository.isAutomationSessionActive !== 'function') return { post, status, cancellationStatus: null };
+  let active;
+  try { active = await repository.isAutomationSessionActive(slot.automationSessionId); }
+  catch { return { post, status, cancellationStatus: null }; }
+  if (active || status !== 'publishing' || !post?.id) {
+    return { post, status, cancellationStatus: null };
+  }
+  let latest = post;
+  try {
+    latest = await publisher.getPost(post.id);
+    status = providerSlotStatus(latest, expectedAccountId);
+    if (status !== 'publishing') return { post: latest, status, cancellationStatus: null };
+  } catch {
+    // The accepted status is still known; leave it unsettled and let reconciliation check again.
+  }
+  try {
+    const canceled = await publisher.cancelPost(post.id);
+    return {
+      post: canceled,
+      status: providerSlotStatus(canceled, expectedAccountId),
+      cancellationStatus: canceled.status === 'canceled' ? 'canceled' : canceled.status === 'publishing' ? 'in_flight' : canceled.status,
+    };
+  } catch (error) {
+    return { post: latest, status, cancellationStatus: error?.code === 'post_not_editable' ? 'in_flight' : 'failed' };
+  }
+}
+
+async function reconcileUnsettled({ repository, publisher, notifier, counts, clock = () => new Date() }) {
   const slots = await repository.listUnsettledSlots();
   let checked = 0;
   for (const slot of slots) {
@@ -55,13 +106,15 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts }) {
       if (!slot.providerPostId) continue;
       const post = await publisher.getPost(slot.providerPostId);
       const expectedAccountId = slot.requestPayload?.targets?.[0]?.account_id;
-      const status = providerSlotStatus(post, expectedAccountId);
+      const status = await providerOutcomeStatus(repository, slot, post, expectedAccountId);
+      const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
+      const completedAt = terminal ? confirmedCompletedAt(status, post, expectedAccountId, clock()) : null;
       await repository.updateSlot(slot.id, {
         status,
         providerStatus: post.status,
         providerPostId: post.id,
-        errorCode: post.targets?.some((target) => target.status === 'failed') ? 'provider_error' : null,
-        completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? new Date().toISOString() : null,
+        errorCode: status === 'failed' || status === 'partial' || post.targets?.some((target) => target.status === 'failed') ? 'provider_error' : null,
+        completedAt,
       });
       checked++;
       if (counts && status === 'published') {
@@ -69,6 +122,7 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts }) {
         await sendNotice(notifier, 'post_published', { slotId: slot.id });
       } else if (counts && (status === 'partial' || status === 'failed')) {
         counts.failed++;
+        try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* The provider status remains durable on the slot. */ }
         await sendNotice(notifier, 'provider_error', { slotId: slot.id });
       } else if (counts && status === 'unknown') counts.unknown++;
     } catch {
@@ -84,7 +138,6 @@ async function runDispatcher({
   publisher,
   notifier,
   clock = () => new Date(),
-  minimumIntervalHours = 1,
   timezone = 'Asia/Kuala_Lumpur',
   contentGenerator,
   maxPublishAttempts = 2,
@@ -92,14 +145,15 @@ async function runDispatcher({
   if (!repository || !publisher || typeof content !== 'function') {
     throw new TypeError('repository, publisher, and content dependencies are required');
   }
+  const minimumIntervalHours = 1;
   const now = clock();
   const result = { claimed: 0, published: 0, skipped: 0, failed: 0, unknown: 0, reconciled: 0, summarySent: false };
 
-  const state = await repository.getRuntimeState();
+  let state = await repository.getRuntimeState();
   if (typeof notifier?.flush === 'function') {
     try { await notifier.flush(); } catch { /* Notification retries must not block publishing safety checks. */ }
   }
-  result.reconciled = await reconcileUnsettled({ repository, publisher, notifier, counts: result });
+  result.reconciled = await reconcileUnsettled({ repository, publisher, notifier, counts: result, clock });
   await maybeSendDailySummary({ repository, notifier, now, counts: result });
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
 
@@ -110,7 +164,7 @@ async function runDispatcher({
     return result;
   }
 
-  const schedule = state.settings?.schedule || {};
+  let schedule = { ...(state.settings?.schedule || {}), intervalHours: 1 };
   if (typeof repository.ensureNextDueSlot === 'function') {
     const planned = await repository.ensureNextDueSlot({
       now,
@@ -121,6 +175,10 @@ async function runDispatcher({
       result.skipped += planned.skippedCount;
       await repository.appendActivity({ event: 'missed_slots_skipped', details: { count: planned.skippedCount } });
     }
+    for (const failedSlotId of planned?.failedSlotIds || []) {
+      result.failed++;
+      await sendNotice(notifier, 'generation_failed', { slotId: failedSlotId });
+    }
     if (planned && !planned.slot) return result;
   } else {
     throw new TypeError('repository.ensureNextDueSlot is required for atomic slot planning');
@@ -129,6 +187,17 @@ async function runDispatcher({
   const slot = await repository.claimDueSlot({ now, minimumIntervalHours });
   if (!slot) return result;
   result.claimed = 1;
+
+  const claimedState = await repository.getRuntimeState();
+  if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId
+    || !slot.automationSessionId || claimedState.settings?.automationSessionId !== slot.automationSessionId) {
+    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+    result.skipped++;
+    return result;
+  }
+  state = claimedState;
+  schedule = { ...(state.settings?.schedule || {}), intervalHours: 1 };
 
   if (schedule && !isInActiveWindow(slot.scheduledAt || now, schedule)) {
     await repository.updateSlot(slot.id, { status: 'skipped', errorCode: 'outside_active_window', completedAt: now.toISOString() });
@@ -166,17 +235,22 @@ async function runDispatcher({
   if (!generated || generated.status !== 'ready' || typeof generated.text !== 'string') {
     const code = generated?.reason === 'CONTENT_VALIDATION_FAILED' ? 'content_validation_failed'
       : generated?.reason === 'ONBOARDING_INCOMPLETE' ? 'onboarding_incomplete' : 'generation_failed';
-    await repository.updateSlot(slot.id, { status: 'skipped', errorCode: code, completedAt: now.toISOString() });
+    if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
+      && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
+      result.skipped++;
+      return result;
+    }
+    await repository.updateSlot(slot.id, { status: 'failed', errorCode: code, completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, attempts: Math.min(2, generated?.attempts || 0) } });
     await sendNotice(notifier, code, { slotId: slot.id });
-    result.skipped++;
+    result.failed++;
     return result;
   }
 
   if (!isPrepared) {
     idempotencyKey = makeIdempotencyKey(slot);
     payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
-    await repository.savePreparedSlot(slot.id, {
+    const saved = await repository.savePreparedSlot(slot.id, {
       requestPayload: payload,
       idempotencyKey,
       caption: generated.text,
@@ -184,6 +258,11 @@ async function runDispatcher({
       factBearing: generated.factBearing === true,
       factIds: generated.factIds || [],
     });
+    if (saved === false) {
+      await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+      result.skipped++;
+      return result;
+    }
   }
 
   const started = await repository.startPublishing(slot.id, { now, minimumIntervalHours });
@@ -198,10 +277,33 @@ async function runDispatcher({
     result.skipped++;
     return result;
   }
+  if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
+    && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
+    await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+    result.skipped++;
+    return result;
+  }
 
   let attempt = 0;
   let acceptedPost = null;
+  let retryableFailure = null;
   while (attempt < Math.max(1, Math.min(2, maxPublishAttempts))) {
+    if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
+      && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
+      if (retryableFailure) {
+        const code = safeCode(retryableFailure.code);
+        await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: code, completedAt: clock().toISOString() });
+        await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code } });
+        await sendNotice(notifier, code, { slotId: slot.id });
+        result.failed++;
+        return result;
+      }
+      await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: clock().toISOString() });
+      await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
+      result.skipped++;
+      return result;
+    }
     attempt++;
     try {
       acceptedPost = await publisher.publishNow(payload, idempotencyKey);
@@ -211,13 +313,30 @@ async function runDispatcher({
       if (providerPostId) {
         try {
           const post = await publisher.getPost(providerPostId);
-          const status = providerSlotStatus(post, state.accountId);
-          await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: null });
-          result[status === 'published' ? 'published' : status === 'failed' ? 'failed' : 'unknown']++;
-          if (status === 'published') await sendNotice(notifier, 'post_published', { slotId: slot.id });
+          const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
+          const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
+          await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
+          const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId: state.accountId });
+          const finalPost = cancellation.post;
+          const finalStatus = cancellation.status;
+          if (finalPost !== post || cancellation.cancellationStatus) {
+            const finalCompletedAt = ['published', 'failed', 'canceled', 'partial'].includes(finalStatus) ? confirmedCompletedAt(finalStatus, finalPost, state.accountId, clock()) : null;
+            await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
+          }
+          if (cancellation.cancellationStatus) {
+            try { await repository.recordCancellation(providerPostId, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); } catch { /* The provider state remains durable on the slot. */ }
+          }
+          if (finalStatus === 'published') { result.published++; await sendNotice(notifier, 'post_published', { slotId: slot.id }); }
+          else if (finalStatus === 'failed' || finalStatus === 'partial') { result.failed++; try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* Provider outcome is already durable. */ } await sendNotice(notifier, 'provider_error', { slotId: slot.id }); }
+          else if (finalStatus === 'canceled') result.skipped++;
+          else result.unknown++;
           return result;
         } catch {
-          // Keep the provider ID and mark the outcome unknown for the next reconciliation run.
+          try { await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: 'unknown_outcome' }); } catch { /* Preserve the original publishing row for reconciliation. */ }
+          try { await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: 'unknown_outcome' } }); } catch { /* Slot state remains the primary record. */ }
+          await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+          result.unknown++;
+          return result;
         }
       }
       if (error?.unknownOutcome) {
@@ -227,7 +346,18 @@ async function runDispatcher({
         result.unknown++;
         return result;
       }
-      if (error?.retryable && attempt < Math.max(1, Math.min(2, maxPublishAttempts))) continue;
+      if (error?.retryable && attempt < Math.max(1, Math.min(2, maxPublishAttempts))) {
+        retryableFailure = error;
+        if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
+          && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
+          await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
+          await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
+          await sendNotice(notifier, safeCode(error?.code), { slotId: slot.id });
+          result.failed++;
+          return result;
+        }
+        continue;
+      }
       await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
       await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
       await sendNotice(notifier, safeCode(error?.code), { slotId: slot.id });
@@ -236,20 +366,23 @@ async function runDispatcher({
     }
   }
   if (acceptedPost) {
-    const status = providerSlotStatus(acceptedPost, state.accountId);
-    const update = {
-      status,
+    const initialStatus = await providerOutcomeStatus(repository, slot, acceptedPost, state.accountId);
+    const initialTerminal = ['published', 'failed', 'canceled', 'partial'].includes(initialStatus);
+    const initialUpdate = {
+      status: initialStatus,
       providerStatus: acceptedPost.status,
       providerPostId: acceptedPost.id,
-      errorCode: status === 'failed' ? 'provider_error' : null,
-      completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? clock().toISOString() : null,
+      errorCode: initialStatus === 'failed' || initialStatus === 'partial' ? 'provider_error' : null,
+      completedAt: initialTerminal ? confirmedCompletedAt(initialStatus, acceptedPost, state.accountId, clock()) : null,
     };
     try {
-      await repository.updateSlot(slot.id, update);
+      // Persist the provider ID before checking the session so a concurrent pause
+      // can find and cancel an accepted but not yet published post.
+      await repository.updateSlot(slot.id, initialUpdate);
     } catch {
       // Tebar accepted the publish. Database failure must never fall through to a publish retry.
       try {
-        await repository.updateSlot(slot.id, { ...update, status: 'unknown', providerStatus: acceptedPost.status, errorCode: 'unknown_outcome' });
+        await repository.updateSlot(slot.id, { ...initialUpdate, status: 'unknown', providerStatus: acceptedPost.status, errorCode: 'unknown_outcome' });
       } catch {
         // The previously persisted payload and idempotency key remain the recovery evidence.
       }
@@ -257,8 +390,32 @@ async function runDispatcher({
       result.unknown++;
       return result;
     }
+    const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post: acceptedPost, status: initialStatus, expectedAccountId: state.accountId });
+    const post = cancellation.post;
+    const status = cancellation.status;
+    if (post !== acceptedPost || cancellation.cancellationStatus) {
+      const finalUpdate = {
+        status,
+        providerStatus: post.status,
+        providerPostId: post.id,
+        errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null,
+        completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? confirmedCompletedAt(status, post, state.accountId, clock()) : null,
+        ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}),
+      };
+      try { await repository.updateSlot(slot.id, finalUpdate); }
+      catch {
+        await repository.updateSlot(slot.id, { ...finalUpdate, status: 'unknown', errorCode: 'unknown_outcome' }).catch(() => {});
+        await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+        result.unknown++;
+        return result;
+      }
+    }
+    if (cancellation.cancellationStatus) {
+      try { await repository.recordCancellation(post.id, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); }
+      catch { /* The durable slot status still records whether Tebar published or canceled it. */ }
+    }
     try {
-      await repository.appendActivity({ event: status === 'published' ? 'post_published' : 'publish_accepted', slotId: slot.id, details: { status, providerPostId: acceptedPost.id } });
+      await repository.appendActivity({ event: status === 'published' ? 'post_published' : status === 'failed' || status === 'partial' ? 'publish_failed' : status === 'canceled' ? 'publish_canceled_after_pause' : 'publish_accepted', slotId: slot.id, details: { status, providerPostId: post.id } });
     } catch {
       // Activity logging is secondary to the durable slot state.
     }

@@ -6,9 +6,9 @@ const { runDispatcher, pauseAutomation, maybeSendDailySummary } = require('../sr
 
 function harness(overrides = {}) {
   const calls = [];
-  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z' };
+  const slot = { id: 'slot-1', scheduledAt: '2026-11-05T04:00:00Z', automationSessionId: 'session-1' };
   const repository = {
-    getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { schedule: { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] }),
+    getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] }),
     ensureNextDueSlot: async () => ({ slot, created: true, skippedCount: 0 }),
     claimDueSlot: async () => slot,
     savePreparedSlot: async (id, data) => calls.push(['prepared', id, data]),
@@ -20,6 +20,7 @@ function harness(overrides = {}) {
     getDailySummary: async () => ({ published: 0, failed: 0, skipped: 0 }),
     finishDailySummary: async () => {},
     setAutomationEnabled: async (enabled) => calls.push(['enabled', enabled]),
+    isAutomationSessionActive: async () => true,
     recordCancellation: async (id, data) => calls.push(['cancel', id, data]),
     ...overrides.repository,
   };
@@ -50,6 +51,20 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   assert.match(calls[0][2].idempotencyKey, /^km_slot-1$/);
 });
 
+test('dispatcher persists and publishes the exact final caption including hashtags', async () => {
+  const finalText = 'Jom kongsi pilihan anda!\nhttps://example.test/topup\n#KedaiMerzz';
+  const { calls, repository, publisher } = harness();
+  const saved = async () => ({ status: 'ready', text: finalText, pillar: 'topup', factBearing: false, factIds: [] });
+  let sentPayload;
+  publisher.publishNow = async (payload) => { sentPayload = payload; return { id: 'post-hashtag', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  const result = await runDispatcher({ repository, publisher, content: saved, clock: fixedClock });
+  const prepared = calls.find(([kind]) => kind === 'prepared')[2];
+  assert.equal(result.published, 1);
+  assert.equal(prepared.requestPayload.content, finalText);
+  assert.equal(prepared.caption, finalText);
+  assert.deepEqual(sentPayload, prepared.requestPayload);
+});
+
 test('automation off and incomplete onboarding never claim or publish', async () => {
   for (const patch of [{ automationEnabled: false }, { onboardingComplete: false }]) {
     const { repository, publisher } = harness({ repository: { getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', ...patch }) } });
@@ -60,12 +75,15 @@ test('automation off and incomplete onboarding never claim or publish', async ()
   }
 });
 
-test('invalid AI result is skipped after content retry policy and never published', async () => {
+test('invalid AI result is recorded as a confirmed failure after content retry policy', async () => {
   const { calls, repository, publisher } = harness();
   publisher.publishNow = async () => assert.fail('must not publish');
-  const result = await runDispatcher({ repository, publisher, content: async () => ({ status: 'skipped', reason: 'CONTENT_VALIDATION_FAILED', attempts: 2 }), notifier: { send: async (text) => calls.push(['notice', text]) }, clock: fixedClock });
-  assert.equal(result.skipped, 1);
-  assert.ok(calls.some((c) => c[0] === 'update' && c[2].status === 'skipped'));
+  let clockCalls = 0;
+  const result = await runDispatcher({ repository, publisher, content: async () => ({ status: 'skipped', reason: 'CONTENT_VALIDATION_FAILED', attempts: 2 }), notifier: { send: async (text) => calls.push(['notice', text]) }, clock: () => new Date(clockCalls++ === 0 ? '2026-11-05T04:00:00Z' : '2026-11-05T04:02:00Z') });
+  assert.equal(result.failed, 1);
+  assert.equal(result.skipped, 0);
+  assert.ok(calls.some((c) => c[0] === 'update' && c[2].status === 'failed' && c[2].completedAt === '2026-11-05T04:02:00.000Z'));
+  assert.ok(calls.some((c) => c[0] === 'activity' && c[1].event === 'ai_generation_failed'));
   assert.ok(calls.some((c) => c[0] === 'notice' && /content_validation_failed/.test(c[1])));
 });
 
@@ -103,6 +121,33 @@ test('known retryable provider error replays exactly the same request and idempo
   assert.deepEqual(sent[0], sent[1]);
 });
 
+test('pause between retry attempts records the confirmed provider failure without retrying', async () => {
+  let activeChecks = 0;
+  let publishCalls = 0;
+  const notices = [];
+  const { calls, repository, publisher } = harness({ repository: {
+    isAutomationSessionActive: async () => {
+      activeChecks++;
+      // The retry check sees the session active, then pause lands before the next loop check.
+      if (activeChecks === 3) return true;
+      return activeChecks < 3;
+    },
+  } });
+  publisher.publishNow = async () => {
+    publishCalls++;
+    throw Object.assign(new Error('definitive retryable rejection'), { code: 'rate_limited', retryable: true, unknownOutcome: false });
+  };
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
+
+  assert.equal(publishCalls, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.skipped, 0);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'failed' && call[2].errorCode === 'rate_limited' && call[2].completedAt === fixedClock().toISOString()));
+  assert.ok(calls.some((call) => call[0] === 'activity' && call[1].event === 'publish_failed' && call[1].details.code === 'rate_limited'));
+  assert.ok(notices.some((message) => /rate_limited/.test(message)));
+  assert.equal(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled'), false);
+});
+
 test('duplicate/concurrent slot claim outcome means no publish', async () => {
   const { repository, publisher } = harness();
   repository.claimDueSlot = async () => null;
@@ -118,7 +163,7 @@ test('first active run atomically plans the first slot using persisted schedule 
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.claimed, 1);
   assert.equal(plan.timezone, 'Asia/Kuala_Lumpur');
-  assert.deepEqual(plan.schedule, { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
+  assert.deepEqual(plan.schedule, { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
 });
 
 test('missed slots are recorded as skipped by the atomic planner and are not caught up', async () => {
@@ -187,7 +232,7 @@ test('daily summary is sent at 22:00 Malaysia time regardless of legacy schedule
 test('prepared ready slot reuses persisted payload and idempotency key without generating again', async () => {
   const { calls, repository, publisher } = harness();
   const durablePayload = { content: 'Jom kongsi pilihan anda!\nTop-up ML.\nhttps://example.test/t', targets: [{ account_id: 'acct-1' }] };
-  repository.claimDueSlot = async () => ({ id: 'slot-ready', status: 'ready', requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'topup', factBearing: true, factIds: [9] });
+  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'topup', factBearing: true, factIds: [9] });
   const generatedContent = async () => assert.fail('prepared content must not be regenerated');
   publisher.publishNow = async (payload, key) => {
     assert.equal(payload, durablePayload);
@@ -225,8 +270,8 @@ test('paused automation does not plan or claim a new slot', async () => {
 
 test('a claimed slot at night publishes despite legacy active hours', async () => {
   const { repository, publisher } = harness();
-  repository.claimDueSlot = async () => ({ id: 'slot-late', scheduledAt: '2026-11-05T15:00:00Z' });
-  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
+  repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z' });
+  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
   let publishes = 0;
   publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
@@ -261,6 +306,30 @@ test('reconciliation reads known provider IDs and persists provider status', asy
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.reconciled, 1);
   assert.ok(calls.some((c) => c[0] === 'update' && c[1] === 'slot-2' && c[2].status === 'published'));
+});
+
+test('reconciliation anchors cadence to the confirmed Threads target publication time', async () => {
+  const publishedAt = '2026-11-05T03:41:12.000Z';
+  const { calls, repository, publisher } = harness({ repository: {
+    listUnsettledSlots: async () => [{ id: 'slot-provider-time', providerPostId: 'p-provider-time', requestPayload: { targets: [{ account_id: 'acct-1' }] } }],
+  }, publisher: {
+    getPost: async () => ({ id: 'p-provider-time', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published', publishedAt }] }),
+  } });
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.reconciled, 1);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[1] === 'slot-provider-time'
+    && call[2].status === 'published' && new Date(call[2].completedAt).toISOString() === publishedAt));
+});
+
+test('direct provider confirmation anchors cadence to its confirmed Threads target time', async () => {
+  const publishedAt = '2026-11-05T03:52:30.000Z';
+  const { calls, repository, publisher } = harness({ publisher: {
+    publishNow: async () => ({ id: 'p-direct-provider-time', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published', publishedAt }] }),
+  } });
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 1);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[2].providerPostId === 'p-direct-provider-time'
+    && call[2].status === 'published' && call[2].completedAt === publishedAt));
 });
 
 test('unknown publish without provider ID is not replayed and blocks new slots', async () => {
@@ -298,9 +367,103 @@ test('reconciled partial post is counted as failure and sends a safe alert', asy
   assert.ok(calls.some((call) => call[0] === 'notice' && call[1].includes('provider_error')));
 });
 
+test('reconciled provider cancellation in the active session is counted as a failed attempt', async () => {
+  let unsettledLookups = 0;
+  const { calls, repository, publisher } = harness({ repository: {
+    getRuntimeState: async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } }, facts: [], history: [] }),
+    listUnsettledSlots: async () => unsettledLookups++ === 0 ? [{ id: 'slot-canceled', automationSessionId: 'session-1', providerPostId: 'p-canceled', requestPayload: { targets: [{ account_id: 'acct-1' }] } }] : [],
+    ensureNextDueSlot: async () => ({ slot: null, created: false, skippedCount: 0 }),
+  }, publisher: {
+    getPost: async () => ({ id: 'p-canceled', status: 'canceled', targets: [] }),
+  } });
+  const notices = [];
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
+  assert.equal(result.failed, 1);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[1] === 'slot-canceled' && call[2].status === 'failed'));
+  assert.ok(notices.some((message) => /provider_error/.test(message)));
+});
+
 test('top-level published status without a published target stays unknown', async () => {
   const { repository, publisher } = harness({ publisher: { publishNow: async () => ({ id: 'p-uncertain', status: 'published', targets: [] }) } });
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.published, 0);
   assert.equal(result.unknown, 1);
+});
+
+test('provider acceptance as scheduled is not reported as a successful publication', async () => {
+  const { repository, publisher, calls } = harness({ publisher: { publishNow: async () => ({ id: 'p-scheduled', status: 'scheduled', targets: [{ accountId: 'acct-1', status: 'scheduled' }] }) } });
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.unknown, 0);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'publishing' && call[2].providerPostId === 'p-scheduled'));
+  assert.equal(calls.some((call) => call[0] === 'notice' && /post_published/.test(call[1])), false);
+});
+
+test('provider-confirmed cancellation during an active session is recorded and notified as failure', async () => {
+  const { calls, repository, publisher } = harness({ publisher: {
+    publishNow: async () => ({ id: 'p-canceled-active', status: 'canceled', targets: [] }),
+  } });
+  const notices = [];
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
+  assert.equal(result.failed, 1);
+  assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'failed' && call[2].completedAt === fixedClock().toISOString()));
+  assert.ok(notices.some((message) => /provider_error/.test(message)));
+});
+
+test('a provider acceptance arriving after pause is canceled when still scheduled', async () => {
+  let sessionActive = true;
+  const { calls, repository, publisher } = harness({ repository: {
+    isAutomationSessionActive: async () => sessionActive,
+  }, publisher: {
+    publishNow: async () => { sessionActive = false; return { id: 'p-after-pause', status: 'scheduled', targets: [{ accountId: 'acct-1', status: 'scheduled' }] }; },
+    getPost: async (id) => ({ id, status: 'scheduled', targets: [{ accountId: 'acct-1', status: 'scheduled' }] }),
+    cancelPost: async (id) => ({ id, status: 'canceled', targets: [] }),
+  } });
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.failed, 0);
+  assert.ok(calls.some((call) => call[0] === 'cancel' && call[1] === 'p-after-pause' && call[2].status === 'canceled'));
+  assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled' && call[2].providerPostId === 'p-after-pause'));
+});
+
+test('a revoked session is stopped before the provider request starts', async () => {
+  const { repository, publisher } = harness({ repository: {
+    isAutomationSessionActive: async () => false,
+  } });
+  publisher.publishNow = async () => assert.fail('must not send after the session is revoked');
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.skipped, 1);
+});
+
+test('dispatcher refreshes account and onboarding state after claiming a newer session slot', async () => {
+  const { repository, publisher, slot } = harness();
+  const latestState = {
+    automationEnabled: true,
+    onboardingComplete: true,
+    accountId: 'acct-2',
+    settings: { automationSessionId: 'session-2', schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' } },
+    facts: [],
+    history: [],
+  };
+  let stateReads = 0;
+  let generatedForAccount;
+  let publishedPayload;
+  repository.getRuntimeState = async () => stateReads++ === 0
+    ? { ...latestState, accountId: 'acct-1', settings: { ...latestState.settings, automationSessionId: 'session-1' } }
+    : latestState;
+  repository.claimDueSlot = async () => ({ ...slot, automationSessionId: 'session-2' });
+  publisher.publishNow = async (payload) => {
+    publishedPayload = payload;
+    return { id: 'post-session-2', status: 'published', targets: [{ accountId: 'acct-2', status: 'published' }] };
+  };
+  const freshContent = async (context) => {
+    generatedForAccount = context.accountId;
+    return { status: 'ready', text: 'Jom kongsi pilihan anda!', pillar: 'topup', factBearing: false, factIds: [] };
+  };
+  const result = await runDispatcher({ repository, publisher, content: freshContent, clock: fixedClock });
+  assert.equal(generatedForAccount, 'acct-2');
+  assert.equal(publishedPayload.targets[0].account_id, 'acct-2');
+  assert.equal(result.published, 1);
 });
