@@ -100,7 +100,7 @@ function validateSettings(input = {}) {
     } catch { errors[`trackedLinks.${pillar}`] = 'Use an HTTPS tracked homepage link.'; }
   }
   const brand = {};
-  for (const field of ['name', 'voice', 'audienceNotes']) {
+  for (const field of ['name', 'voice', 'audienceNotes', 'contentDirection']) {
     const value = input.brand?.[field];
     if (value !== undefined && (typeof value !== 'string' || value.length > 2000)) errors[`brand.${field}`] = 'Use text up to 2000 characters.';
     else brand[field] = value?.trim() || '';

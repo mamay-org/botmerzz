@@ -34,6 +34,15 @@ test('settings normalize hashtag prefixes, spacing, and case-insensitive duplica
   assert.deepEqual(checked.settings.hashtags, ['#MobileLegends', '#KedaiMerzz']);
 });
 
+test('settings trim and persist the bounded AI content direction', () => {
+  const direction = '  Utamakan soalan santai tentang pengalaman bermain bersama kawan.  ';
+  const checked = validateSettings({ brand: { contentDirection: direction } });
+  assert.equal(checked.valid, true);
+  assert.equal(checked.settings.brand.contentDirection, direction.trim());
+  assert.equal(validateSettings({ brand: { contentDirection: 'x'.repeat(2001) } }).valid, false);
+  assert.equal(validateSettings({ brand: { contentDirection: 12 } }).valid, false);
+});
+
 test('settings reject malformed hashtag lists and unsafe tag characters', () => {
   for (const hashtags of ['#KedaiMerzz', ['#tag!'], ['#tag/name'], [1], Array(31).fill('#tag')]) {
     assert.equal(validateSettings({ hashtags }).valid, false, JSON.stringify(hashtags));

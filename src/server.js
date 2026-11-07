@@ -20,7 +20,7 @@ function templateList(value, { maxItems = 50, maxLength = 200 } = {}) {
 function normalizeTemplateData(category, data, whitelist) {
   if (!templateCategories.has(category) || !data || typeof data !== 'object' || Array.isArray(data)) return null;
   const schemas = {
-    brand: ['brandName','voice','audienceNotes','gameWhitelist','trackedTopup','trackedAccount','forbiddenClaims','approvedClaims'],
+    brand: ['brandName','voice','audienceNotes','contentDirection','gameWhitelist','trackedTopup','trackedAccount','forbiddenClaims','approvedClaims'],
     topup: ['game','denomination'],
     account: ['attributes'],
   };
@@ -34,7 +34,7 @@ function normalizeTemplateData(category, data, whitelist) {
     return true;
   };
   if (category === 'brand') {
-    for (const [key,max] of [['brandName',120],['voice',500],['audienceNotes',2000],['trackedTopup',300],['trackedAccount',300]]) if (!addText(key,max)) return null;
+    for (const [key,max] of [['brandName',120],['voice',500],['audienceNotes',2000],['contentDirection',2000],['trackedTopup',300],['trackedAccount',300]]) if (!addText(key,max)) return null;
     for (const key of ['trackedTopup','trackedAccount']) if (result[key]) {
       try { const url = new URL(result[key]); if (!['http:','https:'].includes(url.protocol) || url.username || url.password) return null; } catch { return null; }
     }
