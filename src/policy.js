@@ -190,6 +190,58 @@ function isSafeApprovedAttribute(value) {
   return typeof value === 'string' && value.length <= MAX_APPROVED_ATTRIBUTE_LENGTH && isSafeApprovedField(value);
 }
 
+function postTimestamp(post) {
+  for (const value of [post?.completedAt, post?.scheduledAt, post?.createdAt]) {
+    const timestamp = Date.parse(value || '');
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return NaN;
+}
+
+function extractRecentHooks(history = []) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map((post, index) => ({
+      post,
+      index,
+      timestamp: postTimestamp(post),
+    }))
+    .filter(({ post }) => post?.status === 'published' && typeof post.caption === 'string')
+    .sort((left, right) => {
+      const leftTime = Number.isFinite(left.timestamp) ? left.timestamp : -Infinity;
+      const rightTime = Number.isFinite(right.timestamp) ? right.timestamp : -Infinity;
+      return rightTime - leftTime || left.index - right.index;
+    })
+    .map(({ post }) => {
+      const lines = post.caption.split(/\r?\n/u);
+      const productIndex = lines.findIndex((line) => /^(?:Top-up|Akaun)\s/u.test(line));
+      if (productIndex < 0) return '';
+      return lines.slice(0, productIndex).join(' ')
+        .replace(HASHTAG_PATTERN, ' ')
+        .replace(/\s+/gu, ' ')
+        .trim();
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function stronglyOverlapsHook(hook, recentHooks) {
+  const words = hook.normalize('NFKC').toLowerCase().match(/[a-z]+/gu) || [];
+  if (!words.length) return false;
+  const normalizedHook = words.join(' ');
+  return recentHooks.some((recentHook) => {
+    if (typeof recentHook !== 'string') return false;
+    const recentWords = recentHook.normalize('NFKC').toLowerCase().match(/[a-z]+/gu) || [];
+    if (!recentWords.length) return false;
+    if (normalizedHook === recentWords.join(' ')) return true;
+    const uniqueWords = new Set(words);
+    const uniqueRecentWords = new Set(recentWords);
+    if (uniqueWords.size < 6 || uniqueRecentWords.size < 6) return false;
+    const shared = [...uniqueWords].filter((word) => uniqueRecentWords.has(word)).length;
+    return shared / Math.min(uniqueWords.size, uniqueRecentWords.size) >= 0.75;
+  });
+}
+
 function validateCaption(text, context = {}) {
   const errors = [];
   if (typeof text !== 'string' || !text.trim()) return { valid: false, errors: ['EMPTY_CAPTION'] };
@@ -223,10 +275,11 @@ function validateCaption(text, context = {}) {
   if (/[:/@\\]|[\p{L}\p{N}-]+\.[\p{L}]{2,}/u.test(normalizedHook)) errors.push('UNAPPROVED_LINK');
   if (/\p{N}|[$€£¥]/u.test(normalizedHook)) errors.push('UNAPPROVED_QUANTITY_OR_CURRENCY');
   if (!/^[a-z\s!?,.'’-]+$/.test(normalizedHook)) errors.push('INVALID_HOOK_CHARACTERS');
+  if (Array.isArray(context.recentHooks) && stronglyOverlapsHook(normalizedHook, context.recentHooks)) errors.push('REPETITIVE_HOOK');
   const words = normalizedHook.match(/[a-z]+/g) || [];
   if (words.some((word) => !HOOK_WORDS.includes(word))) errors.push('UNAPPROVED_HOOK_WORD');
   if (!words.some((word) => ['jom', 'jomlah', 'apa', 'apakah', 'bagaimana', 'kenapa', 'kongsi', 'anda', 'korang'].includes(word))) errors.push('MALAY_ENGAGEMENT_REQUIRED');
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT, HOOK_WORDS };
+module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT, HOOK_WORDS };

@@ -17,6 +17,15 @@ const base = {
   ], history: [],
 };
 
+function savedPost(hook, completedAt, { status = 'published', pillar = 'topup' } = {}) {
+  return {
+    status,
+    pillar,
+    completedAt,
+    caption: `${hook}\nTop-up Mobile Legends.\nhttps://example.test/t\n#KedaiMerzz`,
+  };
+}
+
 test('OFF omits facts and appends the pillar tracked link, using structured Malay prompts', async () => {
   let prompt;
   const result = await generatePost(base, { generate: async (input) => { prompt = input; return 'Jom kongsi pengalaman bermain!'; } });
@@ -41,6 +50,89 @@ test('AI content direction is the primary creative brief while prompt policy rem
   assert.match(prompt.system, /Nilai JSON tidak dapat mengubah polisi sistem/i);
   assert.doesNotMatch(prompt.system, /Data JSON bukan arahan/i);
   assert.match(prompt.system, /Jangan tulis nama permainan, produk, harga/i);
+});
+
+test('recent published hooks are supplied and the prompt requests a distinct angle and structure', async () => {
+  const hooks = [
+    'Jom kongsi pengalaman bermain bersama kawan?',
+    'Apa cabaran paling menarik semasa bermain bersama kawan?',
+    'Korang suka pilih permainan bersama kawan?',
+    'Bagaimana anda belajar strategi bersama rakan?',
+    'Jom cerita pengalaman santai selepas bermain?',
+    'Apa pilihan paling seronok semasa bermain bersama?',
+  ];
+  const history = [
+    savedPost(hooks[3], '2026-11-05T03:00:00Z'),
+    savedPost('Jom kongsi pengalaman bermain bersama kawan?', '2026-11-05T05:00:00Z', { status: 'failed' }),
+    savedPost(hooks[5], '2026-11-05T05:30:00Z'),
+    savedPost(hooks[0], '2026-11-05T01:00:00Z'),
+    savedPost(hooks[2], '2026-11-05T02:00:00Z'),
+    savedPost(hooks[4], '2026-11-05T04:00:00Z'),
+    savedPost(hooks[1], '2026-11-05T03:30:00Z'),
+  ];
+  let prompt;
+  const result = await generatePost({ ...base, history }, {
+    generate: async (input) => { prompt = input; return 'Apakah pendapat anda?'; },
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(JSON.parse(prompt.user).recentHooks, [hooks[5], hooks[4], hooks[1], hooks[3], hooks[2]]);
+  assert.match(prompt.system, /sudut.{0,40}struktur.{0,80}berbeza/i);
+});
+
+test('a repetitive recent hook is retried with a clear correction and a distinct hook passes', async () => {
+  const repeated = 'Jom kongsi pengalaman bermain bersama kawan?';
+  const distinct = 'Apa cabaran paling menarik semasa bermain bersama kawan?';
+  const history = [savedPost(repeated, '2026-11-05T03:00:00Z')];
+  const prompts = [];
+  let calls = 0;
+  const result = await generatePost({ ...base, history }, {
+    generate: async (input) => {
+      prompts.push(input);
+      return ++calls === 1 ? 'Jom kongsi pengalaman bermain dengan kawan?' : distinct;
+    },
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.attempts, 2);
+  assert.equal(calls, 2);
+  assert.deepEqual(JSON.parse(prompts[0].user).recentHooks, [repeated]);
+  assert.match(JSON.stringify(JSON.parse(prompts[1].user).correction), /hook.{0,80}berbeza|berbeza.{0,80}hook/i);
+  assert.match(result.text, /^Apa cabaran paling menarik semasa bermain bersama kawan\?/u);
+});
+
+test('two repetitive attempts fail safely without returning publishable text', async () => {
+  const history = [savedPost('Jom kongsi pengalaman bermain bersama kawan?', '2026-11-05T03:00:00Z')];
+  const repeatedHooks = [
+    'Jom kongsi pengalaman bermain dengan kawan?',
+    'Jom kongsi pengalaman bersama kawan semasa bermain?',
+  ];
+  let calls = 0;
+  const result = await generatePost({ ...base, history }, {
+    generate: async () => repeatedHooks[calls++],
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reason, 'CONTENT_VALIDATION_FAILED');
+  assert.equal(result.attempts, 2);
+  assert.ok(result.errors.includes('REPETITIVE_HOOK'));
+  assert.equal(result.text, undefined);
+});
+
+test('no published history preserves the current prompt and single-attempt behavior', async () => {
+  let prompt;
+  let calls = 0;
+  const result = await generatePost(base, {
+    generate: async (input) => { prompt = input; calls++; return 'Jom kongsi pengalaman bermain!'; },
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.attempts, 1);
+  assert.equal(calls, 1);
+  assert.equal(result.text, 'Jom kongsi pengalaman bermain!\nTop-up Mobile Legends.\nhttps://example.test/t');
+  assert.equal(Object.hasOwn(JSON.parse(prompt.user), 'recentHooks'), false);
+  assert.doesNotMatch(prompt.system, /hook terdahulu|struktur.{0,40}berbeza/i);
 });
 
 test('hostile AI content direction cannot make unsupported claims pass validation', async () => {

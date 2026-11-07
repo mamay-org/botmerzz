@@ -11,7 +11,7 @@ The dispatcher calls the same application services. OpenRouter generates content
 ## Boundaries
 
 - Domain policy validates schedule settings, the one-hour minimum cadence, fact freshness, content length, currency claims, approved account attributes, and onboarding state. Legacy active-day/hour settings do not gate publishing. It has no network or database code.
-- Content service selects a pillar and eligible facts for OFF/ON/MIXED mode, builds a Malaysian Malay prompt from structured knowledge, calls the AI adapter, then validates the text. It retries generation once; invalid output is skipped after that retry.
+- Content service selects a pillar and eligible facts for OFF/ON/MIXED mode, supplies up to five recent published hooks to the Malaysian Malay prompt, and asks for a distinct angle and structure. Policy rejects hooks with 75% or greater word overlap against a recent hook; the service retries once and skips a slot if the repeated hook remains invalid.
 - Tebar adapter owns API URLs, Bearer authentication, account/status/list/cancel/insights requests, idempotency headers, and response normalization. Other modules use provider-neutral methods.
 - Telegram adapter sends bounded notifications and daily summaries. It redacts secrets and never exposes provider response bodies.
 - Repository owns SQL, migrations, transactions, durable slot state, sessions, facts, settings, audit events, and webhook deduplication.
