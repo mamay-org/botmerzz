@@ -202,7 +202,7 @@
     if (hint) { const note = document.createElement('span'); note.className = 'field-hint'; note.textContent = hint; label.append(note); }
     const field = document.createElement(multiline ? 'textarea' : options ? 'select' : 'input'); field.name = name; field.value = Array.isArray(val) ? val.join('\n') : val || '';
     if (multiline) field.rows = 3;
-    if (name === 'contentDirection') field.maxLength = 2000;
+    if (name === 'contentDirection') field.maxLength = 7000;
     if (options) {
       field.replaceChildren(...options.map((item) => { const option = document.createElement('option'); option.value = item; option.textContent = item; return option; }));
       field.value = val && options.includes(val) ? val : '';

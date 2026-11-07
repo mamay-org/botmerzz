@@ -39,8 +39,29 @@ test('settings trim and persist the bounded AI content direction', () => {
   const checked = validateSettings({ brand: { contentDirection: direction } });
   assert.equal(checked.valid, true);
   assert.equal(checked.settings.brand.contentDirection, direction.trim());
-  assert.equal(validateSettings({ brand: { contentDirection: 'x'.repeat(2001) } }).valid, false);
+  assert.equal(validateSettings({ brand: { contentDirection: 'x'.repeat(7000) } }).valid, true);
+  assert.equal(validateSettings({ brand: { contentDirection: 'x'.repeat(7001) } }).valid, false);
   assert.equal(validateSettings({ brand: { contentDirection: 12 } }).valid, false);
+});
+
+test('settings preserve 2000-character name and voice limits with 7000-character guidance fields', () => {
+  const checked = validateSettings({ brand: {
+    name: 'N'.repeat(2000),
+    voice: 'V'.repeat(2000),
+    audienceNotes: '漢'.repeat(7000),
+    contentDirection: '語'.repeat(7000),
+  } });
+  assert.equal(checked.valid, true);
+  assert.equal(checked.settings.brand.name.length, 2000);
+  assert.equal(checked.settings.brand.voice.length, 2000);
+  assert.equal(checked.settings.brand.audienceNotes.length, 7000);
+  assert.equal(checked.settings.brand.contentDirection.length, 7000);
+
+  for (const field of ['name', 'voice']) {
+    const invalid = validateSettings({ brand: { [field]: 'x'.repeat(2001) } });
+    assert.equal(invalid.valid, false);
+    assert.equal(invalid.errors[`brand.${field}`], 'Use text up to 2000 characters.');
+  }
 });
 
 test('settings reject malformed hashtag lists and unsafe tag characters', () => {

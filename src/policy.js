@@ -102,10 +102,15 @@ function validateSettings(input = {}) {
     } catch { errors[`trackedLinks.${pillar}`] = 'Use an HTTPS tracked homepage link.'; }
   }
   const brand = {};
+  const brandTextLimits = { name: 2000, voice: 2000, audienceNotes: 7000, contentDirection: 7000 };
   for (const field of ['name', 'voice', 'audienceNotes', 'contentDirection']) {
     const value = input.brand?.[field];
-    if (value !== undefined && (typeof value !== 'string' || value.length > 2000)) errors[`brand.${field}`] = 'Use text up to 2000 characters.';
-    else brand[field] = value?.trim() || '';
+    const maxLength = brandTextLimits[field];
+    if (value !== undefined && (typeof value !== 'string' || value.length > maxLength)) {
+      errors[`brand.${field}`] = `Use text up to ${maxLength} characters.`;
+    } else {
+      brand[field] = value?.trim() || '';
+    }
   }
   const guardrails = { approved: input.guardrails?.approved === true };
   if (input.guardrails?.approved !== undefined && typeof input.guardrails.approved !== 'boolean') errors['guardrails.approved'] = 'Use true or false.';

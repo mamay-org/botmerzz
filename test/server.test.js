@@ -35,7 +35,7 @@ test('settings and facts routes reject invalid data before persistence',async t=
   const hashtags=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({hashtags:[' #Kedai Merzz ','##kedaimerzz']})});assert.equal(hashtags.status,200);assert.deepEqual(JSON.parse(hashtags.body).hashtags,['#KedaiMerzz']);
   const direction='  Utamakan soalan santai tentang pengalaman bermain bersama kawan.  ';
   const savedDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:direction}})});assert.equal(savedDirection.status,200);assert.equal(JSON.parse(savedDirection.body).brand.contentDirection,direction.trim());
-  const invalidDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:'x'.repeat(2001)}})});assert.equal(invalidDirection.status,400);
+  const invalidDirection=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({brand:{contentDirection:'x'.repeat(7001)}})});assert.equal(invalidDirection.status,400);
   const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,3);
   const invalidAttribute=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['Mythic ✨']}})});assert.equal(invalidAttribute.status,400);assert.equal(writes,3);
   const invalidAttributeLength=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['A'.repeat(101)]}})});assert.equal(invalidAttributeLength.status,400);assert.equal(writes,3);
@@ -129,6 +129,8 @@ test('brand templates accept and preserve the bounded AI content direction',asyn
   const direction='Ajukan soalan ringkas tentang pengalaman bermain.';
   const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief santai',category:'brand',data:{contentDirection:direction}})});
   assert.equal(created.status,201,created.body);assert.equal(calls[0].data.contentDirection,direction);assert.equal(JSON.parse(created.body).template.data.contentDirection,direction);
-  const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(2001)}})});
+  const maxLength=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief maksimum',category:'brand',data:{contentDirection:'x'.repeat(7000)}})});
+  assert.equal(maxLength.status,201,maxLength.body);
+  const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(7001)}})});
   assert.equal(tooLong.status,400);
 });

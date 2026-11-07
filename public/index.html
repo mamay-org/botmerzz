@@ -12,7 +12,7 @@
   <main class="shell">
     <section id="login-view" class="login-card" aria-labelledby="login-title">
       <div class="brand-mark">KM</div>
-      <p class="eyebrow">KEDAI MERZZ · PANEL STAGING</p>
+      <p class="eyebrow">KEDAI MERZZ</p>
       <h1 id="login-title">Panel Threads</h1>
       <p class="muted">Masuk untuk mengelola jadwal, konten, dan status otomasi.</p>
       <form id="login-form" class="stack">
@@ -25,8 +25,13 @@
 
     <section id="app-view" hidden>
       <header class="topbar">
-        <div class="brand-lockup"><div class="brand-mark small">KM</div><div><strong>Kedai Merzz</strong><span>Panel Threads · Pengembangan / Staging</span></div></div>
-        <div class="top-actions"><span id="environment-badge" class="pill neutral">STAGING</span><button id="logout-button" class="button quiet">Keluar</button></div>
+        <div class="brand-lockup">
+          <div class="brand-mark small">KM</div>
+          <div><strong>Kedai Merzz</strong><span>Panel Threads</span></div>
+        </div>
+        <div class="top-actions">
+          <button id="logout-button" class="button quiet">Keluar</button>
+        </div>
       </header>
 
       <div class="page-heading">
@@ -64,14 +69,25 @@
           <div class="panel-heading full"><div><p class="eyebrow">PANDUAN TERSTRUKTUR</p><h2>Karakter brand dan batasan AI</h2><p class="muted">AI hanya menggunakan panduan dan daftar yang disimpan di sini.</p></div></div>
           <label>Nama merek<input name="brandName" maxlength="120" placeholder="Kedai Merzz"></label>
           <label>Gaya komunikasi<input name="voice" maxlength="500" placeholder="Ramah, santai gamer, informatif"></label>
-          <label class="full">Arahan konten AI <span class="field-hint">Acuan utama untuk topik, sudut, dan gaya konten. Maksimal 2.000 karakter; arahan ini tidak dapat mengubah batas fakta dan klaim. Hook yang dibuat tetap harus memakai kosakata yang disetujui; arahan yang memerlukan kata lain dapat ditolak.</span><textarea name="contentDirection" rows="5" maxlength="2000" placeholder="Contoh: Utamakan soalan santai yang mengajak pemain berkongsi pengalaman bermain bersama kawan. Elakkan gaya jualan yang mendesak."></textarea></label>
-          <label class="full">Wawasan pelanggan<textarea name="audienceNotes" rows="4" maxlength="2000" placeholder="Pertanyaan, kekhawatiran, dan hal yang dihargai pelanggan Malaysia…"></textarea></label>
+          <label class="full">
+            Arahan konten AI
+            <span class="field-hint">Acuan utama untuk topik, sudut, dan gaya konten. Maksimal 7.000 karakter; arahan ini tidak dapat mengubah batas fakta dan klaim. Hook yang dibuat tetap harus memakai kosakata yang disetujui; arahan yang memerlukan kata lain dapat ditolak.</span>
+            <textarea name="contentDirection" rows="5" maxlength="7000" placeholder="Contoh: Utamakan soalan santai yang mengajak pemain berkongsi pengalaman bermain bersama kawan. Elakkan gaya jualan yang mendesak."></textarea>
+          </label>
+          <label class="full">
+            Wawasan pelanggan
+            <textarea name="audienceNotes" rows="4" maxlength="7000" placeholder="Pertanyaan, kekhawatiran, dan hal yang dihargai pelanggan Malaysia…"></textarea>
+          </label>
           <label class="full">Game top-up yang disetujui <span class="field-hint">Satu nama per baris</span><textarea name="gameWhitelist" rows="4" maxlength="3000" placeholder="Mobile Legends"></textarea></label>
           <label class="full">Hashtag otomatis <span class="field-hint">Satu hashtag per baris; awalan # dan spasi akan dinormalisasi. Hashtag yang sudah ada di konten tidak ditambahkan lagi.</span><textarea name="hashtags" rows="3" maxlength="6500" placeholder="#KedaiMerzz&#10;#MobileLegends"></textarea></label>
           <label>Tautan top-up berpelacak<input name="trackedTopup" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=topup"></label>
           <label>Tautan jual akun berpelacak<input name="trackedAccount" type="url" inputmode="url" maxlength="300" placeholder="https://kedaimerzz.com/?utm_source=threads&amp;utm_campaign=account"></label>
           <label class="full">Klaim yang dilarang <span class="field-hint">Satu frasa per baris</span><textarea name="forbiddenClaims" rows="3" maxlength="3000" placeholder="Contoh: dijamin 100% aman"></textarea></label>
-          <label class="full">Klaim yang disetujui <span class="field-hint">Satu frasa per baris; klaim harus didukung informasi yang benar</span><textarea name="approvedClaims" rows="3" maxlength="3000"></textarea></label>
+          <label class="full">
+            Klaim yang disetujui
+            <span class="field-hint">Satu frasa per baris; klaim harus didukung informasi yang benar</span>
+            <textarea name="approvedClaims" rows="3" maxlength="7000"></textarea>
+          </label>
           <label class="check-row full"><input name="guardrailsApproved" type="checkbox"><span>Batasan AI ini sudah ditinjau dan disetujui klien</span></label>
           <div class="form-footer full"><span class="muted">Jangan masukkan kata sandi, token, atau data pelanggan di sini.</span><div class="form-actions"><button class="button quiet" type="button" data-save-template="brand">Simpan sebagai template</button><button class="button primary" type="submit">Simpan panduan</button></div></div>
         </form>
