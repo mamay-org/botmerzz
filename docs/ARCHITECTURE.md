@@ -51,3 +51,33 @@ The runtime Docker image is environment-neutral and is the default build target.
 ## Provider capabilities and MVP limits
 
 Tebar documents immediate publishing and scheduled publishing, idempotency keys, per-target status, scheduled-post cancellation, and Threads insights. Threads profile visits are not among the documented insight metrics. MVP awareness measurement is tracked-link clicks; website and conversion analytics are deferred.
+
+## HTTP route ownership
+
+`src/cli.js` is the composition root for configuration, MySQL, repositories, provider clients, the scheduler, and the Express app. `src/server.js` configures HTTP middleware and mounts feature-focused route registrations from `src/http/routes/`. Route modules receive repository, auth, middleware, and services through dependency injection; they do not create pools or provider clients.
+
+| Module | Method | Path |
+| --- | --- | --- |
+| `src/server.js` | GET | `/health/live` |
+| `src/server.js` | GET | `/health/ready` |
+| `src/http/routes/webhooks.js` | POST | `/webhooks/tebar` |
+| `src/http/routes/session-admin.js` | GET | `/api/session` |
+| `src/http/routes/session-admin.js` | POST | `/api/session/login` |
+| `src/http/routes/session-admin.js` | POST | `/api/session/logout` |
+| `src/http/routes/session-admin.js` | GET | `/api/admins` |
+| `src/http/routes/session-admin.js` | POST | `/api/admins` |
+| `src/http/routes/session-admin.js` | PATCH | `/api/admins/:id` |
+| `src/http/routes/templates.js` | GET | `/api/templates` |
+| `src/http/routes/templates.js` | POST | `/api/templates` |
+| `src/http/routes/templates.js` | PATCH | `/api/templates/:id` |
+| `src/http/routes/templates.js` | DELETE | `/api/templates/:id` |
+| `src/http/routes/dashboard.js` | GET | `/api/dashboard` |
+| `src/http/routes/dashboard.js` | PUT | `/api/settings` |
+| `src/http/routes/dashboard.js` | PUT | `/api/knowledge` |
+| `src/http/routes/dashboard.js` | PUT | `/api/facts/:service` |
+| `src/http/routes/automation.js` | POST | `/api/automation/enable` |
+| `src/http/routes/automation.js` | POST | `/api/automation/pause` |
+
+`test/routes.contract.test.js` compares dashboard API calls with registered Express method/path pairs and verifies the route set and ordering.
+
+Webhook body parsing and fallback ordering are intentional: `/webhooks/tebar` uses raw-body parsing before `express.json()` so signature verification sees the signed bytes. The `/api` not-found handler stays after API routes and before static assets and the SPA fallback.
