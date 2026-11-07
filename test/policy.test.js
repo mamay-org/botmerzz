@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent } = require('../src/policy');
+const { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, extractRecentHooks } = require('../src/policy');
 
 const now = '2026-11-05T04:00:00Z';
 const schedule = { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [4], activeStart: '09:00', activeEnd: '22:00' };
@@ -118,6 +118,70 @@ test('caption rejects forbidden claims, unapproved account attributes and games'
   }
   const account = { ...context, pillar: 'account', facts: [{ ...fact, pillar: 'account', attributes: ['Mythic', '100 skins'] }] };
   assert.equal(validateCaption('Jom kongsi pengalaman bermain!\nAkaun Mobile Legends: 400 Diamond; MYR 30; Mythic; 100 skins.\nhttps://example.test/topup', account).valid, true);
+});
+
+test('saved captions yield only the five latest published hooks without product copy, links, or hashtags', () => {
+  const hooks = [
+    'Jom kongsi pengalaman bermain bersama kawan?',
+    'Apa cabaran paling menarik semasa bermain bersama kawan?',
+    'Korang suka pilih permainan bersama kawan?',
+    'Bagaimana anda belajar strategi bersama rakan?',
+    'Jom cerita pengalaman santai selepas bermain?',
+    'Apa pilihan paling seronok semasa bermain bersama?',
+  ];
+  const posts = hooks.map((hook, index) => ({
+    status: 'published',
+    completedAt: `2026-11-05T0${index}:00:00Z`,
+    caption: `${hook}\nTop-up Mobile Legends.\nhttps://example.test/topup\n#KedaiMerzz`,
+  })).concat({
+    status: 'failed',
+    completedAt: '2026-11-05T06:00:00Z',
+    caption: 'Jom kongsi pengalaman bermain bersama kawan?\nTop-up Mobile Legends.\nhttps://example.test/topup',
+  });
+  const result = extractRecentHooks(posts);
+  assert.deepEqual(result, [hooks[5], hooks[4], hooks[3], hooks[2], hooks[1]]);
+});
+
+test('recent hook ordering falls back from invalid completion time to scheduled and created times', () => {
+  const caption = (hook) => `${hook}\nTop-up Mobile Legends.\nhttps://example.test/topup`;
+  const posts = [
+    { status: 'published', completedAt: '2026-11-05T04:00:00Z', caption: caption('Jom kongsi pengalaman bermain bersama kawan?') },
+    { status: 'published', completedAt: 'invalid', scheduledAt: '2026-11-05T05:00:00Z', caption: caption('Apa cabaran paling menarik semasa bermain bersama kawan?') },
+    { status: 'published', completedAt: 'invalid', scheduledAt: 'invalid', createdAt: '2026-11-05T06:00:00Z', caption: caption('Korang suka pilih permainan bersama kawan?') },
+  ];
+  assert.deepEqual(extractRecentHooks(posts), [
+    'Korang suka pilih permainan bersama kawan?',
+    'Apa cabaran paling menarik semasa bermain bersama kawan?',
+    'Jom kongsi pengalaman bermain bersama kawan?',
+  ]);
+});
+
+test('caption validation rejects an eight-word overlapping hook but accepts a distinct angle', () => {
+  const recentHooks = ['Jom kongsi pengalaman bermain bersama rakan tentang cabaran?'];
+  const repetitive = validateCaption('Jom kongsi pengalaman bermain dengan rakan tentang cabaran?\nTop-up Mobile Legends.\nhttps://example.test/topup', {
+    ...context, facts: [], recentHooks,
+  });
+  assert.equal(repetitive.valid, false);
+  assert.ok(repetitive.errors.includes('REPETITIVE_HOOK'));
+
+  const distinct = validateCaption('Apa pilihan paling seronok semasa bermain bersama?\nTop-up Mobile Legends.\nhttps://example.test/topup', {
+    ...context, facts: [], recentHooks,
+  });
+  assert.equal(distinct.valid, true);
+});
+
+test('caption validation rejects short exact duplicates but allows short non-identical hooks', () => {
+  const exactRepeat = validateCaption('JOM KONGSI PILIHAN!\nTop-up Mobile Legends.\nhttps://example.test/topup', {
+    ...context, facts: [], recentHooks: ['Jom kongsi pilihan?'],
+  });
+  assert.equal(exactRepeat.valid, false);
+  assert.ok(exactRepeat.errors.includes('REPETITIVE_HOOK'));
+
+  const nonIdentical = validateCaption('Jom kongsi pengalaman bersama!\nTop-up Mobile Legends.\nhttps://example.test/topup', {
+    ...context, facts: [], recentHooks: ['Jom kongsi pengalaman anda?'],
+  });
+  assert.equal(nonIdentical.valid, true);
+  assert.equal(nonIdentical.errors.includes('REPETITIVE_HOOK'), false);
 });
 
 test('approved content omits unsafe stored attributes and keeps safe approved details', () => {
