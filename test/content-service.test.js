@@ -166,10 +166,19 @@ test('invalid content retries once and returns a safe typed skip without fallbac
 
 test('generation error retries once, with no provider error leakage', async () => {
   let calls = 0;
-  const result = await generatePost(base, { generate: async () => { calls++; throw new Error('secret-provider-body'); } });
+  const result = await generatePost(base, { generate: async () => { calls++; throw Object.assign(new Error('secret-provider-body'), { code: 'network_error' }); } });
   assert.equal(calls, 2);
   assert.equal(result.reason, 'GENERATION_FAILED');
+  assert.equal(result.diagnosticCode, 'ai_network_error');
   assert.doesNotMatch(JSON.stringify(result), /secret-provider-body/);
+});
+
+test('unknown provider errors map to a generic safe diagnostic without exposing the error', async () => {
+  const result = await generatePost(base, {
+    generate: async () => { throw Object.assign(new Error('private upstream response'), { code: 'private-token-value' }); },
+  });
+  assert.equal(result.diagnosticCode, 'ai_request_failed');
+  assert.doesNotMatch(JSON.stringify(result), /private upstream response|private-token-value/);
 });
 
 test('a valid second attempt succeeds and final appended link counts toward length', async () => {
