@@ -40,7 +40,6 @@ services:
       BASE_URL: ${BASE_URL:?Set the public HTTPS origin, without a path}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
-      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
       SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
       DB_HOST: db

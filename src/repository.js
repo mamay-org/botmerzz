@@ -175,10 +175,75 @@ function createRepository(pool) {
   async function healthCheck() { await pool.query('SELECT 1'); return true; }
   async function listAudit(limit=100) { const [rows]=await pool.execute('SELECT action,details_json,created_at FROM audit_logs ORDER BY id DESC LIMIT ?', [Math.max(1,Math.min(500,Number(limit)||100))]); return rows.map((r)=>({event:r.action,...json(r.details_json),createdAt:r.created_at})); }
   async function appendActivity({event,slotId,details={}}) { await pool.execute('INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,?,?)', [slotId || null,event,JSON.stringify(details)]); }
-  async function setAutomationEnabled(enabled, adminId) { const c=await pool.getConnection(); try { await c.beginTransaction(); if (enabled) await c.execute("UPDATE settings SET automation_enabled=TRUE, settings_json=JSON_SET(settings_json,'$.onboardingComplete',TRUE) WHERE id=1"); else await c.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1'); await audit(c,adminId,enabled?'automation.enabled':'automation.paused',{}); await c.commit(); } catch(e) { await c.rollback(); throw e; } finally { c.release(); } }
+  async function setAutomationEnabled(enabled, adminId) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[current]] = await c.query('SELECT settings_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE');
+      const settings = json(current?.settings_json);
+      const changed = Boolean(current?.automation_enabled) !== enabled;
+      let firstPostAt = settings.nextSlotAt || null;
+      let immediate = false;
+      if (enabled && changed) {
+        const checked = validateSettings({ ...settings, schedule: settings.schedule || {} });
+        if (!checked.valid) throw Object.assign(new Error('INVALID_SETTINGS'), { code: 'INVALID_SETTINGS' });
+        const now = new Date();
+        const minimumIntervalMs = 3600000;
+        const [[last]] = await c.execute("SELECT COALESCE(completed_at,publish_started_at,scheduled_at) AS last_post_at FROM slots WHERE status IN ('published','publishing','unknown','partial') ORDER BY COALESCE(completed_at,publish_started_at,scheduled_at) DESC LIMIT 1");
+        const cooldownAt = last ? new Date(last.last_post_at).getTime() + minimumIntervalMs : 0;
+        const eligibleAt = Math.max(now.getTime(), cooldownAt);
+        firstPostAt = new Date(eligibleAt).toISOString();
+        immediate = eligibleAt <= now.getTime();
+        settings.schedule = checked.settings.schedule;
+        settings.onboardingComplete = true;
+        settings.nextSlotAt = firstPostAt;
+        settings.activationFirstPostAt = firstPostAt;
+        await c.execute("UPDATE slots SET status='skipped',error_code='automation_reactivated',completed_at=UTC_TIMESTAMP(3) WHERE status IN ('pending','generating','ready')");
+        await c.execute('UPDATE settings SET settings_json=?,automation_enabled=TRUE WHERE id=1', [JSON.stringify(settings)]);
+      } else if (!enabled && changed) {
+        await c.execute('UPDATE settings SET automation_enabled=FALSE WHERE id=1');
+      }
+      if (changed) await audit(c, adminId, enabled ? 'automation.enabled' : 'automation.paused', {});
+      await c.commit();
+      return { changed, firstPostAt, immediate };
+    } catch (e) { await c.rollback(); throw e; }
+    finally { c.release(); }
+  }
   async function setProviderTarget({accountId,profileId}) { const c=await pool.getConnection();try{await c.beginTransaction();const [[row]]=await c.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');const settings=json(row?.settings_json);const changed=(settings.targetAccountId||null)!==(accountId||null)||(settings.profileId||null)!==(profileId||null);settings.targetAccountId=accountId||null;settings.profileId=profileId||null;if(changed)settings.onboardingComplete=false;await c.execute('UPDATE settings SET settings_json=?,automation_enabled=IF(?,FALSE,automation_enabled) WHERE id=1',[JSON.stringify(settings),changed]);await c.commit();}catch(e){await c.rollback();throw e;}finally{c.release();} }
   async function ensureDueSlot({scheduledAt}) { const id=randomUUID(); await pool.execute("INSERT IGNORE INTO slots (id,scheduled_at,status) VALUES (?,?,'pending')",[id,scheduledAt]); const [rows]=await pool.execute('SELECT * FROM slots WHERE scheduled_at=?',[scheduledAt]); return rows[0] || null; }
-  async function claimDueSlot({now,minimumIntervalHours=6}) { const c=await pool.getConnection(); try { await c.beginTransaction(); const [[state]]=await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');const settings=json(state?.settings_json);const knowledge=json(state?.knowledge_json);const validated=validateSettings({...settings,brand:knowledge.brand||settings.brand,guardrails:knowledge.guardrails||settings.guardrails});if(!state?.automation_enabled||settings.onboardingComplete!==true||!settings.targetAccountId||!validated.valid){await c.rollback();return null;} const [rows]=await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids FROM slots WHERE ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE",[now,now,now]); if(!rows.length){await c.commit();return null;} const slot=rows[0]; const [[last]]=await c.execute("SELECT scheduled_at FROM slots WHERE status IN ('published','publishing','unknown','partial') AND scheduled_at<? AND id<>? ORDER BY scheduled_at DESC LIMIT 1",[slot.scheduled_at,slot.id]); if(last && new Date(slot.scheduled_at)-new Date(last.scheduled_at)<minimumIntervalHours*3600000){await c.execute("UPDATE slots SET status='skipped',error_code='MINIMUM_CADENCE',completed_at=UTC_TIMESTAMP(3) WHERE id=?",[slot.id]); await c.commit();return null;} if(slot.status==='pending') await c.execute("UPDATE slots SET status='generating',claimed_at=? WHERE id=? AND status='pending'",[now,slot.id]);else await c.execute('UPDATE slots SET claimed_at=? WHERE id=? AND status=\'ready\'',[now,slot.id]); await c.commit();return {id:slot.id,scheduledAt:slot.scheduled_at,status:slot.status,requestPayload:json(slot.request_payload),idempotencyKey:slot.idempotency_key,caption:slot.caption,pillar:slot.pillar,factBearing:Boolean(slot.fact_bearing),factIds:json(slot.fact_ids,[])}; } catch(e){await c.rollback();throw e;}finally{c.release();} }
+  async function claimDueSlot({ now, minimumIntervalHours = 1 }) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[state]] = await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');
+      const settings = json(state?.settings_json);
+      const knowledge = json(state?.knowledge_json);
+      const validated = validateSettings({ ...settings, brand: knowledge.brand || settings.brand, guardrails: knowledge.guardrails || settings.guardrails });
+      if (!state?.automation_enabled || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid) {
+        await c.rollback();
+        return null;
+      }
+      const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids FROM slots WHERE ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [now, now, now]);
+      if (!rows.length) { await c.commit(); return null; }
+      const slot = rows[0];
+      const [[last]] = await c.execute("SELECT COALESCE(completed_at,publish_started_at,scheduled_at) AS last_post_at FROM slots WHERE status IN ('published','publishing','unknown','partial') AND id<>? ORDER BY COALESCE(completed_at,publish_started_at,scheduled_at) DESC LIMIT 1", [slot.id]);
+      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < minimumIntervalHours * 3600000) {
+        // Keep this slot due until the publication-time cooldown elapses.
+        await c.commit();
+        return null;
+      }
+      const activationFirstPostAt = settings.activationFirstPostAt ? new Date(settings.activationFirstPostAt).getTime() : NaN;
+      if (Number.isFinite(activationFirstPostAt) && activationFirstPostAt === new Date(slot.scheduled_at).getTime()) {
+        delete settings.activationFirstPostAt;
+        await c.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(settings)]);
+      }
+      if (slot.status === 'pending') await c.execute("UPDATE slots SET status='generating',claimed_at=? WHERE id=? AND status='pending'", [now, slot.id]);
+      else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
+      await c.commit();
+      return { id: slot.id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []) };
+    } catch (e) { await c.rollback(); throw e; }
+    finally { c.release(); }
+  }
   async function ensureNextDueSlot({now=new Date(),timezone='Asia/Kuala_Lumpur',schedule}={}) {
     const c=await pool.getConnection();
     try {
@@ -190,21 +255,51 @@ function createRepository(pool) {
       if(!row?.automation_enabled||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid){await c.commit();return {slot:null,created:false,skippedCount:0};}
       const zone=savedSchedule.timezone||timezone;
       const interval=checked.settings.schedule.intervalHours;
+      let activationFirstPostAt=typeof settings.activationFirstPostAt==='string'?DateTime.fromISO(settings.activationFirstPostAt,{zone:'utc'}):null;
       const current=DateTime.fromJSDate(now instanceof Date?now:new Date(now),{zone:'utc'});
       if(!current.isValid){await c.rollback();return {slot:null,created:false,skippedCount:0};}
+      const [[lastPost]]=await c.execute("SELECT COALESCE(completed_at,publish_started_at,scheduled_at) AS last_post_at FROM slots WHERE status IN ('published','publishing','unknown','partial') ORDER BY COALESCE(completed_at,publish_started_at,scheduled_at) DESC LIMIT 1");
       await c.execute("UPDATE slots SET status='skipped',error_code='stale_generation',completed_at=UTC_TIMESTAMP(3) WHERE status='generating' AND claimed_at < DATE_SUB(?, INTERVAL 10 MINUTE)",[current.toJSDate()]);
       let skippedCount=0;
-      const [[duePending]]=await c.execute("SELECT id,scheduled_at,status FROM slots WHERE status='pending' AND scheduled_at<=? ORDER BY scheduled_at LIMIT 1 FOR UPDATE",[current.toJSDate()]);
-      if(duePending){
-        const active=isInActiveWindow(new Date(duePending.scheduled_at),{...checked.settings.schedule,timezone:zone});
-        if(active&&isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone})&&current.toMillis()-new Date(duePending.scheduled_at).getTime()<=15*60*1000){await c.commit();return {slot:{id:duePending.id,scheduledAt:duePending.scheduled_at,status:'pending'},created:false,skippedCount:0};}
-        await c.execute("UPDATE slots SET status='skipped',error_code=?,completed_at=UTC_TIMESTAMP(3) WHERE id=?",[active?'missed_slot':'outside_active_window',duePending.id]);skippedCount++;
+      const [[pendingSlot]]=await c.execute("SELECT id,scheduled_at,status FROM slots WHERE status='pending' ORDER BY scheduled_at LIMIT 1 FOR UPDATE");
+      if(pendingSlot){
+        let pendingAt=DateTime.fromJSDate(new Date(pendingSlot.scheduled_at),{zone:'utc'});
+        const isActivationFirstSlot=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===pendingAt.toMillis();
+        if(lastPost?.last_post_at){
+          const lastAt=DateTime.fromJSDate(new Date(lastPost.last_post_at),{zone:'utc'});
+          const earliest=lastAt.plus({hours:isActivationFirstSlot?1:interval});
+          if(lastAt.isValid&&earliest>pendingAt){
+            pendingAt=earliest;
+            for(let i=0;i<100;i++){
+              const scheduledAt=pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+              const [[conflict]]=await c.execute('SELECT id FROM slots WHERE scheduled_at=? AND id<>? LIMIT 1 FOR UPDATE',[scheduledAt,pendingSlot.id]);
+              if(!conflict)break;
+              pendingAt=pendingAt.plus({hours:interval});
+              if(i===99)throw Object.assign(new Error('SCHEDULE_SLOT_CONFLICT'),{code:'schedule_slot_conflict'});
+            }
+            await c.execute('UPDATE slots SET scheduled_at=? WHERE id=?',[pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS'),pendingSlot.id]);
+            if(isActivationFirstSlot){
+              settings.activationFirstPostAt=pendingAt.toUTC().toISO();
+              activationFirstPostAt=DateTime.fromISO(settings.activationFirstPostAt,{zone:'utc'});
+              await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
+            }
+          }
+        }
+        if(pendingAt>current){await c.commit();return {slot:{id:pendingSlot.id,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount};}
+        const active=isInActiveWindow(pendingAt.toJSDate(),{...checked.settings.schedule,timezone:zone});
+        if(active&&isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone})&&current.toMillis()-pendingAt.toMillis()<=15*60*1000){await c.commit();return {slot:{id:pendingSlot.id,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount:0};}
+        await c.execute("UPDATE slots SET status='skipped',error_code=?,completed_at=UTC_TIMESTAMP(3) WHERE id=?",[active?'missed_slot':'outside_active_window',pendingSlot.id]);skippedCount++;
+        if(isActivationFirstSlot){delete settings.activationFirstPostAt;activationFirstPostAt=null;await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);}
       }
-      const [[futurePending]]=await c.execute("SELECT id,scheduled_at,status FROM slots WHERE status='pending' AND scheduled_at>? ORDER BY scheduled_at LIMIT 1 FOR UPDATE",[current.toJSDate()]);
-      if(futurePending){await c.commit();return {slot:{id:futurePending.id,scheduledAt:futurePending.scheduled_at,status:'pending'},created:false,skippedCount};}
       let due=settings.nextSlotAt?DateTime.fromISO(settings.nextSlotAt,{zone:'utc'}):current.plus({hours:interval});
       if(!due.isValid)due=current.plus({hours:interval});
+      if(lastPost?.last_post_at){
+        const lastAt=DateTime.fromJSDate(new Date(lastPost.last_post_at),{zone:'utc'});
+        const isActivationFirstDue=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===due.toMillis();
+        if(lastAt.isValid){const earliest=lastAt.plus({hours:isActivationFirstDue?1:interval});if(earliest>due){due=earliest;if(isActivationFirstDue){settings.activationFirstPostAt=due.toUTC().toISO();activationFirstPostAt=DateTime.fromISO(settings.activationFirstPostAt,{zone:'utc'});}}}
+      }
       for(let i=0;i<100;i++){
+        const isActivationFirstDue=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===due.toMillis();
         const scheduledAt=due.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
         const active=isInActiveWindow(due.toJSDate(),{...checked.settings.schedule,timezone:zone});
         const lateBy=current.toMillis()-due.toMillis();
@@ -216,6 +311,7 @@ function createRepository(pool) {
         const [[existing]]=await c.execute('SELECT id,status,scheduled_at FROM slots WHERE scheduled_at=?',[scheduledAt]);
         due=due.plus({hours:interval});
         settings.nextSlotAt=due.toUTC().toISO();
+        if(isActivationFirstDue&&(status==='skipped'||existing?.status!=='pending'))delete settings.activationFirstPostAt;
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
         if(status==='pending'){await c.commit();return {slot:{id:existing.id,scheduledAt:existing.scheduled_at,status:existing.status},created:insert.affectedRows===1,skippedCount};}
       }
@@ -225,7 +321,25 @@ function createRepository(pool) {
     } catch(e){await c.rollback();throw e;}finally{c.release();}
   }
   async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[]}) { await pool.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=? WHERE id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),id]); }
-  async function startPublishing(id,{now,minimumIntervalHours=6}) { const c=await pool.getConnection();try{await c.beginTransaction();const [[set]]=await c.query('SELECT automation_enabled FROM settings WHERE id=1 FOR UPDATE');const [[s]]=await c.execute('SELECT scheduled_at,status FROM slots WHERE id=? FOR UPDATE',[id]);if(!s||s.status!=='ready'||!set?.automation_enabled){await c.rollback();return false;}const [[last]]=await c.execute("SELECT scheduled_at FROM slots WHERE status IN ('published','publishing','unknown') AND scheduled_at<? AND id<>? ORDER BY scheduled_at DESC LIMIT 1",[s.scheduled_at,id]);if(last&&new Date(s.scheduled_at)-new Date(last.scheduled_at)<minimumIntervalHours*3600000){await c.execute("UPDATE slots SET status='skipped',error_code='MINIMUM_CADENCE' WHERE id=?",[id]);await c.commit();return false;}await c.execute("UPDATE slots SET status='publishing',publish_started_at=? WHERE id=?",[now,id]);await c.commit();return true;}catch(e){await c.rollback();throw e;}finally{c.release();} }
+  async function startPublishing(id, { now, minimumIntervalHours = 1 }) {
+    const c = await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[settings]] = await c.query('SELECT automation_enabled FROM settings WHERE id=1 FOR UPDATE');
+      const [[slot]] = await c.execute('SELECT scheduled_at,status FROM slots WHERE id=? FOR UPDATE', [id]);
+      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled) { await c.rollback(); return false; }
+      const [[last]] = await c.execute("SELECT COALESCE(completed_at,publish_started_at,scheduled_at) AS last_post_at FROM slots WHERE status IN ('published','publishing','unknown','partial') AND id<>? ORDER BY COALESCE(completed_at,publish_started_at,scheduled_at) DESC LIMIT 1", [id]);
+      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < minimumIntervalHours * 3600000) {
+        await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
+        await c.commit();
+        return 'minimum_cadence';
+      }
+      await c.execute("UPDATE slots SET status='publishing',publish_started_at=? WHERE id=?", [now, id]);
+      await c.commit();
+      return true;
+    } catch (e) { await c.rollback(); throw e; }
+    finally { c.release(); }
+  }
   async function updateSlot(id,patch) { const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;const sql=keys.map(k=>`${allowed[k]}=?`).join(',');await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,[...keys.map(k=>patch[k]),id]); }
   async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key})); }
   async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status})); }

@@ -3,6 +3,7 @@
 const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
+const DAILY_SUMMARY_TIMEZONE = 'Asia/Kuala_Lumpur';
 
 const SAFE_ERROR_CODES = new Set([
   'account_expired', 'account_disconnected', 'account_not_found', 'unauthorized',
@@ -83,7 +84,7 @@ async function runDispatcher({
   publisher,
   notifier,
   clock = () => new Date(),
-  minimumIntervalHours = 6,
+  minimumIntervalHours = 1,
   timezone = 'Asia/Kuala_Lumpur',
   contentGenerator,
   maxPublishAttempts = 2,
@@ -99,7 +100,7 @@ async function runDispatcher({
     try { await notifier.flush(); } catch { /* Notification retries must not block publishing safety checks. */ }
   }
   result.reconciled = await reconcileUnsettled({ repository, publisher, notifier, counts: result });
-  await maybeSendDailySummary({ repository, notifier, now, timezone, counts: result });
+  await maybeSendDailySummary({ repository, notifier, now, counts: result });
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
 
   // A provider request with no definitive state blocks new posts until an
@@ -186,6 +187,11 @@ async function runDispatcher({
   }
 
   const started = await repository.startPublishing(slot.id, { now, minimumIntervalHours });
+  if (started === 'minimum_cadence') {
+    await repository.appendActivity({ event: 'cadence_cooldown_wait', slotId: slot.id, details: { code: 'minimum_cadence' } });
+    result.skipped++;
+    return result;
+  }
   if (!started) {
     await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'automation_paused', completedAt: now.toISOString() });
     await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
@@ -271,7 +277,8 @@ async function runDispatcher({
   return result;
 }
 
-async function maybeSendDailySummary({ repository, notifier, now, timezone, counts }) {
+async function maybeSendDailySummary({ repository, notifier, now, counts }) {
+  const timezone = DAILY_SUMMARY_TIMEZONE;
   const local = DateTime.fromJSDate(now instanceof Date ? now : new Date(now), { zone: 'utc' }).setZone(timezone);
   if (!local.isValid || local.hour < 22) return;
   const localDate = local.toISODate();

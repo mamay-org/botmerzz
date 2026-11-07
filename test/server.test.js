@@ -16,7 +16,7 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   assert.equal((await request(server,'/health/live')).status,200);assert.equal((await request(server,'/health/ready')).status,200);
   const malformedCookie=await request(server,'/api/session',{headers:{cookie:'merzz_admin=%E0%A4%A'}});assert.equal(malformedCookie.status,200);assert.deepEqual(JSON.parse(malformedCookie.body),{authenticated:false});
   assert.equal((await request(server,'/api/dashboard')).status,401);
-  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');
+  const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="intervalHours"[^>]*min="1"/);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00.*Malaysia/);
   assert.equal((await request(server,'/api/session/login',{method:'POST',headers:{origin:'https://evil.test'},body:'{}'})).status,403);
   const login=await request(server,'/api/session/login',{method:'POST',headers:{origin:config.baseUrl},body:JSON.stringify({email:'x',password:'y'})});assert.equal(login.status,200);token='a'.repeat(43);
   const cookie=login.headers['set-cookie'][0].split(';')[0];
@@ -26,11 +26,54 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
 });
 
 test('settings and facts routes reject invalid data before persistence',async t=>{
-  let writes=0;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};const repo={saveSettings:async()=>{writes++;},saveFact:async()=>{writes++;}};const auth={authenticate:async()=>({admin:{id:1},csrfToken:'c'.repeat(43)})};
+  let writes=0;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};const repo={saveSettings:async settings=>{writes++;return settings;},saveFact:async()=>{writes++;}};const auth={authenticate:async()=>({admin:{id:1},csrfToken:'c'.repeat(43)})};
   const app=createServer({config,repository:repo,auth});const server=require('node:http').createServer(app);const listening=new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});server.listen(0,'127.0.0.1');await listening;t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const headers={origin:config.baseUrl,cookie:'merzz_admin='+encodeURIComponent('x'.repeat(43)),'x-csrf-token':'c'.repeat(43)};
-  const invalid=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{intervalHours:1}})});assert.equal(invalid.status,400);
-  const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,0);
+  const invalid=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{intervalHours:0}})});assert.equal(invalid.status,400);
+  const hourly=await request(server,'/api/settings',{method:'PUT',headers,body:JSON.stringify({schedule:{intervalHours:1}})});assert.equal(hourly.status,200);assert.equal(JSON.parse(hourly.body).schedule.intervalHours,1);
+  const price=await request(server,'/api/facts/topup',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',price:'30 juta'}})});assert.equal(price.status,400);assert.equal(writes,1);
+});
+
+test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
+  const now=new Date();let enabledCalls=0;let dispatchCalls=0;
+  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const repository={
+    getRuntimeState:async()=>({settings,automationEnabled:false}),
+    listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:now}])),
+    setAutomationEnabled:async(enabled)=>{enabledCalls++;assert.equal(enabled,true);return{changed:true,firstPostAt:now.toISOString(),immediate:true};},
+  };
+  const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
+  const services={aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;return{claimed:1,published:1};}};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
+  const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
+  assert.equal(response.status,200,response.body);assert.equal(enabledCalls,1);assert.equal(dispatchCalls,1);
+  assert.deepEqual(JSON.parse(response.body),{enabled:true,firstPostAt:now.toISOString(),immediate:true});
+});
+
+test('automation enable reports a cadence cooldown when the last post was under one hour ago',async t=>{
+  const firstPostAt=new Date(Date.now()+30*60*1000).toISOString();let dispatchCalls=0;
+  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:new Date()}])),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:false})};
+  const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const app=createServer({config,repository,auth,services:{aiConfigured:true,getProviderStatus:async()=>({connected:true}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{dispatchCalls++;}}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
+  const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
+  assert.equal(response.status,200,response.body);assert.equal(dispatchCalls,1);
+  assert.deepEqual(JSON.parse(response.body),{enabled:true,firstPostAt,immediate:false});
+});
+
+test('automation enable is rejected when recurring scheduler is disabled',async t=>{
+  let writes=0;
+  const repository={getRuntimeState:async()=>({settings:{},automationEnabled:false}),setAutomationEnabled:async()=>{writes++;}};
+  const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const app=createServer({config,repository,auth,services:{schedulerStatus:()=>({enabled:false})}});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
+  const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
+  assert.equal(response.status,503);assert.equal(JSON.parse(response.body).error,'SCHEDULER_DISABLED');assert.equal(writes,0);
 });
 
 test('admin management requires authentication and CSRF, supports create/update, and blocks self-deactivation',async t=>{

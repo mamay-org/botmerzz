@@ -8,7 +8,6 @@ test("database-backed runtime starts paused without provider credentials", () =>
   const config = loadEnv(database);
   assert.equal(config.automationEnabled, false);
   assert.equal(config.timezone, "Asia/Kuala_Lumpur");
-  assert.equal(config.intervalHours, 6);
   assert.equal(config.schedulerEnabled, false);
   assert.equal(config.schedulerIntervalSeconds, 60);
   assert.equal(config.trustProxy, false);
@@ -34,10 +33,7 @@ test("pure tools can explicitly opt out of database requirements", () => {
   assert.equal(config.automationEnabled, false);
 });
 
-test("invalid timezone and interval fail without echoing input", () => {
-  for (const value of ["5", "6hours", "6.5", "NaN", "0", "-6", ""]) {
-    assert.throws(() => loadEnv({ ...database, POST_INTERVAL_HOURS: value }), /POST_INTERVAL_HOURS/);
-  }
+test("invalid timezone fails without echoing input", () => {
   assert.throws(() => loadEnv({ ...database, TIMEZONE: "secret-timezone" }), (error) => {
     assert.match(error.message, /TIMEZONE/);
     assert.doesNotMatch(error.message, /secret-timezone/);
@@ -79,5 +75,5 @@ test("Node versions older than 20.6 are refused", () => {
   for (const nodeVersion of ["18.20.0", "20.5.9"]) {
     assert.throws(() => loadEnv(database, { nodeVersion }), /20\.6/);
   }
-  assert.equal(loadEnv(database, { nodeVersion: "20.6.0" }).intervalHours, 6);
+  assert.equal(loadEnv(database, { nodeVersion: "20.6.0" }).timezone, "Asia/Kuala_Lumpur");
 });

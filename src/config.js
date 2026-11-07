@@ -27,7 +27,6 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   } catch {
     errors.push("TIMEZONE");
   }
-  const intervalHours = integer("POST_INTERVAL_HOURS", 6, 6, 168);
   const baseUrl = env.BASE_URL || (nodeEnv === "production" ? "" : `http://localhost:${port}`);
   try {
     const url = new URL(baseUrl);
@@ -53,7 +52,7 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   }
   if (errors.length) throw new Error(`Invalid configuration: ${[...new Set(errors)].join(", ")}`);
   return {
-    nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone, intervalHours,
+    nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone,
     schedulerEnabled, schedulerIntervalSeconds, trustProxy,
     automationEnabled: false,
     db,

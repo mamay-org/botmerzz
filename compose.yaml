@@ -34,7 +34,6 @@ services:
       PORT: ${PORT:-3000}
       BASE_URL: ${BASE_URL:-http://localhost:${HOST_PORT:-3000}}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
-      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
       SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
       DB_HOST: db
@@ -82,7 +81,6 @@ services:
       PORT: ${PORT:-3000}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
-      POST_INTERVAL_HOURS: ${POST_INTERVAL_HOURS:-6}
       DB_HOST: db-test
       DB_PORT: 3306
       DB_NAME: merzz_test

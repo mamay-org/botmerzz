@@ -85,14 +85,10 @@
 
       <section id="tab-schedule" class="tab-panel">
         <form id="schedule-form" class="panel form-grid">
-          <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Jadwal aktif</h2><p class="muted">Slot di luar jam aktif akan dilewati tanpa posting susulan.</p></div></div>
-          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="6" max="168" step="1" required><span class="field-hint">Minimal 6 jam</span></label>
-          <label>Zona waktu<select name="timezone"><option value="Asia/Kuala_Lumpur">Malaysia · MYT</option><option value="Asia/Jakarta">Indonesia · WIB</option><option value="Asia/Singapore">Singapura · SGT</option><option value="UTC">UTC</option></select></label>
-          <fieldset class="full"><legend>Hari aktif</legend><div class="day-picks" id="active-days"></div></fieldset>
-          <label>Mulai jam aktif<input name="activeStart" type="time" required></label>
-          <label>Akhir jam aktif<input name="activeEnd" type="time" required></label>
+          <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Interval penerbitan</h2><p class="muted">Penerbitan berjalan sepanjang hari, setiap hari. Saat otomasi diaktifkan, sistem langsung memproses utas pertama.</p></div></div>
+          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="1" max="168" step="1" required><span class="field-hint">Minimal 1 jam · maksimal 168 jam</span></label>
           <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa informasi terbaru</option><option value="MIXED">MIXED · sekitar 1 dari 4 posting</option><option value="ON">ON · gunakan informasi terbaru</option></select></label>
-          <div class="form-footer full"><span class="muted">Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
+          <div class="form-footer full"><span class="muted">Laporan Telegram dikirim sekitar pukul 22:00 waktu Malaysia. Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
         </form>
         <div class="notice info"><strong>Jeda darurat</strong><span>Hentikan tugas berikutnya dan minta Tebar membatalkan posting terjadwal yang masih bisa dibatalkan. Periksa hasilnya di log.</span></div>
       </section>

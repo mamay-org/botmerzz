@@ -21,6 +21,23 @@ test('scheduler starts one immediate run and prevents overlapping timer runs', a
   assert.equal(scheduler.status().lastResult.published, 0);
 });
 
+test('admin-triggered scheduler run waits for an active poll then immediately dispatches once', async () => {
+  let release;
+  let calls = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const scheduler = createScheduler({ run: async () => { calls++; if (calls === 1) await gate; return { published: 0 }; }, intervalMs: 60_000 });
+  scheduler.start({ runImmediately: false });
+  const initial = scheduler.tick();
+  const triggered = scheduler.runNow();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  release();
+  await Promise.all([initial, triggered]);
+  assert.equal(calls, 2);
+  assert.equal(scheduler.status().running, false);
+  await scheduler.stop();
+});
+
 test('scheduler records only a safe error code and continues after a failed run', async () => {
   const logged = [];
   let calls = 0;

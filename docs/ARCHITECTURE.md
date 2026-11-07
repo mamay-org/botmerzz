@@ -10,7 +10,7 @@ The dispatcher calls the same application services. OpenRouter generates content
 
 ## Boundaries
 
-- Domain policy validates schedule settings, active windows, minimum cadence, fact freshness, content length, currency claims, approved account attributes, and onboarding state. It has no network or database code.
+- Domain policy validates schedule settings, the one-hour minimum cadence, fact freshness, content length, currency claims, approved account attributes, and onboarding state. Legacy active-day/hour settings do not gate publishing. It has no network or database code.
 - Content service selects a pillar and eligible facts for OFF/ON/MIXED mode, builds a Malaysian Malay prompt from structured knowledge, calls the AI adapter, then validates the text. It retries generation once; invalid output is skipped after that retry.
 - Tebar adapter owns API URLs, Bearer authentication, account/status/list/cancel/insights requests, idempotency headers, and response normalization. Other modules use provider-neutral methods.
 - Telegram adapter sends bounded notifications and daily summaries. It redacts secrets and never exposes provider response bodies.
@@ -21,9 +21,11 @@ The dispatcher calls the same application services. OpenRouter generates content
 
 ## Scheduling model
 
-Schedule settings contain the interval in hours (minimum 6), active weekdays, daily active-time window, and an IANA timezone. The user-facing default is Asia/Kuala_Lumpur; the engine stores due instants in UTC. A dispatcher invocation queries due work, atomically claims its slot, and exits. A slot outside the configured local active window is marked skipped and does not build a backlog.
+New schedule settings default to a one-hour interval, which is also the minimum. The IANA timezone defaults to Asia/Kuala_Lumpur; due instants are stored in UTC. Publishing is 24/7. Persisted legacy active weekdays and daily time-window settings are ignored, and existing database interval values are retained across upgrades. An admin must set an existing schedule's interval to `1` in the dashboard to use hourly cadence. At one-hour cadence the planner creates 24 scheduled slots per day; operators must monitor the connected Tebar account quota. A dispatcher invocation queries due work, atomically claims its slot, and exits. Missed slots are skipped without catch-up.
 
-The product schedule and scheduler poll interval are separate. The poller checks for due work every 60 seconds by default (configurable from 15 to 3,600 seconds), while the product interval remains at least six hours. It runs immediately on startup and then polls; persisted slots survive restarts. The planner skips slots more than 15 minutes late and out-of-window slots instead of catching up. MySQL row locks and uniqueness constraints protect claims if more than one app process runs.
+The product schedule and scheduler poll interval are separate. The poller checks for due work every 60 seconds by default (configurable from 15 to 3,600 seconds). On automation enable, the app requests an immediate first dispatch; if a post was published within the preceding hour, the next dispatch waits for the remainder of the one-hour cooldown. The poller also runs immediately on startup and then polls; persisted slots survive restarts. The planner skips slots more than 15 minutes late instead of catching up. MySQL row locks and uniqueness constraints protect claims if more than one app process runs.
+
+The daily Telegram summary is scheduled for 22:00 Asia/Kuala_Lumpur regardless of a stored schedule timezone.
 
 ## Publish and recovery states
 

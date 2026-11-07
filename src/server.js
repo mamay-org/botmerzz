@@ -253,6 +253,7 @@ function createServer({ config, repository, auth, services = {} }) {
   });
   app.post('/api/automation/enable', authenticated, mutation, async (req, res, next) => {
     try {
+      if (services.schedulerStatus?.().enabled !== true || typeof services.triggerScheduler !== 'function') return res.status(503).json({ error: 'SCHEDULER_DISABLED' });
       const state = await repository.getRuntimeState();
       const settings = validateSettings(state.settings || {});
       const facts = await repository.listFacts();
@@ -263,7 +264,19 @@ function createServer({ config, repository, auth, services = {} }) {
         && ['topup','account'].every((key) => facts[key] && isFactFresh(facts[key], new Date()))
         && provider.connected === true && services.aiConfigured === true;
       if (!complete) return res.status(409).json({ error: 'ONBOARDING_INCOMPLETE' });
-      await repository.setAutomationEnabled(true, req.admin.id); return res.json({ enabled: true });
+      const activation = await repository.setAutomationEnabled(true, req.admin.id);
+      if (activation.changed) {
+        try {
+          Promise.resolve(services.triggerScheduler()).catch((error) => {
+            const code = typeof error?.code === 'string' && /^[a-z][a-z0-9_]{1,63}$/.test(error.code) ? error.code : 'scheduler_trigger_failed';
+            services.logger?.error?.('scheduler.trigger_failed', { code });
+          });
+        } catch (error) {
+          const code = typeof error?.code === 'string' && /^[a-z][a-z0-9_]{1,63}$/.test(error.code) ? error.code : 'scheduler_trigger_failed';
+          services.logger?.error?.('scheduler.trigger_failed', { code });
+        }
+      }
+      return res.json({ enabled: true, firstPostAt: activation.firstPostAt, immediate: activation.immediate });
     } catch (error) { return next(error); }
   });
   app.post('/api/automation/pause', authenticated, mutation, async (req, res, next) => {
