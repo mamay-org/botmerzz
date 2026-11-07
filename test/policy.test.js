@@ -44,6 +44,17 @@ test('settings trim and persist the bounded AI content direction', () => {
   assert.equal(validateSettings({ brand: { contentDirection: 12 } }).valid, false);
 });
 
+test('settings normalize optional hook vocabulary guidance', () => {
+  const checked = validateSettings({ guardrails: {
+    hookVocabulary: ['  Cerita pengalaman  ', 'cerita PENGALAMAN', 'Sembang santai'],
+  } });
+  assert.equal(checked.valid, true);
+  assert.deepEqual(checked.settings.guardrails.hookVocabulary, ['Cerita pengalaman', 'Sembang santai']);
+  assert.deepEqual(validateSettings({}).settings.guardrails.hookVocabulary, []);
+  assert.equal(validateSettings({ guardrails: { hookVocabulary: Array(101).fill('kata') } }).valid, false);
+  assert.equal(validateSettings({ guardrails: { hookVocabulary: ['x'.repeat(501)] } }).valid, false);
+});
+
 test('settings preserve 2000-character name and voice limits with 7000-character guidance fields', () => {
   const checked = validateSettings({ brand: {
     name: 'N'.repeat(2000),
@@ -118,6 +129,14 @@ test('caption rejects forbidden claims, unapproved account attributes and games'
   }
   const account = { ...context, pillar: 'account', facts: [{ ...fact, pillar: 'account', attributes: ['Mythic', '100 skins'] }] };
   assert.equal(validateCaption('Jom kongsi pengalaman bermain!\nAkaun Mobile Legends: 400 Diamond; MYR 30; Mythic; 100 skins.\nhttps://example.test/topup', account).valid, true);
+});
+
+test('safe Malay hooks may use words outside optional vocabulary and need no fixed trigger word', () => {
+  const text = 'Malam tadi saya terfikir tentang pengalaman bersama rakan.\nTop-up Mobile Legends.\nhttps://example.test/topup';
+  const result = validateCaption(text, { ...context, facts: [], hookVocabulary: ['Sembang santai'] });
+  assert.equal(result.valid, true, result.errors.join(', '));
+  assert.equal(result.errors.includes('UNAPPROVED_HOOK_WORD'), false);
+  assert.equal(result.errors.includes('MALAY_ENGAGEMENT_REQUIRED'), false);
 });
 
 test('saved captions yield only the five latest published hooks without product copy, links, or hashtags', () => {
@@ -263,12 +282,24 @@ test('approval cannot authorize a broader claim, partial denomination, or a diff
   assert.equal(validateCaption('Jom top-up ter\u200bmurah.', context).valid, false);
 });
 
-test('generated hooks reject unseen games, spelled quantities, prices, and all link forms', () => {
+test('generated hooks reject configured forbidden game claims, spelled quantities, prices, and all link forms', () => {
   for (const hook of [
-    'Jom main League of Legends Wild Rift!', 'Jom main PermainanBaharu!',
-    'Jom beli MYR 30 juta.', 'Lima ratus Diamond untuk anda.',
+    'Jom beli MYR 30 juta.',
     'Jom lihat www.evil.test', 'Jom lihat evil.test', 'Jom lihat https://evil.test',
     'Jom lihat ftp://evil.test', 'Jom lihat javascript:alert(1)', 'Jom lihat https:',
-    'Jom lihat HTTPS://example.test/topup', 'Jom lihat stok tersedia.', 'Jom lihat Mythic.',
+    'Jom lihat HTTPS://example.test/topup',
   ]) assert.equal(validateCaption(hook).valid, false, hook);
+  assert.equal(validateCaption('Jom main League of Legends Wild Rift?', { forbiddenClaims: ['League of Legends Wild Rift'] }).valid, false);
+  assert.equal(validateCaption('Jom lihat stok tersedia.', { forbiddenClaims: ['stok tersedia'] }).valid, false);
+  assert.equal(validateCaption('Jom lihat Mythic.', { forbiddenClaims: ['Mythic'] }).valid, false);
+});
+
+test('spelled-out quantities are rejected near units while ordinary Malay numbers remain allowed', () => {
+  for (const hook of ['Lima ratus Diamond untuk anda.', 'Dua akaun untuk dipilih.', 'MYR tiga puluh ringgit']) {
+    const result = validateCaption(hook);
+    assert.equal(result.valid, false, hook);
+    assert.ok(result.errors.includes('UNAPPROVED_QUANTITY_OR_CURRENCY'), hook);
+  }
+  const safe = validateCaption('Satu pengalaman bermain yang paling berkesan?');
+  assert.equal(safe.valid, true, safe.errors.join(', '));
 });

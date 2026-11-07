@@ -16,7 +16,7 @@ function templateList(value, { maxItems = 50, maxLength = 200 } = {}) {
 function normalizeTemplateData(category, data, whitelist) {
   if (!templateCategories.has(category) || !data || typeof data !== 'object' || Array.isArray(data)) return null;
   const schemas = {
-    brand: ['brandName', 'voice', 'audienceNotes', 'contentDirection', 'gameWhitelist', 'trackedTopup', 'trackedAccount', 'forbiddenClaims', 'approvedClaims'],
+    brand: ['brandName', 'voice', 'audienceNotes', 'contentDirection', 'hookVocabulary', 'gameWhitelist', 'trackedTopup', 'trackedAccount', 'forbiddenClaims', 'approvedClaims'],
     topup: ['game', 'denomination'],
     account: ['attributes'],
   };
@@ -53,6 +53,7 @@ function normalizeTemplateData(category, data, whitelist) {
     }
     const listLimits = [
       ['gameWhitelist', { maxItems: 50, maxLength: 80 }],
+      ['hookVocabulary', { maxItems: 100, maxLength: 500 }],
       ['forbiddenClaims', { maxItems: 40, maxLength: 200 }],
       ['approvedClaims', { maxItems: 40, maxLength: 200 }],
     ];

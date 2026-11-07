@@ -105,6 +105,7 @@
       trackedTopup: settings.trackedLinks?.topup || '', trackedAccount: settings.trackedLinks?.account || '',
       forbiddenClaims: (guardrails.forbiddenClaims || []).join('\n'),
       approvedClaims: (guardrails.approvedClaims || []).join('\n'),
+      hookVocabulary: (guardrails.hookVocabulary || []).join('\n'),
       guardrailsApproved: guardrails.approved,
     });
     setFormValues($('#schedule-form'), {
@@ -126,6 +127,7 @@
       contentDirection: value($('#content-form'), 'contentDirection'), audienceNotes: value($('#content-form'), 'audienceNotes'), gameWhitelist: lines(value($('#content-form'), 'gameWhitelist')),
       trackedTopup: value($('#content-form'), 'trackedTopup'), trackedAccount: value($('#content-form'), 'trackedAccount'),
       forbiddenClaims: lines(value($('#content-form'), 'forbiddenClaims')), approvedClaims: lines(value($('#content-form'), 'approvedClaims')),
+      hookVocabulary: lines(value($('#content-form'), 'hookVocabulary')),
     };
     if (category === 'topup') return { game: value($('#fact-topup-form'), 'game').trim(), denomination: value($('#fact-topup-form'), 'denomination').trim() };
     return { attributes: lines(value($('#fact-account-form'), 'attributes')) };
@@ -140,6 +142,7 @@
         brandName: data.brandName, voice: data.voice, contentDirection: data.contentDirection, audienceNotes: data.audienceNotes,
         gameWhitelist: (data.gameWhitelist || []).join('\n'), trackedTopup: data.trackedTopup, trackedAccount: data.trackedAccount,
         forbiddenClaims: (data.forbiddenClaims || []).join('\n'), approvedClaims: (data.approvedClaims || []).join('\n'), guardrailsApproved: false,
+        hookVocabulary: (data.hookVocabulary || []).join('\n'),
       });
       show('#global-success', 'Template diterapkan ke form Konten & brand. Periksa lalu simpan panduan.');
       activateTab('content'); $('#content-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -203,6 +206,7 @@
     const field = document.createElement(multiline ? 'textarea' : options ? 'select' : 'input'); field.name = name; field.value = Array.isArray(val) ? val.join('\n') : val || '';
     if (multiline) field.rows = 3;
     if (name === 'contentDirection') field.maxLength = 7000;
+    if (name === 'hookVocabulary') field.maxLength = 7000;
     if (options) {
       field.replaceChildren(...options.map((item) => { const option = document.createElement('option'); option.value = item; option.textContent = item; return option; }));
       field.value = val && options.includes(val) ? val : '';
@@ -220,6 +224,7 @@
       editorControl('Arahan konten AI', 'contentDirection', data.contentDirection, { multiline: true, hint: 'Acuan utama untuk topik dan sudut konten; tetap mengikuti batas AI.' }),
       editorControl('Wawasan pelanggan', 'audienceNotes', data.audienceNotes, { multiline: true }),
       editorControl('Game top-up dalam whitelist', 'gameWhitelist', data.gameWhitelist, { multiline: true, hint: 'Simpan hanya game yang sudah ada di whitelist.' }),
+      editorControl('Kosakata hook yang disarankan', 'hookVocabulary', data.hookVocabulary, { multiline: true, hint: 'Opsional. Satu kata atau frasa per baris; hanya panduan, bukan allowlist.' }),
       editorControl('Tautan top-up', 'trackedTopup', data.trackedTopup), editorControl('Tautan akun', 'trackedAccount', data.trackedAccount),
       editorControl('Klaim dilarang', 'forbiddenClaims', data.forbiddenClaims, { multiline: true }), editorControl('Klaim disetujui', 'approvedClaims', data.approvedClaims, { multiline: true }),
     );
@@ -236,6 +241,7 @@
     if (category === 'brand') return {
       brandName: val('brandName'), voice: val('voice'), contentDirection: val('contentDirection'), audienceNotes: val('audienceNotes'), gameWhitelist: lines(val('gameWhitelist')),
       trackedTopup: val('trackedTopup'), trackedAccount: val('trackedAccount'), forbiddenClaims: lines(val('forbiddenClaims')), approvedClaims: lines(val('approvedClaims')),
+      hookVocabulary: lines(val('hookVocabulary')),
     };
     if (category === 'topup') return { game: val('game'), denomination: val('denomination') };
     return { attributes: lines(val('attributes')) };
@@ -400,7 +406,7 @@
     settings.gameWhitelist = lines(value(form, 'gameWhitelist'));
     settings.hashtags = lines(value(form, 'hashtags'));
     settings.trackedLinks = { ...(settings.trackedLinks || {}), topup: value(form, 'trackedTopup'), account: value(form, 'trackedAccount') };
-    settings.guardrails = { ...(settings.guardrails || {}), approved: form.elements.guardrailsApproved.checked, forbiddenClaims: lines(value(form, 'forbiddenClaims')), approvedClaims: lines(value(form, 'approvedClaims')) };
+    settings.guardrails = { ...(settings.guardrails || {}), approved: form.elements.guardrailsApproved.checked, forbiddenClaims: lines(value(form, 'forbiddenClaims')), approvedClaims: lines(value(form, 'approvedClaims')), hookVocabulary: lines(value(form, 'hookVocabulary')) };
     try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
   });
 
