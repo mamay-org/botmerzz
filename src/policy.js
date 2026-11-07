@@ -159,12 +159,17 @@ function isFactFresh(fact, now = new Date()) {
 
 function composeApprovedContent(context) {
   const pillar = context.pillar;
+  if (!['topup', 'account'].includes(pillar)) return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
+  if (context.includeProduct === false) return { valid: true, text: '', factBearing: false, factIds: [] };
   const facts = (context.facts || []).filter((fact) => isFactFresh(fact, context.now) && fact.pillar === pillar);
   const fact = facts[0];
   const game = fact?.game || (pillar === 'account' ? 'Mobile Legends' : context.gameWhitelist?.[0]);
   const allowed = pillar === 'account' ? game === 'Mobile Legends' : context.gameWhitelist?.includes(game);
   const safeField = isSafeApprovedField;
-  if (!['topup', 'account'].includes(pillar) || !allowed || !safeField(game)) return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
+  if (!allowed || !safeField(game)) {
+    if (context.allowGeneric === true) return { valid: true, text: '', factBearing: false, factIds: [] };
+    return { valid: false, errors: ['INVALID_APPROVED_PRODUCT'] };
+  }
   const details = [];
   if (fact) {
     for (const field of ['denomination', 'availability']) {
@@ -271,12 +276,13 @@ function validateCaption(text, context = {}) {
   captionParts.after = captionParts.after.replace(HASHTAG_PATTERN, '');
   const withoutHashtags = joinAroundText(captionParts).replace(/\s+$/u, '');
   let hook = withoutHashtags;
-  if (context.trackedLink) {
+  if (context.trackedLink || context.optionalContent === true) {
     const approved = composeApprovedContent(context);
     if (!approved.valid) return { valid: false, errors: [...errors, ...approved.errors] };
-    const suffix = `\n${approved.text}\n${context.trackedLink}`;
-    if (!withoutHashtags.endsWith(suffix)) return { valid: false, errors: [...errors, 'UNAPPROVED_FACT_OR_LINK'] };
-    hook = withoutHashtags.slice(0, -suffix.length);
+    const suffixParts = [approved.text, context.trackedLink].filter(Boolean);
+    const suffix = suffixParts.length ? `\n${suffixParts.join('\n')}` : '';
+    if (suffix && !withoutHashtags.endsWith(suffix)) return { valid: false, errors: [...errors, 'UNAPPROVED_FACT_OR_LINK'] };
+    if (suffix) hook = withoutHashtags.slice(0, -suffix.length);
   }
   const normalizedHook = hook.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
   if (!normalizedHook.trim()) errors.push('EMPTY_HOOK');

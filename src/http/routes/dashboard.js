@@ -22,13 +22,13 @@ function registerDashboardRoutes(app, { repository, services, authenticated, mut
       ]);
       const now = new Date();
       const items = [
-        { key: 'brand', label: 'Suara jenama dan panduan kandungan', complete: Boolean(state.settings?.brand?.name && state.settings?.brand?.voice) },
-        { key: 'games', label: 'Whitelist game top-up', complete: Array.isArray(state.settings?.gameWhitelist) && state.settings.gameWhitelist.length > 0 },
-        { key: 'guardrails', label: 'Guardrail diluluskan klien', complete: state.settings?.guardrails?.approved === true },
-        { key: 'links', label: 'Tautan homepage tracked', complete: Boolean(state.settings?.trackedLinks?.topup && state.settings?.trackedLinks?.account) },
-        { key: 'facts', label: 'Ringkasan top-up dan akaun disemak', complete: ['topup', 'account'].every((key) => facts[key] && isFactFresh(facts[key], now)) },
-        { key: 'thread', label: 'Akaun Threads staging aktif di Tebar', complete: provider.connected === true },
-        { key: 'ai', label: 'Penyedia AI dikonfigurasi', complete: services.aiConfigured === true },
+        { key: 'brand', label: 'Nama dan gaya komunikasi brand', required: true, complete: Boolean(state.settings?.brand?.name && state.settings?.brand?.voice) },
+        { key: 'games', label: 'Whitelist game top-up', required: false, complete: Array.isArray(state.settings?.gameWhitelist) && state.settings.gameWhitelist.length > 0 },
+        { key: 'guardrails', label: 'Guardrail diluluskan klien', required: false, complete: state.settings?.guardrails?.approved === true },
+        { key: 'links', label: 'Tautan homepage tracked', required: false, complete: Boolean(state.settings?.trackedLinks?.topup && state.settings?.trackedLinks?.account) },
+        { key: 'facts', label: 'Ringkasan top-up dan akaun disemak', required: false, complete: ['topup', 'account'].every((key) => facts[key] && isFactFresh(facts[key], now)) },
+        { key: 'thread', label: 'Akaun Threads testing aktif di Tebar', required: true, complete: provider.connected === true },
+        { key: 'ai', label: 'Penyedia AI dikonfigurasi', required: true, complete: services.aiConfigured === true },
       ];
       const freshFacts = ['topup', 'account'].filter((key) => facts[key] && isFactFresh(facts[key], now)).length;
       const metrics = {

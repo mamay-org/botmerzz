@@ -257,12 +257,13 @@
     const list = $('#onboarding-list');
     list.replaceChildren(...items.map((item) => {
       const li = document.createElement('li');
-      if (!item.complete) li.classList.add('incomplete');
-      li.textContent = onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal';
+      if (item.required && !item.complete) li.classList.add('incomplete');
+      if (item.required === false) li.classList.add('optional');
+      li.textContent = `${onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal'}${item.required === false ? ' — Opsional' : ''}`;
       return li;
     }));
-    const missing = items.filter((item) => !item.complete).length;
-    const badge = $('#onboarding-count'); badge.textContent = missing ? `${missing} belum lengkap` : 'Lengkap';
+    const missing = items.filter((item) => item.required && !item.complete).length;
+    const badge = $('#onboarding-count'); badge.textContent = missing ? `${missing} wajib dilengkapi` : 'Wajib lengkap';
     badge.className = `pill ${missing ? 'warning' : 'good'}`;
   }
 
@@ -325,7 +326,7 @@
     state.data = data;
     const automation = data.automation || {};
     $('#automation-label').textContent = automation.enabled ? 'Otomasi aktif' : 'Otomasi nonaktif';
-    $('#automation-reason').textContent = automation.enabled ? 'Tugas berjalan sesuai jadwal.' : 'Selesaikan onboarding sebelum mengaktifkan.';
+    $('#automation-reason').textContent = automation.enabled ? 'Tugas berjalan sesuai jadwal.' : 'Lengkapi nama dan gaya komunikasi brand, hubungkan akun Threads testing di Tebar, dan konfigurasi penyedia AI.';
     const dot = $('#automation-state'); dot.className = `state-dot ${automation.enabled ? 'on' : automation.paused ? 'paused' : 'off'}`;
     const control = $('#automation-button'); control.textContent = automation.enabled ? 'Jeda darurat' : 'Aktifkan otomasi'; control.className = `button ${automation.enabled ? 'danger' : 'primary'}`;
     const provider = data.provider || {};

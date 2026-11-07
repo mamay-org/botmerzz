@@ -21,6 +21,9 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   const login=await request(server,'/api/session/login',{method:'POST',headers:{origin:config.baseUrl},body:JSON.stringify({email:'x',password:'y'})});assert.equal(login.status,200);token='a'.repeat(43);
   const cookie=login.headers['set-cookie'][0].split(';')[0];
   const dashboard=await request(server,'/api/dashboard',{headers:{cookie}});assert.equal(dashboard.status,200);assert.deepEqual(JSON.parse(dashboard.body).metrics.clicks,{available:true,value:12,reason:null});
+  const onboarding=JSON.parse(dashboard.body).onboarding;
+  assert.deepEqual(onboarding.filter(item=>item.required).map(item=>item.key),['brand','thread','ai']);
+  assert.ok(onboarding.filter(item=>!item.required).every(item=>item.required===false&&['games','guardrails','links','facts'].includes(item.key)));
   const vocabulary=['  Cerita pengalaman  ','cerita PENGALAMAN','Sembang santai'];
   const knowledge=await request(server,'/api/knowledge',{method:'PUT',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:JSON.stringify({guardrails:{approved:true,hookVocabulary:vocabulary}})});
   assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).guardrails.hookVocabulary,['Cerita pengalaman','Sembang santai']);
@@ -44,15 +47,15 @@ test('settings and facts routes reject invalid data before persistence',async t=
   const invalidAttributeLength=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['A'.repeat(101)]}})});assert.equal(invalidAttributeLength.status,400);assert.equal(writes,3);
   const tooManyAttributes=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:Array(21).fill('Rank Mythic')}})});assert.equal(tooManyAttributes.status,400);assert.equal(writes,3);
   const validAttribute=await request(server,'/api/facts/account',{method:'PUT',headers,body:JSON.stringify({active:true,summary:{game:'Mobile Legends',attributes:['Rank Mythic']}})});assert.equal(validAttribute.status,200);assert.equal(writes,4);
-  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/hashtags:\s*\(settings\.hashtags\s*\|\|\s*\[\]\)/);assert.match(appSource,/settings\.hashtags\s*=\s*lines\(value\(form,\s*'hashtags'\)\)/);assert.match(appSource,/contentDirection:\s*brand\.contentDirection/);assert.match(appSource,/contentDirection:\s*value\(form,\s*'contentDirection'\)/);assert.match(appSource,/hookVocabulary:\s*\(guardrails\.hookVocabulary\s*\|\|\s*\[\]\)/);assert.match(appSource,/hookVocabulary:\s*lines\(value\(form,\s*'hookVocabulary'\)\)/);assert.match(appSource,/hookVocabulary:\s*\(data\.hookVocabulary\s*\|\|\s*\[\]\)\.join/);assert.match(appSource,/hookVocabulary:\s*lines\(val\('hookVocabulary'\)\)/);
+  const appSource=require('node:fs').readFileSync(require.resolve('../public/app.js'),'utf8');assert.match(appSource,/hashtags:\s*\(settings\.hashtags\s*\|\|\s*\[\]\)/);assert.match(appSource,/settings\.hashtags\s*=\s*lines\(value\(form,\s*'hashtags'\)\)/);assert.match(appSource,/contentDirection:\s*brand\.contentDirection/);assert.match(appSource,/contentDirection:\s*value\(form,\s*'contentDirection'\)/);assert.match(appSource,/hookVocabulary:\s*\(guardrails\.hookVocabulary\s*\|\|\s*\[\]\)/);assert.match(appSource,/hookVocabulary:\s*lines\(value\(form,\s*'hookVocabulary'\)\)/);assert.match(appSource,/hookVocabulary:\s*\(data\.hookVocabulary\s*\|\|\s*\[\]\)\.join/);assert.match(appSource,/hookVocabulary:\s*lines\(val\('hookVocabulary'\)\)/);assert.match(appSource,/items\.filter\(\(item\)\s*=>\s*item\.required\s*&&\s*!item\.complete\)/);assert.match(appSource,/Opsional/);
 });
 
 test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
   const now=new Date();let enabledCalls=0;let dispatchCalls=0;
-  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const settings={brand:{name:'Kedai Merzz',voice:'Santai'}};
   const repository={
     getRuntimeState:async()=>({settings,automationEnabled:false}),
-    listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:now}])),
+    listFacts:async()=>({}),
     setAutomationEnabled:async(enabled)=>{enabledCalls++;assert.equal(enabled,true);return{changed:true,firstPostAt:now.toISOString(),immediate:true};},
   };
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
@@ -63,6 +66,23 @@ test('automation enable requires scheduler and triggers an immediate durable dis
   const response=await request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
   assert.equal(response.status,200,response.body);assert.equal(enabledCalls,1);assert.equal(dispatchCalls,1);
   assert.deepEqual(JSON.parse(response.body),{enabled:true,firstPostAt:now.toISOString(),immediate:true});
+});
+
+test('automation enable blocks only missing brand, Threads account, or AI configuration',async t=>{
+  const now=new Date();let settings={brand:{name:'Kedai Merzz',voice:'Santai'}};let connected=true;let aiConfigured=true;let writes=0;
+  const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>({}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
+  const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
+  const services={aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const app=createServer({config,repository,auth,services});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
+  const activate=()=>request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
+  assert.equal((await activate()).status,200,'missing optional fields must not block activation');assert.equal(writes,1);
+  settings={brand:{name:'',voice:'Santai'}};assert.equal((await activate()).status,409,'brand name is required');
+  settings={brand:{name:'Kedai Merzz',voice:''}};assert.equal((await activate()).status,409,'brand communication style is required');
+  settings={brand:{name:'Kedai Merzz',voice:'Santai'}};connected=false;assert.equal((await activate()).status,409,'Threads account must be connected');
+  connected=true;services.aiConfigured=false;assert.equal((await activate()).status,409,'AI provider must be configured');
+  assert.equal(writes,1,'failed required gates must not enable automation');
 });
 
 test('automation enable starts immediately even if the previous session posted under one hour ago',async t=>{
