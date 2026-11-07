@@ -1,6 +1,6 @@
 'use strict';
 
-const { validateSettings, isFactFresh } = require('../../policy');
+const { validateSettings } = require('../../policy');
 
 function registerAutomationRoutes(app, { repository, services, authenticated, mutation }) {
   app.post('/api/automation/enable', authenticated, mutation, async (req, res, next) => {
@@ -10,12 +10,8 @@ function registerAutomationRoutes(app, { repository, services, authenticated, mu
       }
       const state = await repository.getRuntimeState();
       const settings = validateSettings(state.settings || {});
-      const facts = await repository.listFacts();
       const provider = services.getProviderStatus ? await services.getProviderStatus() : { connected: false };
       const complete = settings.valid && Boolean(settings.settings.brand.name && settings.settings.brand.voice)
-        && settings.settings.guardrails.approved && settings.settings.gameWhitelist.length > 0
-        && settings.settings.trackedLinks.topup && settings.settings.trackedLinks.account
-        && ['topup', 'account'].every((key) => facts[key] && isFactFresh(facts[key], new Date()))
         && provider.connected === true && services.aiConfigured === true;
       if (!complete) return res.status(409).json({ error: 'ONBOARDING_INCOMPLETE' });
       const activation = await repository.setAutomationEnabled(true, req.admin.id);

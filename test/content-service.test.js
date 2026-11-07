@@ -71,6 +71,56 @@ test('optional hook vocabulary is prompt guidance and words outside it can pass 
   assert.match(prompt.system, /hookVocabulary diberikan, gunakannya sebagai inspirasi.{0,100}bukan daftar wajib/i);
 });
 
+test('required brand alone can generate a generic post without optional product, guardrails, facts, or links', async () => {
+  let prompt;
+  const result = await generatePost({
+    now,
+    settings: { brand: { name: 'Kedai Merzz', voice: 'Santai' } },
+    facts: [], history: [],
+  }, {
+    generate: async (input) => { prompt = input; return 'Malam tadi saya terfikir tentang pengalaman bersama rakan.'; },
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Malam tadi saya terfikir tentang pengalaman bersama rakan.');
+  assert.equal(result.factBearing, false);
+  assert.deepEqual(result.factIds, []);
+  assert.equal(JSON.parse(prompt.user).brandName, 'Kedai Merzz');
+  assert.equal(Object.hasOwn(JSON.parse(prompt.user), 'trackedLink'), false);
+});
+
+test('optional tracked link can be used without product whitelist, guardrail approval, or facts', async () => {
+  const result = await generatePost({
+    now,
+    settings: {
+      brand: { name: 'Kedai Merzz', voice: 'Santai' },
+      trackedLinks: { topup: 'https://example.test/topup' },
+    },
+    facts: [], history: [],
+  }, { generate: async () => 'Malam tadi saya terfikir tentang pengalaman bersama rakan.' });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Malam tadi saya terfikir tentang pengalaman bersama rakan.\nhttps://example.test/topup');
+  assert.equal(result.factBearing, false);
+});
+
+test('configured optional product remains publishable without a tracked link or fresh facts', async () => {
+  const result = await generatePost({
+    now,
+    settings: {
+      priceMode: 'ON', gameWhitelist: ['Mobile Legends'],
+      brand: { name: 'Kedai Merzz', voice: 'Santai' },
+      guardrails: { approved: true },
+      trackedLinks: {},
+    },
+    facts: [], history: [],
+  }, { generate: async () => 'Malam tadi saya terfikir tentang pengalaman bersama rakan.' });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, 'Malam tadi saya terfikir tentang pengalaman bersama rakan.\nTop-up Mobile Legends.');
+  assert.equal(result.factBearing, false);
+});
+
 test('recent published hooks are supplied and the prompt requests a distinct angle and structure', async () => {
   const hooks = [
     'Jom kongsi pengalaman bermain bersama kawan?',
@@ -315,10 +365,11 @@ test('a valid second attempt succeeds and final appended link counts toward leng
   assert.equal(calls, 2);
 });
 
-test('missing approved guardrails or tracked links skips before generation', async () => {
-  for (const patch of [{ guardrails: { approved: false } }, { trackedLinks: {} }, { gameWhitelist: [] }]) {
-    const result = await generatePost({ ...base, settings: { ...base.settings, ...patch } }, { generate: async () => { throw new Error('Must not generate'); } });
+test('missing required brand name or communication style skips before generation', async () => {
+  for (const brand of [{ ...base.settings.brand, name: '' }, { ...base.settings.brand, voice: '' }]) {
+    const result = await generatePost({ ...base, settings: { ...base.settings, brand } }, { generate: async () => { throw new Error('Must not generate'); } });
     assert.equal(result.status, 'skipped');
+    assert.equal(result.reason, 'ONBOARDING_INCOMPLETE');
     assert.equal(result.attempts, 0);
   }
 });

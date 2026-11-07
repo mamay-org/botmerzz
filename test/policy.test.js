@@ -216,6 +216,34 @@ test('approved content omits unsafe stored attributes and keeps safe approved de
   assert.deepEqual(result.factIds, ['account']);
 });
 
+test('optional product composition can fall back to an empty safe suffix', () => {
+  const result = composeApprovedContent({
+    now, pillar: 'topup', facts: [], gameWhitelist: [], allowGeneric: true,
+  });
+  assert.deepEqual(result, { valid: true, text: '', factBearing: false, factIds: [] });
+});
+
+test('caption validation supports generic hooks and optional suffixes without links', () => {
+  const hook = 'Malam tadi saya terfikir tentang pengalaman bersama rakan.';
+  const generic = validateCaption(hook, {
+    now, pillar: 'topup', facts: [], gameWhitelist: [], allowGeneric: true, includeProduct: false,
+  });
+  assert.equal(generic.valid, true, generic.errors.join(', '));
+
+  const product = validateCaption(`${hook}\nTop-up Mobile Legends.`, {
+    now, pillar: 'topup', facts: [], gameWhitelist: ['Mobile Legends'], allowGeneric: true, includeProduct: true,
+  });
+  assert.equal(product.valid, true, product.errors.join(', '));
+});
+
+test('caption validation supports an optional tracked link without product composition', () => {
+  const link = 'https://example.test/topup';
+  const result = validateCaption(`Malam tadi saya terfikir tentang pengalaman bersama rakan.\n${link}`, {
+    now, pillar: 'topup', facts: [], gameWhitelist: [], allowGeneric: true, includeProduct: false, trackedLink: link,
+  });
+  assert.equal(result.valid, true, result.errors.join(', '));
+});
+
 test('approved content falls back to evergreen product text when every stored attribute is unsafe', () => {
   const result = composeApprovedContent({
     now,
