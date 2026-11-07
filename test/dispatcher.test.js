@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { runDispatcher, pauseAutomation } = require('../src/dispatcher');
+const { runDispatcher, pauseAutomation, maybeSendDailySummary } = require('../src/dispatcher');
 
 function harness(overrides = {}) {
   const calls = [];
@@ -77,6 +77,16 @@ test('uncertain publishing outcome is recorded unknown and is not blindly retrie
   assert.equal(sends, 1);
   assert.equal(result.unknown, 1);
   assert.ok(calls.some((c) => c[0] === 'update' && c[2].status === 'unknown'));
+});
+
+test('minimum cadence race waits with the prepared slot instead of canceling or publishing it', async () => {
+  const { calls, repository, publisher } = harness({ repository: { startPublishing: async () => 'minimum_cadence' } });
+  publisher.publishNow = async () => assert.fail('must respect actual publication cooldown');
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.skipped, 1);
+  assert.ok(calls.some((call) => call[0] === 'activity' && call[1].event === 'cadence_cooldown_wait'));
+  assert.equal(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled'), false);
 });
 
 test('known retryable provider error replays exactly the same request and idempotency key once', async () => {
@@ -154,6 +164,26 @@ test('planner uses stored regional timezone even when process timezone differs',
   assert.equal(plannerArgs.timezone, 'America/Los_Angeles');
 });
 
+test('daily summary is sent at 22:00 Malaysia time regardless of legacy schedule timezone', async () => {
+  const calls = [];
+  await maybeSendDailySummary({
+    repository: {
+      claimDailySummary: async (input) => { calls.push(['claim', input]); return true; },
+      getDailySummary: async (input) => { calls.push(['summary', input]); return { published: 3, failed: 1, skipped: 0 }; },
+      finishDailySummary: async (input) => calls.push(['finish', input]),
+    },
+    notifier: { send: async (_message, dedupeKey) => calls.push(['send', dedupeKey]) },
+    now: new Date('2026-11-06T14:00:00.000Z'),
+    timezone: 'America/Los_Angeles',
+    counts: {},
+  });
+  assert.deepEqual(calls[0], ['claim', { localDate: '2026-11-06', timezone: 'Asia/Kuala_Lumpur' }]);
+  assert.deepEqual(calls[1], ['summary', { localDate: '2026-11-06', timezone: 'Asia/Kuala_Lumpur' }]);
+  assert.equal(calls[2][0], 'send');
+  assert.equal(calls[2][1], 'daily-summary:2026-11-06:Asia/Kuala_Lumpur');
+  assert.deepEqual(calls[3], ['finish', { localDate: '2026-11-06', timezone: 'Asia/Kuala_Lumpur', status: 'sent' }]);
+});
+
 test('prepared ready slot reuses persisted payload and idempotency key without generating again', async () => {
   const { calls, repository, publisher } = harness();
   const durablePayload = { content: 'Jom kongsi pilihan anda!\nTop-up ML.\nhttps://example.test/t', targets: [{ account_id: 'acct-1' }] };
@@ -193,14 +223,16 @@ test('paused automation does not plan or claim a new slot', async () => {
   assert.equal(result.claimed, 0);
 });
 
-test('a claimed slot outside its active window is skipped without publication', async () => {
-  const { calls, repository, publisher } = harness();
+test('a claimed slot at night publishes despite legacy active hours', async () => {
+  const { repository, publisher } = harness();
   repository.claimDueSlot = async () => ({ id: 'slot-late', scheduledAt: '2026-11-05T15:00:00Z' });
-  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { schedule: { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
-  publisher.publishNow = async () => assert.fail('outside-window slots must not publish');
+  repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
+  let publishes = 0;
+  publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
-  assert.equal(result.skipped, 1);
-  assert.ok(calls.some((call) => call[0] === 'update' && call[2].errorCode === 'outside_active_window'));
+  assert.equal(result.skipped, 0);
+  assert.equal(result.published, 1);
+  assert.equal(publishes, 1);
 });
 
 test('pause disables automation before listing and cancels only locally known scheduled posts', async () => {

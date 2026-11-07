@@ -17,22 +17,16 @@ function validateSettings(input = {}) {
   const intervalHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
     ? Number(source.intervalHours) : source.intervalHours;
   const schedule = {
-    intervalHours: intervalHours === undefined ? 6 : intervalHours,
+    intervalHours: intervalHours === undefined ? 1 : intervalHours,
     timezone: source.timezone === undefined ? 'Asia/Kuala_Lumpur' : source.timezone,
-    activeDays: source.activeDays === undefined ? [1, 2, 3, 4, 5, 6, 7] : source.activeDays,
-    activeStart: source.activeStart === undefined ? '09:00' : source.activeStart,
-    activeEnd: source.activeEnd === undefined ? '22:00' : source.activeEnd,
+    activeDays: [1, 2, 3, 4, 5, 6, 7],
+    activeStart: '00:00',
+    activeEnd: '00:00',
   };
-  if (typeof schedule.intervalHours !== 'number' || !Number.isFinite(schedule.intervalHours) || schedule.intervalHours < 6) {
-    errors['schedule.intervalHours'] = 'Minimum interval is six hours.';
+  if (typeof schedule.intervalHours !== 'number' || !Number.isFinite(schedule.intervalHours) || schedule.intervalHours < 1) {
+    errors['schedule.intervalHours'] = 'Minimum interval is one hour.';
   }
   if (typeof schedule.timezone !== 'string' || !IANAZone.isValidZone(schedule.timezone)) errors['schedule.timezone'] = 'Use a valid IANA timezone.';
-  if (!Array.isArray(schedule.activeDays) || !schedule.activeDays.length || schedule.activeDays.some((day) => !Number.isInteger(day) || day < 1 || day > 7)) {
-    errors['schedule.activeDays'] = 'Choose ISO weekdays from 1 (Monday) to 7 (Sunday).';
-  } else schedule.activeDays = [...new Set(schedule.activeDays)].sort();
-  for (const field of ['activeStart', 'activeEnd']) {
-    if (typeof schedule[field] !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule[field])) errors[`schedule.${field}`] = 'Use HH:mm.';
-  }
   const priceMode = input.priceMode === undefined ? 'OFF' : input.priceMode;
   if (!['OFF', 'ON', 'MIXED'].includes(priceMode)) errors.priceMode = 'Use OFF, ON, or MIXED.';
   const gameWhitelist = input.gameWhitelist === undefined ? [] : input.gameWhitelist;
@@ -68,14 +62,7 @@ function validateSettings(input = {}) {
 function isInActiveWindow(value, schedule) {
   const checked = validateSettings({ schedule });
   if (!checked.valid) return false;
-  const local = instant(value).setZone(checked.settings.schedule.timezone);
-  if (!local.isValid) return false;
-  const { activeDays, activeStart, activeEnd } = checked.settings.schedule;
-  const time = local.toFormat('HH:mm');
-  if (activeStart === activeEnd) return activeDays.includes(local.weekday);
-  if (activeStart < activeEnd) return activeDays.includes(local.weekday) && time >= activeStart && time < activeEnd;
-  if (time >= activeStart) return activeDays.includes(local.weekday);
-  return time < activeEnd && activeDays.includes(local.minus({ days: 1 }).weekday);
+  return instant(value).isValid;
 }
 
 function isFactFresh(fact, now = new Date()) {

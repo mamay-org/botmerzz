@@ -63,6 +63,8 @@ See [.env.example](.env.example) for database, port, timezone and optional provi
 
 The Express dashboard and dispatcher use the same MySQL repository. When `SCHEDULER_ENABLED=true`, the server polls for due work every minute by default; the database persists slots and serializes claims across restarts or concurrent processes. Domain policy and content generation are isolated from the Tebar, OpenRouter and Telegram adapters. The dispatcher persists exact post payloads and idempotency keys before publishing, and fails closed on an uncertain provider outcome until an operator reconciles it. Telegram delivery uses a durable outbox with deduplication and retries. Emergency pause disables new claims before attempting provider cancellation.
 
+New schedule settings default to a one-hour interval, with one hour as the minimum. Publishing runs 24/7; legacy active-day and active-hour settings are ignored. Existing database interval values are retained, so an admin must set the schedule to `1` in the dashboard to enable hourly cadence on an existing installation. Enabling automation requests the first dispatch immediately, except when a recent post requires the remaining one-hour cooldown. Hourly cadence creates 24 scheduled posts per day; monitor the Tebar account's publishing quota. Missed slots are skipped without catch-up. The daily Telegram summary is fixed at 22:00 Asia/Kuala_Lumpur.
+
 See [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), [Docker workflow](docs/DOCKER.md), [deployment](docs/DEPLOYMENT.md), and [operations](docs/OPERATIONS.md).
 
 ## CI/CD and VPS
@@ -76,4 +78,4 @@ No VPS deployment workflow is enabled. Host, SSH credentials, TLS/ingress, backu
 - MVP posts text only; social listening, media generation, live inventory integration, website analytics and multi-admin roles are deferred.
 - Staging credentials and a test Threads account are needed for a live provider acceptance test. Automated tests use mocks.
 - Profile-visit metrics are not available from the documented Threads insights adapter; the dashboard shows Tebar's 30-day account click total when statistics permission and data are available.
-- The VPS Compose template keeps the scheduler disabled until explicitly enabled. Its one-minute polling interval is separate from the six-hour minimum business cadence; slots outside the allowed day/time window are skipped without catch-up.
+- The VPS Compose template keeps the scheduler disabled until explicitly enabled. Its one-minute polling interval is separate from the one-hour minimum business cadence. Legacy day/hour windows do not limit publishing; missed slots are skipped without catch-up.

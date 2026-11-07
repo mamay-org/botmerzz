@@ -2,7 +2,6 @@
   'use strict';
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const days = [[1, 'Sen'], [2, 'Sel'], [3, 'Rab'], [4, 'Kam'], [5, 'Jum'], [6, 'Sab'], [7, 'Min']];
   const state = { csrf: '', data: null, templates: [] };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
@@ -22,6 +21,7 @@
     INVALID_TEMPLATE: 'Data template tidak valid.', INVALID_TEMPLATE_DATA: 'Isi template tidak sesuai dengan jenisnya.',
     TEMPLATE_EXISTS: 'Nama template tersebut sudah digunakan pada kategori ini.', TEMPLATE_NOT_FOUND: 'Template tidak ditemukan.',
     GAME_NOT_WHITELISTED: 'Game harus lebih dulu disetujui di whitelist Konten & brand.',
+    SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
   };
   const errorText = (error) => errors[error?.message] || error?.message || 'Permintaan gagal. Silakan coba lagi.';
@@ -80,16 +80,6 @@
   function value(form, name) { return new FormData(form).get(name) || ''; }
   function lines(text) { return String(text || '').split('\n').map((s) => s.trim()).filter(Boolean); }
 
-  function buildDays() {
-    const target = $('#active-days');
-    target.replaceChildren(...days.map(([id, label]) => {
-      const wrapper = document.createElement('label'); wrapper.className = 'day-pick';
-      const input = document.createElement('input'); input.type = 'checkbox'; input.value = String(id); input.name = 'activeDays';
-      const text = document.createElement('span'); text.textContent = label;
-      wrapper.append(input, text); return wrapper;
-    }));
-  }
-
   function setFormValues(form, values) {
     for (const [key, val] of Object.entries(values)) {
       const field = form.elements.namedItem(key);
@@ -117,10 +107,7 @@
       guardrailsApproved: guardrails.approved,
     });
     setFormValues($('#schedule-form'), {
-      intervalHours: schedule.intervalHours ?? 6,
-      timezone: schedule.timezone || 'Asia/Kuala_Lumpur',
-      activeDays: schedule.activeDays || [1, 2, 3, 4, 5, 6, 7],
-      activeStart: schedule.activeStart || '09:00', activeEnd: schedule.activeEnd || '22:00',
+      intervalHours: schedule.intervalHours ?? 1,
       priceMode: settings.priceMode || 'OFF',
     });
     for (const service of ['topup', 'account']) {
@@ -415,7 +402,7 @@
 
   $('#schedule-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget; const settings = state.data.settings || {};
-    settings.schedule = { intervalHours: Number(value(form, 'intervalHours')), timezone: value(form, 'timezone'), activeDays: $$('input[name="activeDays"]:checked', form).map((input) => Number(input.value)), activeStart: value(form, 'activeStart'), activeEnd: value(form, 'activeEnd') };
+    settings.schedule = { intervalHours: Number(value(form, 'intervalHours')) };
     settings.priceMode = value(form, 'priceMode');
     try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Jadwal berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
   });
@@ -435,8 +422,12 @@
         const result = await api('/api/automation/pause', { method: 'POST', body: '{}' });
         show('#global-success', result.message || 'Otomasi dijeda.');
       } else {
-        if (!window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung?')) return;
-        await api('/api/automation/enable', { method: 'POST', body: '{}' }); show('#global-success', 'Otomasi berhasil diaktifkan.');
+        if (!window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung? Sistem akan langsung memproses utas pertama, lalu menerbitkan berdasarkan interval yang tersimpan.')) return;
+        const result = await api('/api/automation/enable', { method: 'POST', body: '{}' });
+        const firstPostAt = result.firstPostAt ? new Date(result.firstPostAt).toLocaleString('id-ID', { timeZone: 'Asia/Kuala_Lumpur' }) : null;
+        show('#global-success', result.immediate
+          ? 'Otomasi aktif. Utas pertama sedang diproses.'
+          : `Otomasi aktif. Posting pertama dijadwalkan pada ${firstPostAt || 'setelah jeda minimum satu jam'}.`);
       }
       await refresh();
     } catch (error) { show('#global-error', errorText(error)); }
@@ -452,7 +443,6 @@
 
   renderBuiltinTemplates();
   $$('input[type="password"]').forEach(addPasswordToggle);
-  buildDays();
   api('/api/session').then((data) => {
     if (!data.authenticated) { setAuthenticated(false); return; }
     state.csrf = data.csrfToken || ''; setAuthenticated(true); return refresh();

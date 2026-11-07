@@ -4,6 +4,10 @@
 
 Use the matching Compose project and file to start or stop services while preserving the named database volume. Do not use `down -v` unless intentionally deleting that environment's database. Check application health at `/health/live` and `/health/ready`; readiness includes scheduler enabled/running state and the last safe result code. Inspect logs with `docker compose logs --tail=200 app` and `docker compose logs --tail=200 db`.
 
+## Schedule policy and quota
+
+New schedule settings default to a one-hour interval, which is the minimum. Publishing is 24/7; legacy active-day and active-hour settings are ignored. Existing database interval values are retained on upgrade, so an admin must set the schedule interval to `1` in the dashboard for hourly publishing. Enabling automation requests an immediate first dispatch, unless a recent post means the one-hour cooldown has not elapsed. Hourly cadence creates 24 scheduled posts per day; monitor the connected Tebar account quota before enabling automation. Missed slots remain skipped without catch-up. The daily Telegram summary is fixed at 22:00 Asia/Kuala_Lumpur.
+
 ## Recovery
 
 If readiness fails, inspect database health and application logs first. Restarting the app is safe because schedule claims and publication idempotency are stored in MySQL. The poller skips work missed by more than 15 minutes. A slot with an uncertain outcome and no provider post ID blocks later publishing; do not replay it. Verify it in Tebar and the target Threads account, then resolve the slot through a reviewed operator procedure before resuming automation.

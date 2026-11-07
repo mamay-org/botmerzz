@@ -3,40 +3,38 @@ const assert = require('node:assert/strict');
 const { validateSettings, isInActiveWindow, isFactFresh, validateCaption } = require('../src/policy');
 
 const now = '2026-11-05T04:00:00Z';
-const schedule = { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [4], activeStart: '09:00', activeEnd: '22:00' };
+const schedule = { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [4], activeStart: '09:00', activeEnd: '22:00' };
 const fact = { id: 1, pillar: 'topup', game: 'Mobile Legends', active: true, updatedAt: now, price: 30, denomination: '400 Diamond' };
 const context = { now, pillar: 'topup', facts: [fact], gameWhitelist: ['Mobile Legends'], forbiddenClaims: ['termurah', '100% selamat'], approvedClaims: [], trackedLink: 'https://example.test/topup' };
 
-test('settings normalize defaults and enforce minimum interval and IANA timezone', () => {
-  const valid = validateSettings({ schedule: { ...schedule, intervalHours: '6', timezone: undefined }, priceMode: 'MIXED' });
+test('settings normalize 24-hour schedule defaults and enforce a one-hour minimum', () => {
+  const defaults = validateSettings({});
+  assert.equal(defaults.settings.schedule.intervalHours, 1);
+  assert.equal(defaults.settings.schedule.activeStart, '00:00');
+  assert.equal(defaults.settings.schedule.activeEnd, '00:00');
+  const valid = validateSettings({ schedule: { ...schedule, intervalHours: '1', timezone: undefined }, priceMode: 'MIXED' });
   assert.equal(valid.valid, true);
-  assert.equal(valid.settings.schedule.intervalHours, 6);
+  assert.equal(valid.settings.schedule.intervalHours, 1);
   assert.equal(valid.settings.schedule.timezone, 'Asia/Kuala_Lumpur');
-  for (const intervalHours of [0, 5.99, '6abc', Infinity, null, true]) {
+  assert.deepEqual(valid.settings.schedule.activeDays, [1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(valid.settings.schedule.activeStart, '00:00');
+  assert.equal(valid.settings.schedule.activeEnd, '00:00');
+  for (const intervalHours of [0, 0.99, '1abc', Infinity, null, true]) {
     assert.equal(validateSettings({ schedule: { ...schedule, intervalHours } }).valid, false);
   }
   assert.equal(validateSettings({ schedule: { ...schedule, timezone: 'Mars/Olympus' } }).valid, false);
-  assert.equal(validateSettings({ schedule: { ...schedule, activeDays: [] } }).valid, false);
-  assert.equal(validateSettings({ schedule: { ...schedule, activeStart: '25:00' } }).valid, false);
+  assert.equal(validateSettings({ schedule: { ...schedule, activeDays: [], activeStart: '25:00', activeEnd: 'bad' } }).valid, true);
   assert.equal(validateSettings({ schedule, priceMode: 'ALWAYS' }).valid, false);
 });
 
-test('active windows convert UTC to configured timezone with exclusive end', () => {
+test('legacy active windows cannot restrict continuous 24-hour scheduling', () => {
   assert.equal(isInActiveWindow('2026-11-05T01:00:00Z', schedule), true);
   assert.equal(isInActiveWindow('2026-11-05T13:59:00Z', schedule), true);
-  assert.equal(isInActiveWindow('2026-11-05T14:00:00Z', schedule), false);
-  assert.equal(isInActiveWindow('2026-11-06T01:00:00Z', schedule), false);
+  assert.equal(isInActiveWindow('2026-11-05T14:00:00Z', schedule), true);
+  assert.equal(isInActiveWindow('2026-11-06T01:00:00Z', schedule), true);
+  assert.equal(isInActiveWindow('2026-11-06T20:00:00Z', { ...schedule, activeDays: [], activeStart: '09:00', activeEnd: '22:00' }), true);
   assert.equal(isInActiveWindow('invalid', schedule), false);
-  assert.equal(isInActiveWindow('2026-11-05T01:00:00Z', { ...schedule, timezone: 'UTC' }), false);
-});
-
-test('overnight windows belong to their start weekday and equal times mean all day', () => {
-  const night = { ...schedule, activeStart: '22:00', activeEnd: '02:00' };
-  assert.equal(isInActiveWindow('2026-11-05T15:00:00Z', night), true);
-  assert.equal(isInActiveWindow('2026-11-05T17:00:00Z', night), true);
-  assert.equal(isInActiveWindow('2026-11-04T17:00:00Z', night), false);
-  assert.equal(isInActiveWindow('2026-11-05T18:00:00Z', night), false);
-  assert.equal(isInActiveWindow(now, { ...schedule, activeStart: '00:00', activeEnd: '00:00' }), true);
+  assert.equal(isInActiveWindow('2026-11-05T01:00:00Z', { ...schedule, timezone: 'Mars/Olympus' }), false);
 });
 
 test('facts are fresh through 24 hours only when active and never future dated', () => {

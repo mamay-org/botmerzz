@@ -67,7 +67,7 @@ async function main(argv = process.argv.slice(2)) {
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, notifier, content: generatePost, contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); }, timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: state.settings?.schedule?.intervalHours || config.intervalHours });
+        const result = await runDispatcher({ repository, publisher, notifier, content: generatePost, contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); }, timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: 1 });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Kedai Merzz automation: system_error. Semak status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
@@ -110,26 +110,28 @@ async function main(argv = process.argv.slice(2)) {
       if (!tebar) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
       return pauseAutomation({ repository, publisher: tebar, notifier, accountId: config.tebar.accountId, adminId });
     };
+    const generator = config.openRouter.apiKey ? require('./providers/openrouter').createOpenRouterClient(config.openRouter) : null;
+    const dispatchOnce = async () => {
+      if (!tebar) return { skipped: 'tebar_not_configured' };
+      const state = await repository.getRuntimeState();
+      return runDispatcher({
+        repository,
+        publisher: tebar,
+        notifier,
+        content: generatePost,
+        contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
+        timezone: state.settings?.schedule?.timezone || config.timezone,
+        minimumIntervalHours: 1,
+      });
+    };
     if (config.schedulerEnabled) {
-      const generator = config.openRouter.apiKey ? require('./providers/openrouter').createOpenRouterClient(config.openRouter) : null;
       scheduler = createScheduler({
         intervalMs: config.schedulerIntervalSeconds * 1000,
         logger,
-        run: async () => {
-          if (!tebar) return { skipped: 'tebar_not_configured' };
-          const state = await repository.getRuntimeState();
-          return runDispatcher({
-            repository,
-            publisher: tebar,
-            notifier,
-            content: generatePost,
-            contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
-            timezone: state.settings?.schedule?.timezone || config.timezone,
-            minimumIntervalHours: state.settings?.schedule?.intervalHours || config.intervalHours,
-          });
-        },
+        run: dispatchOnce,
       });
     }
+    services.triggerScheduler = () => scheduler?.runNow();
     services.schedulerStatus = () => scheduler?.status() || {
       enabled: false, running: false, intervalSeconds: config.schedulerIntervalSeconds,
       lastStartedAt: null, lastCompletedAt: null, lastResult: null, lastErrorCode: null,

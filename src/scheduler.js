@@ -55,6 +55,12 @@ function createScheduler({ run, intervalMs = 60_000, logger, clock = () => new D
     return status();
   }
 
+  async function runNow() {
+    if (timer === null) return null;
+    if (activeRun) await activeRun;
+    return tick();
+  }
+
   async function stop() {
     if (timer !== null) clearInterval(timer);
     timer = null;
@@ -62,7 +68,7 @@ function createScheduler({ run, intervalMs = 60_000, logger, clock = () => new D
     return status();
   }
 
-  return { start, stop, tick, status };
+  return { start, stop, tick, runNow, status };
 }
 
 module.exports = { createScheduler };
