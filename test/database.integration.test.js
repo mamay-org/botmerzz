@@ -13,6 +13,8 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.deepEqual(await runMigrations(pool),['003_multi_admin.sql']);
     await pool.execute("DELETE FROM schema_migrations WHERE version='006_automation_sessions.sql'");
     assert.deepEqual(await runMigrations(pool),['006_automation_sessions.sql']);
+    await pool.execute("DELETE FROM schema_migrations WHERE version='008_notification_message_capacity.sql'");
+    assert.deepEqual(await runMigrations(pool),['008_notification_message_capacity.sql']);
     const repo=createRepository(pool);
     assert.equal(await repo.healthCheck(),true);
     const settings=await repo.getSettings();assert.equal(settings.automationEnabled,false);assert.deepEqual(settings.hashtags,[]);
@@ -35,6 +37,10 @@ test('MySQL migrations and repository are reachable in integration environment',
     await repo.saveSettings({...await repo.getSettings(),hashtags:settings.hashtags,brand:settings.brand,guardrails:settings.guardrails},null);
     const facts=await repo.listFacts();assert.equal(typeof facts,'object');
     const dedupeKey=require('node:crypto').randomBytes(32).toString('hex');
+    const longKey=require('node:crypto').randomBytes(32).toString('hex');
+    assert.equal(await repo.enqueueNotification({dedupeKey:longKey,message:'x'.repeat(4000)}),true);
+    const [[longRow]]=await pool.execute('SELECT CHAR_LENGTH(message) AS n FROM notification_outbox WHERE dedupe_key=?',[longKey]);
+    assert.equal(Number(longRow.n),4000);
     assert.equal(await repo.enqueueNotification({dedupeKey,message:'Integration test notification'}),true);
     assert.equal(await repo.enqueueNotification({dedupeKey,message:'Integration test notification'}),false);
     const claimed=await repo.claimNotifications(10);
@@ -77,8 +83,13 @@ test('MySQL migrations and repository are reachable in integration environment',
     ]);
     await repo.applyWebhookEvent({eventId:publishedEventId,payloadHash:createHash('sha256').update(publishedEventId).digest('hex'),type:'post.published',profileId,data:{post_id:publishedPostId,account_id:accountId,status:'published',published_at:webhookPublishedAt.toISOString()},accountId,notificationCode:'post_published'});
     const publishedDedupeKey=createHash('sha256').update(`post_published:slot:${publishedSlotId}`).digest('hex');
+    const pendingUnknownKey=createHash('sha256').update(`unknown_outcome:slot:${publishedSlotId}`).digest('hex');
+    await repo.enqueueNotification({dedupeKey:pendingUnknownKey,message:'Pending verification'});
+    await repo.updateSlot(publishedSlotId,{status:'published'});
+    assert.equal(await repo.getNotificationStatus(pendingUnknownKey),'failed','a confirmed outcome supersedes a queued unknown notification');
     const [[publishedNotice]]=await pool.execute('SELECT message FROM notification_outbox WHERE dedupe_key=?',[publishedDedupeKey]);
-    assert.match(publishedNotice.message,/post_published/);
+    assert.match(publishedNotice.message,/POSTING BERHASIL/);
+    assert.match(publishedNotice.message,new RegExp(`Slot ID: ${publishedSlotId}$`));
     const [[publishedSnapshot]]=await pool.execute('SELECT status,provider_status,completed_at FROM slots WHERE id=?',[publishedSlotId]);
     assert.equal(new Date(publishedSnapshot.completed_at).getTime(),webhookPublishedAt.getTime(),'webhook publication time anchors hourly cadence');
     const delayedScheduledEventId=randomUUID();
@@ -108,6 +119,19 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),true);
     await repo.finishDailySummary({localDate,timezone:'Asia/Kuala_Lumpur',status:'sent'});
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),false);
+
+    const reportIds=[randomUUID(),randomUUID(),randomUUID()];
+    try {
+      for (const [i,status] of ['published','failed','unknown'].entries()) {
+        await pool.execute('INSERT INTO slots (id,scheduled_at,status,pillar,error_code) VALUES (?,?,?,?,?)',
+          [reportIds[i],new Date(`${localDate}T04:00:0${i}.000Z`),status,'topup',status==='failed'?'content_validation_failed':null]);
+      }
+      const report=await repo.getDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'});
+      assert.equal(report.published,1);assert.equal(report.failed,1);assert.equal(report.unknown,1);
+      assert.deepEqual(report.categories,{topup:1});
+      assert.deepEqual(report.failures,[{code:'content_validation_failed',count:1}]);
+      assert.deepEqual(new Set(report.affectedSlotIds),new Set(reportIds.slice(1)));
+    } finally { for(const id of reportIds) await pool.execute('DELETE FROM slots WHERE id=?',[id]); }
 
     const mysqlDateSlotId=randomUUID();
     const expectedIsoCompletedAt='2026-11-07T01:29:30.083Z';

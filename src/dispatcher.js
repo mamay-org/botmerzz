@@ -4,6 +4,7 @@ const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
 const { contentSafetyHash } = require('./content-safety');
+const { formatSlotNotice, formatDailyReport } = require('./telegram-format');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Kuala_Lumpur';
 
 const SAFE_ERROR_CODES = new Set([
@@ -26,7 +27,7 @@ function safeCode(value) {
 
 function providerSlotStatus(post, expectedAccountId) {
   if (post.status === 'published') {
-    const confirmed = post.targets?.some((target) => target.accountId === expectedAccountId && target.status === 'published');
+    const confirmed = post.targets?.some((target) => target.accountId === expectedAccountId && target.status === 'published' && String(target.platform || '').toLowerCase() === 'threads');
     return confirmed ? 'published' : 'unknown';
   }
   if (post.status === 'failed' || post.status === 'canceled') return post.status;
@@ -64,14 +65,21 @@ function makeIdempotencyKey(slot) {
 
 async function sendNotice(notifier, code, details = {}) {
   if (!notifier || typeof notifier.send !== 'function') return false;
-  const slotText = details.slotId ? ` Slot: ${String(details.slotId).slice(0, 36)}.` : '';
-  const diagnostic = SAFE_DIAGNOSTIC_CODES.has(details.diagnosticCode) ? ` (${details.diagnosticCode})` : '';
   try {
-    await notifier.send(`Kedai Merzz automation: ${safeCode(code)}${diagnostic}.${slotText}`, details.slotId ? `${safeCode(code)}:slot:${details.slotId}` : undefined);
+    if (!details.slotId) { await notifier.send(`Kedai Merzz automation: ${safeCode(code)}.`); return true; }
+    let state = null;
+    try { state = await details.repository?.getRuntimeState(); } catch { /* Use available slot details. */ }
+    const slot = (state?.history || []).find((item) => String(item.id) === String(details.slotId)) || {};
+    const status = code === 'post_published' ? 'published' : code === 'unknown_outcome' ? 'unknown' : 'failed';
+    const message = formatSlotNotice({ status, slotId: details.slotId, brand: state?.settings?.brand?.name,
+      time: status === 'published' ? (details.completedAt || slot.completedAt || details.time) : (details.time || slot.completedAt),
+      timezone: state?.settings?.schedule?.timezone || 'Asia/Kuala_Lumpur', pillar: details.pillar || slot.pillar,
+      caption: details.caption || slot.caption || details.requestPayload?.content,
+      postUrl: details.postUrl, nextAt: state?.automationEnabled ? state.settings?.nextSlotAt : null,
+      reason: code, diagnosticCode: details.diagnosticCode });
+    await notifier.send(message, details.slotId ? `${safeCode(code)}:slot:${details.slotId}` : undefined);
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 async function cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId }) {
@@ -127,12 +135,12 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts, clo
       checked++;
       if (counts && status === 'published') {
         counts.published++;
-        await sendNotice(notifier, 'post_published', { slotId: slot.id });
+        await sendNotice(notifier, 'post_published', { repository, slotId: slot.id, completedAt, caption: slot.caption || slot.requestPayload?.content, pillar: slot.pillar, postUrl: post.targets?.find((target) => target.accountId === expectedAccountId && target.status === 'published' && String(target.platform).toLowerCase() === 'threads')?.permalink });
       } else if (counts && (status === 'partial' || status === 'failed')) {
         counts.failed++;
         try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* The provider status remains durable on the slot. */ }
-        await sendNotice(notifier, 'provider_error', { slotId: slot.id });
-      } else if (counts && status === 'unknown') counts.unknown++;
+        await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id });
+      } else if (counts && (status === 'unknown' || status === 'publishing')) { counts.unknown++; await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id, time: clock() }); }
     } catch {
       // Preserve the unknown state and exact persisted request for a later safe reconciliation.
     }
@@ -188,7 +196,7 @@ async function runDispatcher({
       : (planned?.failedSlotIds || []).map((id) => ({ id }));
     for (const failedSlot of failedSlotDetails) {
       result.failed++;
-      await sendNotice(notifier, 'generation_failed', { slotId: failedSlot.id, diagnosticCode: failedSlot.diagnosticCode });
+      await sendNotice(notifier, 'generation_failed', { repository, slotId: failedSlot.id, diagnosticCode: failedSlot.diagnosticCode });
     }
     if (planned && !planned.slot) return result;
   } else {
@@ -259,7 +267,7 @@ async function runDispatcher({
     }
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: code, completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, diagnosticCode, attempts: Math.min(2, generated?.attempts || 0) } });
-    await sendNotice(notifier, code, { slotId: slot.id, diagnosticCode });
+    await sendNotice(notifier, code, { repository, slotId: slot.id, diagnosticCode, time: clock() });
     result.failed++;
     return result;
   }
@@ -269,7 +277,7 @@ async function runDispatcher({
       || !Array.isArray(generated.factVersions) || generated.factIds.some((id) => !generated.factVersions.some((version) => version?.id === id))))) {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
-    await sendNotice(notifier, 'generation_failed', { slotId: slot.id, diagnosticCode: 'stale_facts' });
+    await sendNotice(notifier, 'generation_failed', { repository, slotId: slot.id, diagnosticCode: 'stale_facts' });
     result.failed++;
     return result;
   }
@@ -298,7 +306,7 @@ async function runDispatcher({
   if (started === 'stale_facts') {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
-    await sendNotice(notifier, 'generation_failed', { slotId: slot.id, diagnosticCode: 'stale_facts' });
+    await sendNotice(notifier, 'generation_failed', { repository, slotId: slot.id, diagnosticCode: 'stale_facts' });
     result.failed++;
     return result;
   }
@@ -331,7 +339,7 @@ async function runDispatcher({
         const code = safeCode(retryableFailure.code);
         await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: code, completedAt: clock().toISOString() });
         await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code } });
-        await sendNotice(notifier, code, { slotId: slot.id });
+        await sendNotice(notifier, code, { repository, slotId: slot.id });
         result.failed++;
         return result;
       }
@@ -362,15 +370,15 @@ async function runDispatcher({
           if (cancellation.cancellationStatus) {
             try { await repository.recordCancellation(providerPostId, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); } catch { /* The provider state remains durable on the slot. */ }
           }
-          if (finalStatus === 'published') { result.published++; await sendNotice(notifier, 'post_published', { slotId: slot.id }); }
-          else if (finalStatus === 'failed' || finalStatus === 'partial') { result.failed++; try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* Provider outcome is already durable. */ } await sendNotice(notifier, 'provider_error', { slotId: slot.id }); }
+          if (finalStatus === 'published') { result.published++; await sendNotice(notifier, 'post_published', { repository, slotId: slot.id, completedAt: confirmedCompletedAt('published', finalPost, state.accountId, clock()), caption: generated.text, pillar: generated.pillar, postUrl: finalPost.targets?.find((target) => target.accountId === state.accountId && target.status === 'published' && String(target.platform).toLowerCase() === 'threads')?.permalink }); }
+          else if (finalStatus === 'failed' || finalStatus === 'partial') { result.failed++; try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* Provider outcome is already durable. */ } await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id }); }
           else if (finalStatus === 'canceled') result.skipped++;
-          else result.unknown++;
+          else { result.unknown++; await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id, time: clock() }); }
           return result;
         } catch {
           try { await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: 'unknown_outcome' }); } catch { /* Preserve the original publishing row for reconciliation. */ }
           try { await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: 'unknown_outcome' } }); } catch { /* Slot state remains the primary record. */ }
-          await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+          await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
           result.unknown++;
           return result;
         }
@@ -378,7 +386,7 @@ async function runDispatcher({
       if (error?.unknownOutcome) {
         await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: safeCode(error.code) });
         await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: safeCode(error.code) } });
-        await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+        await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
         result.unknown++;
         return result;
       }
@@ -388,7 +396,7 @@ async function runDispatcher({
           && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
           await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
           await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
-          await sendNotice(notifier, safeCode(error?.code), { slotId: slot.id });
+          await sendNotice(notifier, safeCode(error?.code), { repository, slotId: slot.id });
           result.failed++;
           return result;
         }
@@ -396,7 +404,7 @@ async function runDispatcher({
       }
       await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
       await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
-      await sendNotice(notifier, safeCode(error?.code), { slotId: slot.id });
+      await sendNotice(notifier, safeCode(error?.code), { repository, slotId: slot.id });
       result.failed++;
       return result;
     }
@@ -422,7 +430,7 @@ async function runDispatcher({
       } catch {
         // The previously persisted payload and idempotency key remain the recovery evidence.
       }
-      await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+      await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
       result.unknown++;
       return result;
     }
@@ -441,7 +449,7 @@ async function runDispatcher({
       try { await repository.updateSlot(slot.id, finalUpdate); }
       catch {
         await repository.updateSlot(slot.id, { ...finalUpdate, status: 'unknown', errorCode: 'unknown_outcome' }).catch(() => {});
-        await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+        await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
         result.unknown++;
         return result;
       }
@@ -457,14 +465,14 @@ async function runDispatcher({
     }
     if (status === 'published') {
       result.published++;
-      await sendNotice(notifier, 'post_published', { slotId: slot.id });
+      await sendNotice(notifier, 'post_published', { repository, slotId: slot.id, completedAt: confirmedCompletedAt('published', post, state.accountId, clock()), caption: generated.text, pillar: generated.pillar, postUrl: post.targets?.find((target) => target.accountId === state.accountId && target.status === 'published' && String(target.platform).toLowerCase() === 'threads')?.permalink });
     }
     else if (status === 'failed' || status === 'partial') {
       result.failed++;
-      await sendNotice(notifier, 'provider_error', { slotId: slot.id });
-    } else if (status === 'unknown') {
+      await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id });
+    } else if (status === 'unknown' || status === 'publishing') {
       result.unknown++;
-      await sendNotice(notifier, 'unknown_outcome', { slotId: slot.id });
+      await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
     }
   }
   return result;
@@ -482,7 +490,8 @@ async function maybeSendDailySummary({ repository, notifier, now, counts }) {
       await repository.finishDailySummary({ localDate, timezone, status: 'failed' });
       return;
     }
-    await notifier.send(`Kedai Merzz · Ringkasan ${localDate} (${timezone})\nBerjaya: ${Number(summary.published) || 0}\nGagal: ${Number(summary.failed) || 0}\nDilangkau: ${Number(summary.skipped) || 0}`, `daily-summary:${localDate}:${timezone}`);
+    const state = typeof repository.getRuntimeState === 'function' ? await repository.getRuntimeState() : null;
+    await notifier.send(formatDailyReport({ ...summary, date: localDate, timezone, brand: state?.settings?.brand?.name, automationEnabled: state?.automationEnabled === true, nextAt: state?.automationEnabled ? state?.settings?.nextSlotAt : null }), `daily-summary:${localDate}:${timezone}`);
     await repository.finishDailySummary({ localDate, timezone, status: 'sent' });
     counts.summarySent = true;
   } catch {
