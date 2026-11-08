@@ -5,7 +5,7 @@ const { buildContentContext } = require('../src/content-context');
 const { validateSettings } = require('../src/policy');
 const { generatePost } = require('../src/content-service');
 
-const settings = validateSettings({ brand: { name: 'Kedai', voice: 'mesra', contentDirection: 'Utamakan suara komuniti' }, gameWhitelist: ['Mobile Legends'], hashtags: ['#Game'], trackedLinks: { topup: 'https://example.test/t', account: 'https://example.test/a' } }).settings;
+const settings = validateSettings({ brand: { name: 'Kedai', voice: 'mesra', contentDirection: 'Utamakan suara komuniti' }, gameWhitelist: ['Mobile Legends'], hashtags: ['#Game'], trackedLinks: { topup: 'https://kedaimerzz.com/t', account: 'https://kedaimerzz.com/a' } }).settings;
 const published = (caption, index = 0) => ({ status: 'published', pillar: 'topup', caption, completedAt: `2026-11-05T0${index}:00:00Z` });
 
 test('creative theme suggestions rotate from published history without changing business pillar', () => {

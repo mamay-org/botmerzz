@@ -42,8 +42,7 @@ function createServer({ config, repository, auth, services = {} }) {
       if (services.pool) await services.pool.query('SELECT 1');
       else if (repository.healthCheck) await repository.healthCheck();
       else await repository.getSettings();
-      const scheduler = typeof services.schedulerStatus === 'function' ? services.schedulerStatus() : undefined;
-      return res.json({ status: 'ready', ...(scheduler ? { scheduler } : {}) });
+      return res.json({ status: 'ready' });
     } catch {
       return res.status(503).json({ status: 'not_ready' });
     }
@@ -75,6 +74,10 @@ function createServer({ config, repository, auth, services = {} }) {
     if (res.headersSent) return;
     const status = Number.isInteger(error.status) ? error.status : 500;
     const code = error.code && /^[A-Z0-9_]{2,64}$/.test(error.code) ? error.code : status >= 500 ? 'INTERNAL_ERROR' : 'INVALID_REQUEST';
+    if (status === 429 && Number.isSafeInteger(error.retryAfterSeconds)
+      && error.retryAfterSeconds > 0 && error.retryAfterSeconds <= 86_400) {
+      res.set('Retry-After', String(error.retryAfterSeconds));
+    }
     if (status >= 500 && services.logger?.error) services.logger.error('request.failed', { code });
     if (status >= 500 && services.notify) {
       try { await services.notify('system_error'); } catch { /* The outbox preserves retryable notification failures. */ }

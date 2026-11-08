@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="dark">
   <title>Kedai Merzz · Panel Threads</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
@@ -16,7 +16,7 @@
       <h1 id="login-title">Panel Threads</h1>
       <p class="muted">Masuk untuk mengelola jadwal, konten, dan status otomasi.</p>
       <form id="login-form" class="stack">
-        <label>Email administrator<input name="email" type="email" autocomplete="username" required maxlength="254"></label>
+        <label>Email administrator<input id="login-email" name="email" type="email" autocomplete="username" required maxlength="254"></label>
         <label>Kata sandi<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
         <button class="button primary" type="submit">Masuk</button>
         <p id="login-error" class="notice error" role="alert" hidden></p>
@@ -35,15 +35,15 @@
       </header>
 
       <div class="page-heading">
-        <div><p class="eyebrow">DASHBOARD</p><h1>Otomasi konten</h1><p class="muted">Pantau koneksi dan kelola penerbitan dari satu tempat.</p></div>
-        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Otomasi nonaktif</strong><small id="automation-reason">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan otomasi</button></div>
+        <div><p class="eyebrow">DASHBOARD</p><h1 id="dashboard-title" tabindex="-1">Otomasi konten</h1><p class="muted">Pantau koneksi dan kelola penerbitan dari satu tempat.</p></div>
+        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Otomasi nonaktif</strong><small id="automation-reason" tabindex="-1">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan otomasi</button></div>
       </div>
 
       <div id="global-error" class="notice error" role="alert" hidden></div>
       <div id="global-success" class="notice success" role="status" hidden></div>
 
       <section class="metrics" aria-label="Ringkasan operasional">
-        <article class="metric"><span>Threads</span><strong id="provider-status">Belum terhubung</strong><small id="provider-account">Hubungkan melalui Tebar</small></article>
+        <article class="metric"><span>Threads</span><strong id="provider-status" tabindex="-1">Belum terhubung</strong><small id="provider-account">Hubungkan melalui Tebar</small></article>
         <article class="metric"><span>Posting berhasil</span><strong id="metric-success">0</strong><small>30 hari terakhir</small></article>
         <article class="metric"><span>Klik Threads</span><strong id="metric-clicks">Belum tersedia</strong><small>30 hari terakhir · metrik akun Tebar</small></article>
         <article class="metric"><span>Perlu perhatian</span><strong id="metric-failed">0</strong><small>Gagal atau status belum pasti</small></article>
@@ -55,16 +55,16 @@
         <ul id="onboarding-list" class="checklist"></ul>
       </section>
 
-      <nav class="tabs" aria-label="Bagian dashboard">
-        <button class="tab active" data-tab="content">Konten & brand</button>
-        <button class="tab" data-tab="templates">Template</button>
-        <button class="tab" data-tab="schedule">Jadwal</button>
-        <button class="tab" data-tab="facts">Produk & informasi</button>
-        <button class="tab" data-tab="activity">Riwayat & catatan</button>
-        <button class="tab" data-tab="admins">Admin</button>
+      <nav class="tabs" role="tablist" aria-label="Bagian dashboard">
+        <button class="tab active" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="true" tabindex="0">Konten & brand</button>
+        <button class="tab" id="tab-button-templates" data-tab="templates" role="tab" aria-controls="tab-templates" aria-selected="false" tabindex="-1">Template</button>
+        <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1">Jadwal</button>
+        <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1">Produk & informasi</button>
+        <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1">Riwayat & catatan</button>
+        <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1">Admin</button>
       </nav>
 
-      <section id="tab-content" class="tab-panel active">
+      <section id="tab-content" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-content" aria-hidden="false" tabindex="0">
         <form id="content-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">PANDUAN TERSTRUKTUR</p><h2>Karakter brand dan batasan AI</h2><p class="muted">AI hanya menggunakan panduan dan daftar yang disimpan di sini.</p></div></div>
           <label>Nama merek<input name="brandName" maxlength="120" placeholder="Kedai Merzz"></label>
@@ -98,7 +98,7 @@
         </form>
       </section>
 
-      <section id="tab-templates" class="tab-panel">
+      <section id="tab-templates" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-templates" aria-hidden="true" tabindex="0" hidden>
         <div class="panel template-intro"><p class="eyebrow">PANDUAN SIAP PAKAI</p><h2>Template konten dan produk</h2><p class="muted">Pilih template untuk mengisi form. Periksa dan sesuaikan isinya, lalu simpan dari form terkait. Template tidak menyimpan harga atau stok.</p></div>
         <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">GAYA BAWAAN</p><h2>Gaya komunikasi</h2><p class="muted">Template bawaan hanya mengubah gaya komunikasi.</p></div></div><div id="builtin-template-list" class="template-grid"></div></section>
         <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">KONTEN & BRAND</p><h2>Template panduan tersimpan</h2><p class="muted">Dapat digunakan dan dikelola semua admin.</p></div></div><div id="brand-template-list" class="template-grid"></div></section>
@@ -106,7 +106,7 @@
         <section class="panel template-section"><div class="panel-heading"><div><p class="eyebrow">AKUN MOBILE LEGENDS</p><h2>Template atribut akun</h2><p class="muted">Hanya menyimpan atribut akun yang telah disetujui, tanpa harga dan ketersediaan.</p></div></div><div id="account-template-list" class="template-grid"></div></section>
       </section>
 
-      <section id="tab-schedule" class="tab-panel">
+      <section id="tab-schedule" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-schedule" aria-hidden="true" tabindex="0" hidden>
         <form id="schedule-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Interval penerbitan</h2><p class="muted">Penerbitan berjalan sepanjang hari, setiap hari. Saat otomasi diaktifkan, sistem langsung memproses utas pertama.</p></div></div>
           <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="1" max="1" step="1" value="1" readonly required><span class="field-hint">Interval otomasi tetap 1 jam.</span></label>
@@ -116,7 +116,7 @@
         <div class="notice info"><strong>Jeda darurat</strong><span>Hentikan tugas berikutnya dan minta Tebar membatalkan posting terjadwal yang masih bisa dibatalkan. Periksa hasilnya di log.</span></div>
       </section>
 
-      <section id="tab-facts" class="tab-panel">
+      <section id="tab-facts" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-facts" aria-hidden="true" tabindex="0" hidden>
         <div class="notice info"><strong>Informasi kedaluwarsa otomatis</strong><span>Harga, stok, dan informasi penjualan hanya disebut jika diperbarui dalam 24 jam. Jika sudah kedaluwarsa, posting akan menggunakan konten umum.</span></div>
         <div class="fact-grid">
           <form id="fact-topup-form" class="panel stack fact-form" data-service="topup">
@@ -137,11 +137,11 @@
         </div>
       </section>
 
-      <section id="tab-activity" class="tab-panel">
+      <section id="tab-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-activity" aria-hidden="true" tabindex="0" hidden>
         <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Posting terbaru</h2></div><button id="refresh-button" class="button quiet">Muat ulang</button></div><div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Tema</th><th>Status</th><th>Konten</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
         <div class="panel log-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEM</p><h2>Aktivitas terbaru</h2></div></div><div id="activity-list" class="activity-list"></div></div>
       </section>
-      <section id="tab-admins" class="tab-panel">
+      <section id="tab-admins" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-admins" aria-hidden="true" tabindex="0" hidden>
         <form id="admin-create-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">AKSES DASHBOARD</p><h2>Tambah admin</h2><p class="muted">Setiap admin dapat mengelola seluruh pengaturan dan akun admin lainnya.</p></div></div>
           <label>Email admin<input name="email" type="email" autocomplete="off" required maxlength="254"></label>

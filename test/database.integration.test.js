@@ -2,6 +2,42 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
 
+test('MySQL login throttles are shared and bound concurrent attempts across auth instances', {skip:!enabled}, async()=>{
+  const {createHash,randomUUID}=require('node:crypto');
+  const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');const {createAuth}=require('../src/auth');
+  const pool=createPool(loadEnv());const email=`throttle-${randomUUID()}@example.test`;const normalizedEmail=email.toLowerCase();const firstIp='192.0.2.101';const secondIp='192.0.2.102';const raceEmail=`parallel-${randomUUID()}@example.test`;const raceIps=['192.0.2.111','192.0.2.112','192.0.2.113','192.0.2.114'];const now=new Date();
+  const hash=(scope,value)=>createHash('sha256').update(`${scope}\0${value}`).digest('hex');
+  try{
+    await runMigrations(pool);
+    const firstRepository=createRepository(pool);const secondRepository=createRepository(pool);
+    const options={clock:()=>now,maxFailures:20,maxFailuresPerAccount:1,maxFailuresPerIp:20,windowMs:60_000};
+    const firstAuth=createAuth({repository:firstRepository,...options});const secondAuth=createAuth({repository:secondRepository,...options});
+    await assert.rejects(firstAuth.login({email,password:'incorrect password',ip:firstIp}),error=>error.code==='INVALID_CREDENTIALS');
+    await assert.rejects(secondAuth.login({email:email.toUpperCase(),password:'incorrect password',ip:secondIp}),error=>error.code==='LOGIN_RATE_LIMITED');
+    assert.deepEqual(await secondRepository.getLoginAttemptCounts({email:normalizedEmail,ip:secondIp,now}),{pair:0,account:1,ip:0});
+    const expiredAt=new Date(now.getTime()+60_001);
+    assert.deepEqual(await secondRepository.getLoginAttemptCounts({email:normalizedEmail,ip:secondIp,now:expiredAt}),{pair:0,account:0,ip:0});
+    const raceOptions={clock:()=>now,maxFailures:20,maxFailuresPerAccount:2,maxFailuresPerIp:20,windowMs:60_000};
+    const raceAuths=[createAuth({repository:firstRepository,...raceOptions}),createAuth({repository:secondRepository,...raceOptions})];
+    const results=await Promise.all(raceIps.map((ip,index)=>raceAuths[index%2].login({email:raceEmail,password:`wrong password ${index}`,ip}).then(
+      ()=>({code:'UNEXPECTED_SUCCESS'}),error=>({code:error.code}),
+    )));
+    assert.equal(results.filter(result=>result.code==='INVALID_CREDENTIALS').length,2);
+    assert.equal(results.filter(result=>result.code==='LOGIN_RATE_LIMITED').length,2);
+    const raceCounts=await Promise.all(raceIps.map(ip=>secondRepository.getLoginAttemptCounts({email:raceEmail,ip,now})));
+    assert.equal(raceCounts.reduce((total,counts)=>total+counts.account,0),raceIps.length*2);
+    assert.equal(raceCounts.reduce((total,counts)=>total+counts.pair,0),2);
+    assert.equal(raceCounts.reduce((total,counts)=>total+counts.ip,0),2);
+  }finally{
+    const keys=[[firstIp,normalizedEmail],[secondIp,normalizedEmail],...raceIps.map(ip=>[ip,raceEmail.toLowerCase()])]
+      .flatMap(([ip,account])=>[['pair',hash('pair',`${ip}\0${account}`)],['ip',hash('ip',ip)]])
+      .concat([['account',hash('account',normalizedEmail)],['account',hash('account',raceEmail.toLowerCase())]]);
+    const conditions=keys.map(()=>'(scope=? AND subject_hash=?)').join(' OR ');
+    await pool.execute(`DELETE FROM login_attempts WHERE ${conditions}`,keys.flat());
+    await pool.end();
+  }
+});
+
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
   const config=loadEnv();let pool=createPool(config);
@@ -173,7 +209,7 @@ test('MySQL migrations and repository are reachable in integration environment',
         schedule:{intervalHours:6,timezone:'Asia/Kuala_Lumpur',activeDays:[1,2,3,4,5,6,7],activeStart:'00:00',activeEnd:'00:00'},
         priceMode:'OFF',gameWhitelist:['Mobile Legends'],brand:{name:'Kedai Merzz',voice:'Santai'},
         guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},
-        trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'},
+        trackedLinks:{topup:'https://kedaimerzz.com/topup',account:'https://kedaimerzz.com/akun'},
         targetAccountId:`scheduler-test-${randomUUID()}`,profileId:`profile-test-${randomUUID()}`,onboardingComplete:true,automationSessionId:randomUUID(),
       };
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[
