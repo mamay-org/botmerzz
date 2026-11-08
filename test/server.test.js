@@ -22,8 +22,8 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   const cookie=login.headers['set-cookie'][0].split(';')[0];
   const dashboard=await request(server,'/api/dashboard',{headers:{cookie}});assert.equal(dashboard.status,200);assert.deepEqual(JSON.parse(dashboard.body).metrics.clicks,{available:true,value:12,reason:null});
   const onboarding=JSON.parse(dashboard.body).onboarding;
-  assert.deepEqual(onboarding.filter(item=>item.required).map(item=>item.key),['brand','thread','ai']);
-  assert.ok(onboarding.filter(item=>!item.required).every(item=>item.required===false&&['games','guardrails','links','facts'].includes(item.key)));
+  assert.deepEqual(onboarding.filter(item=>item.required).map(item=>item.key),['brand','links','hashtags','thread','ai']);
+  assert.ok(onboarding.filter(item=>!item.required).every(item=>item.required===false&&['games','guardrails','facts'].includes(item.key)));
   const vocabulary=['  Cerita pengalaman  ','cerita PENGALAMAN','Sembang santai'];
   const knowledge=await request(server,'/api/knowledge',{method:'PUT',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:JSON.stringify({guardrails:{approved:true,hookVocabulary:vocabulary}})});
   assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).guardrails.hookVocabulary,['Cerita pengalaman','Sembang santai']);
@@ -52,7 +52,7 @@ test('settings and facts routes reject invalid data before persistence',async t=
 
 test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
   const now=new Date();let enabledCalls=0;let dispatchCalls=0;
-  const settings={brand:{name:'Kedai Merzz',voice:'Santai'}};
+  const settings={brand:{name:'Kedai Merzz',voice:'Santai'}, hashtags:['#KedaiMerzz'], trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
   const repository={
     getRuntimeState:async()=>({settings,automationEnabled:false}),
     listFacts:async()=>({}),
@@ -68,8 +68,8 @@ test('automation enable requires scheduler and triggers an immediate durable dis
   assert.deepEqual(JSON.parse(response.body),{enabled:true,firstPostAt:now.toISOString(),immediate:true});
 });
 
-test('automation enable blocks only missing brand, Threads account, or AI configuration',async t=>{
-  const now=new Date();let settings={brand:{name:'Kedai Merzz',voice:'Santai'}};let connected=true;let aiConfigured=true;let writes=0;
+test('automation enable requires brand, hashtags, both links, Threads account, and AI',async t=>{
+  const now=new Date();let settings={brand:{name:'Kedai Merzz',voice:'Santai'},hashtags:['#KedaiMerzz'],trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};let connected=true;let aiConfigured=true;let writes=0;
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>({}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const services={aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
@@ -78,16 +78,20 @@ test('automation enable blocks only missing brand, Threads account, or AI config
   const headers={origin:config.baseUrl,cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,'x-csrf-token':'c'.repeat(43)};
   const activate=()=>request(server,'/api/automation/enable',{method:'POST',headers,body:'{}'});
   assert.equal((await activate()).status,200,'missing optional fields must not block activation');assert.equal(writes,1);
-  settings={brand:{name:'',voice:'Santai'}};assert.equal((await activate()).status,409,'brand name is required');
-  settings={brand:{name:'Kedai Merzz',voice:''}};assert.equal((await activate()).status,409,'brand communication style is required');
-  settings={brand:{name:'Kedai Merzz',voice:'Santai'}};connected=false;assert.equal((await activate()).status,409,'Threads account must be connected');
+  const completeSettings=settings;
+  settings={...completeSettings,hashtags:[]};assert.equal((await activate()).status,409,'hashtag is required');
+  settings={...completeSettings,trackedLinks:{...completeSettings.trackedLinks,topup:''}};assert.equal((await activate()).status,409,'top-up link is required');
+  settings={...completeSettings,trackedLinks:{...completeSettings.trackedLinks,account:''}};assert.equal((await activate()).status,409,'account link is required');
+  settings={...completeSettings,brand:{name:'',voice:'Santai'}};assert.equal((await activate()).status,409,'brand name is required');
+  settings={...completeSettings,brand:{name:'Kedai Merzz',voice:''}};assert.equal((await activate()).status,409,'brand communication style is required');
+  settings=completeSettings;connected=false;assert.equal((await activate()).status,409,'Threads account must be connected');
   connected=true;services.aiConfigured=false;assert.equal((await activate()).status,409,'AI provider must be configured');
   assert.equal(writes,1,'failed required gates must not enable automation');
 });
 
 test('automation enable starts immediately even if the previous session posted under one hour ago',async t=>{
   const firstPostAt=new Date().toISOString();let dispatchCalls=0;
-  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],hashtags:['#KedaiMerzz'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:new Date()}])),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:true})};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};

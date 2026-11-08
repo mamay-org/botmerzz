@@ -49,9 +49,14 @@ function validateFullCaption(text, context = {}) {
     return ' ';
   });
   if (approvedLinkCount > 1) errors.push('DUPLICATE_LINK');
+  if (context.requireConfigured && approvedLinkCount !== 1) errors.push('MISSING_REQUIRED_LINK');
+  const seenTags = new Set();
   for (const match of checked.matchAll(TAG)) {
-    if (!allowed.has(match[1].toLowerCase())) errors.push('UNAPPROVED_HASHTAG');
+    const key = match[1].normalize('NFKC').toLowerCase();
+    if (!allowed.has(key)) errors.push('UNAPPROVED_HASHTAG');
+    seenTags.add(key);
   }
+  if (context.requireConfigured && (!allowed.size || [...allowed].some((tag) => !seenTags.has(tag)))) errors.push('MISSING_REQUIRED_HASHTAGS');
   checked = checked.replace(TAG, ' ');
   if (/(?:\+?\d[\d ()-]{7,}\d)/u.test(checked)) errors.push('POSSIBLE_PERSONAL_INFORMATION');
   // Numerals must appear in an eligible fact. Semantic verification additionally
