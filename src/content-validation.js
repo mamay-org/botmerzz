@@ -6,7 +6,8 @@ const TAG = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
 const URL = /(?:https?:\/\/|www\.)[^\s<>]+|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}(?:\/[^\s<>]*)?/giu;
 
 function words(text) {
-  return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  return text.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(URL, ' ').replace(TAG, ' ').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
 }
 
 function repetitive(text, recentCaptions) {
@@ -16,10 +17,18 @@ function repetitive(text, recentCaptions) {
     if (typeof caption !== 'string') return false;
     const prior = words(caption);
     if (current.join(' ') === prior.join(' ')) return true;
+    const negative = new Set(['tidak', 'tak', 'bukan', 'jangan', 'never', 'not']);
+    if (current.some((word) => negative.has(word)) !== prior.some((word) => negative.has(word))) return false;
     const a = new Set(current);
     const b = new Set(prior);
     if (a.size < 8 || b.size < 8) return false;
-    return [...a].filter((word) => b.has(word)).length / Math.min(a.size, b.size) >= 0.75;
+    const common = [...a].filter((word) => b.has(word)).length;
+    if (common / (a.size + b.size - common) < 0.8) return false;
+    const pairs = (items) => new Set(items.slice(1).map((word, index) => `${items[index]}\u0000${word}`));
+    const currentPairs = pairs(current);
+    const priorPairs = pairs(prior);
+    const commonPairs = [...currentPairs].filter((pair) => priorPairs.has(pair)).length;
+    return commonPairs / Math.max(currentPairs.size, priorPairs.size) >= 0.65;
   });
 }
 
@@ -72,7 +81,7 @@ function validateFullCaption(text, context = {}) {
   const directPrices = checked.matchAll(/\b(?:harga|price|kos|cost|bayaran|berharga)\s*(?:(?:ialah|adalah|sekitar|cuma|hanya|bermula|dari)\s*)?[:=]?\s*\d+(?:[.,]\d+)?(?![\d.,])(?:\s*(?:myr|rm)\b)?/giu);
   if ([...directPrices].some((match) => !/\b(?:myr|rm)\b/iu.test(match[0]))) errors.push('PRICE_MISSING_CURRENCY');
   if (/[$€£¥]/u.test(checked)) errors.push('UNAPPROVED_CURRENCY');
-  if (repetitive(checked.replace(URL, ' '), Array.isArray(context.recentCaptions) ? context.recentCaptions : [])) errors.push('REPETITIVE_CAPTION');
+  if (repetitive(normalized, Array.isArray(context.recentCaptions) ? context.recentCaptions : [])) errors.push('REPETITIVE_CAPTION');
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 

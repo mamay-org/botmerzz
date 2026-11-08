@@ -67,7 +67,7 @@ async function main(argv = process.argv.slice(2)) {
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, notifier, content: generatePost, contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); }, timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: 1 });
+        const result = await runDispatcher({ repository, publisher, notifier, content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }), contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); }, timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: 1 });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Kedai Merzz automation: system_error. Semak status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
@@ -118,7 +118,7 @@ async function main(argv = process.argv.slice(2)) {
         repository,
         publisher: tebar,
         notifier,
-        content: generatePost,
+        content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }),
         contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
         timezone: state.settings?.schedule?.timezone || config.timezone,
         minimumIntervalHours: 1,

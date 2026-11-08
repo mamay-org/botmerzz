@@ -3,6 +3,18 @@ const assert = require("node:assert/strict");
 const { inspect } = require("node:util");
 const { createOpenRouterClient } = require("../src/providers/openrouter");
 
+test('forwards only explicitly configured bounded sampling parameters', async () => {
+  const calls = [];
+  const api = createOpenRouterClient({ apiKey: 'key', model: 'model', http: { request: async request => { calls.push(request.data); return { data: { choices: [{ message: { content: 'ok' } }] } }; } } });
+  await api.generate({ system: 'system', user: 'user', temperature: 0.8, topP: 0.95 });
+  await api.generate({ system: 'audit', user: 'user' });
+  assert.equal(calls[0].temperature, 0.8);
+  assert.equal(calls[0].top_p, 0.95);
+  assert.equal('temperature' in calls[1], false);
+  assert.equal('top_p' in calls[1], false);
+  await assert.rejects(api.generate({ system: 'system', user: 'user', temperature: 3 }), { code: 'invalid_request' });
+});
+
 test("generation sends the configured model and prompts and returns only assistant content", async () => {
   const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "test/model", http: { request: async (request) => {
     assert.equal(request.method, "POST");

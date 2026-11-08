@@ -4,6 +4,14 @@ const { loadEnv } = require("../src/config");
 
 const database = { DB_HOST: "localhost", DB_USER: "test", DB_PASSWORD: "test-only", DB_NAME: "threads_test" };
 
+test('optional generator sampling is bounded and unset by default', () => {
+  assert.deepEqual(loadEnv(database).openRouter.generatorSampling, {});
+  assert.deepEqual(loadEnv({ ...database, OPENROUTER_GENERATOR_TEMPERATURE: '0.8', OPENROUTER_GENERATOR_TOP_P: '0.95' }).openRouter.generatorSampling, { temperature: 0.8, topP: 0.95 });
+  for (const input of [{ OPENROUTER_GENERATOR_TEMPERATURE: '2.1' }, { OPENROUTER_GENERATOR_TEMPERATURE: 'NaN' }, { OPENROUTER_GENERATOR_TOP_P: '-0.1' }, { OPENROUTER_GENERATOR_TOP_P: '1.1' }]) {
+    assert.throws(() => loadEnv({ ...database, ...input }), /Invalid configuration/);
+  }
+});
+
 test("database-backed runtime starts paused without provider credentials", () => {
   const config = loadEnv(database);
   assert.equal(config.automationEnabled, false);
