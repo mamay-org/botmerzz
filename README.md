@@ -1,6 +1,6 @@
 # Kedai Merzz Threads Automation
 
-An MVP dashboard and scheduled publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions and publish history in MySQL; OpenRouter generates a constrained conversation hook, while the application composes approved product facts and links. Tebar is the publishing adapter. Automation and the in-process scheduler are off by default.
+An MVP dashboard and scheduled publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions and publish history in MySQL; OpenRouter generates a full caption from approved context and performs a separate semantic review before publication. Deterministic checks complement that review. Tebar is the publishing adapter. Automation and the in-process scheduler are off by default.
 
 ## Run locally with Docker
 

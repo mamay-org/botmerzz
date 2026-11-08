@@ -331,3 +331,32 @@ test('spelled-out quantities are rejected near units while ordinary Malay number
   const safe = validateCaption('Satu pengalaman bermain yang paling berkesan?');
   assert.equal(safe.valid, true, safe.errors.join(', '));
 });
+
+test('full-caption validator accepts natural multiline text and detects duplicate published captions', () => {
+  const { validateFullCaption } = require('../src/content-validation');
+  const text = 'Setiap pemain ada cara tersendiri untuk menikmati permainan.\n\nKorang lebih suka bermain santai atau mencuba strategi baharu?';
+  assert.equal(validateFullCaption(text, {}).valid, true);
+  const duplicate = validateFullCaption(text, { recentCaptions: [text] });
+  assert.ok(duplicate.errors.includes('REPETITIVE_CAPTION'));
+});
+
+test('full-caption validator rejects unapproved links, hashtags, numbers and personal information', () => {
+  const { validateFullCaption } = require('../src/content-validation');
+  const ctx = { facts: [fact], gameWhitelist: ['Mobile Legends'], hashtags: ['#KedaiMerzz'], trackedLink: 'https://example.test/topup' };
+  for (const [text, code] of [
+    ['Harga MYR 999 untuk anda', 'UNAPPROVED_NUMBER'],
+    ['Layari https://evil.test sekarang', 'UNAPPROVED_LINK'],
+    ['Boleh hubungi pelanggan@example.com', 'POSSIBLE_PERSONAL_INFORMATION'],
+    ['Pilihan anda #Unknown', 'UNAPPROVED_HASHTAG'],
+    ['X'.repeat(501), 'CAPTION_TOO_LONG'],
+  ]) assert.ok(validateFullCaption(text, ctx).errors.includes(code), text);
+  assert.equal(validateFullCaption('Harga MYR 30 untuk 400 Diamond. #KedaiMerzz', ctx).valid, true);
+});
+
+test('full-caption validator rejects domains that extend an allowed URL', () => {
+  const { validateFullCaption } = require('../src/content-validation');
+  const ctx = { trackedLink: 'https://example.test/topup' };
+  assert.ok(validateFullCaption('Layari https://example.test/topup.evil.test', ctx).errors.includes('UNAPPROVED_LINK'));
+  assert.ok(validateFullCaption('Layari https://malicious.xyz', ctx).errors.includes('UNAPPROVED_LINK'));
+  assert.equal(validateFullCaption('Layari https://example.test/topup', ctx).valid, true);
+});

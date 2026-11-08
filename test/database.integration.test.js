@@ -255,3 +255,62 @@ test('MySQL migrations and repository are reachable in integration environment',
   }
   finally { await pool.end(); }
 });
+
+test('MySQL checks prepared caption evidence atomically before publishing', { skip: !enabled }, async () => {
+  const { randomUUID } = require('node:crypto');
+  const { loadEnv } = require('../src/config');
+  const { createPool } = require('../src/db');
+  const { runMigrations } = require('../src/migrate');
+  const { createRepository } = require('../src/repository');
+  const { contentSafetyHash } = require('../src/content-safety');
+  const pool = createPool(loadEnv());
+  await runMigrations(pool);
+  const repo = createRepository(pool);
+  const [[previous]] = await pool.execute('SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
+  const [previousFacts] = await pool.execute('SELECT service, summary_json, active, updated_at FROM service_facts');
+  const encode = (value) => typeof value === 'string' ? value : JSON.stringify(value);
+  const sessionId = randomUUID();
+  const settings = {
+    schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur' },
+    priceMode: 'ON', gameWhitelist: ['Mobile Legends'],
+    brand: { name: 'Kedai Merzz', voice: 'Santai' },
+    guardrails: { approved: true, forbiddenClaims: [], approvedClaims: [] },
+    trackedLinks: {}, automationSessionId: sessionId, onboardingComplete: true,
+    targetAccountId: 'integration-account',
+  };
+  const knowledge = { brand: settings.brand, guardrails: settings.guardrails };
+  try {
+    await pool.execute('DELETE FROM slots');
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
+    await pool.execute('DELETE FROM service_facts');
+    const cases = ['valid', 'changed', 'inactive', 'expired', 'settings', 'legacy'];
+    for (const [index, scenario] of cases.entries()) {
+      await pool.execute('DELETE FROM slots');
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
+      await pool.execute("INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES ('topup',?,TRUE,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE summary_json=VALUES(summary_json),active=TRUE,updated_at=UTC_TIMESTAMP(3)", [JSON.stringify({ game: 'Mobile Legends', price: '30' })]);
+      if (scenario === 'expired') await pool.execute("UPDATE service_facts SET updated_at=DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 25 HOUR) WHERE service='topup'");
+      const [[fact]] = await pool.execute("SELECT updated_at FROM service_facts WHERE service='topup'");
+      const id = randomUUID();
+      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status) VALUES (?,?,?,'generating')", [id, new Date(Date.now() - 5000 - index), sessionId]);
+      const payload = { content: 'Cerita pilihan pemain.', targets: [{ account_id: settings.targetAccountId }] };
+      const hash = scenario === 'legacy' ? null : contentSafetyHash(await repo.getSettings());
+      assert.equal(await repo.savePreparedSlot(id, {
+        requestPayload: payload, idempotencyKey: `test-${id}`, caption: payload.content, pillar: 'topup',
+        factBearing: false, factIds: [], factVersions: [{ id: 'topup', updatedAt: fact.updated_at }], contentSafetyHash: hash,
+      }), true, scenario);
+      if (scenario === 'changed') await pool.execute("UPDATE service_facts SET updated_at=DATE_ADD(updated_at, INTERVAL 1 SECOND) WHERE service='topup'");
+      if (scenario === 'inactive') await pool.execute("UPDATE service_facts SET active=FALSE WHERE service='topup'");
+      if (scenario === 'settings') await pool.execute("UPDATE settings SET knowledge_json=JSON_SET(knowledge_json,'$.brand.voice','Berbeza') WHERE id=1");
+      const result = await repo.startPublishing(id, { now: new Date() });
+      assert.equal(result, scenario === 'valid' ? true : 'stale_facts', scenario);
+      const [[slot]] = await pool.execute('SELECT status FROM slots WHERE id=?', [id]);
+      assert.equal(slot.status, scenario === 'valid' ? 'publishing' : 'ready', scenario);
+    }
+  } finally {
+    await pool.execute('DELETE FROM slots');
+    await pool.execute('DELETE FROM service_facts');
+    for (const fact of previousFacts) await pool.execute('INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES (?,?,?,?)', [fact.service, encode(fact.summary_json), fact.active, fact.updated_at]);
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1', [encode(previous.settings_json), encode(previous.knowledge_json), previous.automation_enabled]);
+    await pool.end();
+  }
+});

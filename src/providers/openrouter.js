@@ -24,7 +24,8 @@ function createOpenRouterClient({ apiKey, model, http = axios }) {
           model, messages: [{ role: "system", content: system }, { role: "user", content: user }],
           max_completion_tokens: maxTokens, stream: false,
         },
-        timeout: 90000, maxRedirects: 0,
+        // Up to two generations and two reviews must fit the shutdown grace period.
+        timeout: 40000, maxRedirects: 0,
       });
     } catch (error) {
       const status = Number.isInteger(error.response?.status) ? error.response.status : null;
@@ -32,7 +33,9 @@ function createOpenRouterClient({ apiKey, model, http = axios }) {
         : status === 401 || status === 403 ? "unauthorized"
           : status ? "provider_error" : "network_error", status);
     }
-    const content = response.data?.choices?.[0]?.message?.content;
+    const choice = response.data?.choices?.[0];
+    if (choice?.finish_reason === "length") throw providerError("invalid_response");
+    const content = choice?.message?.content;
     if (typeof content !== "string" || !content.trim()) throw providerError("invalid_response");
     return content.trim();
   }

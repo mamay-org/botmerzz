@@ -18,6 +18,7 @@ COPY --chown=node:node test ./test
 COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node public ./public
 COPY --chown=node:node migrations ./migrations
+COPY --chown=node:node .github ./.github
 USER node
 CMD ["npm", "test"]
 

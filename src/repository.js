@@ -1,6 +1,7 @@
 const { randomUUID, createHash } = require('node:crypto');
+const { contentSafetyHash } = require('./content-safety');
 const { DateTime } = require('luxon');
-const { isInActiveWindow, validateSettings } = require('./policy');
+const { isInActiveWindow, validateSettings, isFactFresh } = require('./policy');
 
 const json = (value, fallback = {}) => {
   if (value && typeof value === 'object' && !Buffer.isBuffer(value)) return value;
@@ -240,7 +241,7 @@ function createRepository(pool) {
         await c.rollback();
         return null;
       }
-      const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,automation_session_id FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
       const [[last]] = await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId, slot.id]);
@@ -257,7 +258,7 @@ function createRepository(pool) {
       if (slot.status === 'pending') await c.execute("UPDATE slots SET status='generating',claimed_at=? WHERE id=? AND status='pending'", [now, slot.id]);
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []) };
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -343,7 +344,7 @@ function createRepository(pool) {
       return {slot:null,created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};
     } catch(e){await c.rollback();throw e;}finally{c.release();}
   }
-  async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[]}) {
+  async function savePreparedSlot(id,{requestPayload,idempotencyKey,caption,pillar,factBearing=false,factIds=[],factVersions=[],contentSafetyHash=null}) {
     const c=await pool.getConnection();
     try {
       await c.beginTransaction();
@@ -351,7 +352,7 @@ function createRepository(pool) {
       const sessionId=json(state?.settings_json).automationSessionId;
       const [[slot]]=await c.execute('SELECT automation_session_id,status FROM slots WHERE id=? FOR UPDATE',[id]);
       if(!state?.automation_enabled||!sessionId||slot?.automation_session_id!==sessionId||slot?.status!=='generating') { await c.rollback(); return false; }
-      const [updated]=await c.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),id,sessionId]);
+      const [updated]=await c.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar=?,fact_bearing=?,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=? AND automation_session_id=? AND status='generating'",[JSON.stringify(requestPayload),idempotencyKey,caption,pillar,Boolean(factBearing),JSON.stringify(factIds),JSON.stringify(factVersions),contentSafetyHash,id,sessionId]);
       await c.commit();
       return updated.affectedRows===1;
     } catch(error) { await c.rollback(); throw error; }
@@ -361,10 +362,35 @@ function createRepository(pool) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
-      const [[settings]] = await c.query('SELECT automation_enabled,settings_json FROM settings WHERE id=1 FOR UPDATE');
+      const [[settings]] = await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await c.execute('SELECT scheduled_at,status,automation_session_id FROM slots WHERE id=? FOR UPDATE', [id]);
+      const [[slot]] = await c.execute('SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash FROM slots WHERE id=? FOR UPDATE', [id]);
       if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || !sessionId || slot.automation_session_id!==sessionId) { await c.rollback(); return false; }
+      const config = json(settings.settings_json);
+      const knowledge = json(settings.knowledge_json);
+      const currentHash = contentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails });
+      if (!slot.content_safety_hash || !currentHash || slot.content_safety_hash !== currentHash) {
+        await c.rollback(); return 'stale_facts';
+      }
+      const ids = json(slot.fact_ids, []);
+      const versions = json(slot.fact_versions, []);
+      if (!Array.isArray(ids) || !Array.isArray(versions)
+        || (slot.fact_bearing && !ids.length)
+        || new Set(ids.map(String)).size !== ids.length
+        || new Set(versions.map((version) => String(version?.id))).size !== versions.length
+        || ids.some((id) => !versions.some((version) => version?.id === id))
+        || versions.some((version) => !version || !version.id || !version.updatedAt)) {
+        await c.rollback(); return 'stale_facts';
+      }
+      for (const version of versions) {
+        const [[fact]] = await c.execute('SELECT service,active,updated_at FROM service_facts WHERE service=? FOR UPDATE', [version.id]);
+        const sourceTime = fact?.updated_at ? new Date(fact.updated_at).getTime() : NaN;
+        const expectedTime = new Date(version.updatedAt).getTime();
+        if (!fact || !isFactFresh({ active: Boolean(fact.active), updatedAt: fact.updated_at }, now)
+          || !Number.isFinite(expectedTime) || sourceTime !== expectedTime) {
+          await c.rollback(); return 'stale_facts';
+        }
+      }
       const [[last]] = await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId,id]);
       if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < 3600000) {
         await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
