@@ -23,6 +23,13 @@ test("empty or non-text AI responses fail safely instead of creating a fallback"
   }
 });
 
+test("truncated nonempty completions fail safely", async () => {
+  const api = createOpenRouterClient({ apiKey: "key", model: "model", http: { request: async () => ({
+    data: { choices: [{ finish_reason: "length", message: { content: "Caption incomplete" } }] },
+  }) } });
+  await assert.rejects(api.generate({ system: "system", user: "user" }), { code: "invalid_response" });
+});
+
 test("OpenRouter transport failures discard request secrets and response bodies", async () => {
   let calls = 0;
   const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "model", http: { request: async () => {

@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runDispatcher, pauseAutomation, maybeSendDailySummary } = require('../src/dispatcher');
+const { contentSafetyHash } = require('../src/content-safety');
 
 function harness(overrides = {}) {
   const calls = [];
@@ -42,7 +43,7 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   let publishCalls = 0;
   publisher.publishNow = async (payload, key) => {
     publishCalls++;
-    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'topup', factBearing: false, factIds: [] }]);
+    assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'topup', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings) }]);
     return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
@@ -274,7 +275,8 @@ test('daily summary is sent at 22:00 Malaysia time regardless of legacy schedule
 test('prepared ready slot reuses persisted payload and idempotency key without generating again', async () => {
   const { calls, repository, publisher } = harness();
   const durablePayload = { content: 'Jom kongsi pilihan anda!\nTop-up ML.\nhttps://example.test/t', targets: [{ account_id: 'acct-1' }] };
-  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'topup', factBearing: true, factIds: [9] });
+  const safetyHash = contentSafetyHash((await repository.getRuntimeState()).settings);
+  repository.claimDueSlot = async () => ({ id: 'slot-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: durablePayload, idempotencyKey: 'persisted-key', caption: durablePayload.content, pillar: 'topup', factBearing: true, factIds: ['topup'], factVersions: [{ id: 'topup', updatedAt: '2026-11-05T03:00:00Z' }], contentSafetyHash: safetyHash });
   const generatedContent = async () => assert.fail('prepared content must not be regenerated');
   publisher.publishNow = async (payload, key) => {
     assert.equal(payload, durablePayload);
@@ -284,6 +286,23 @@ test('prepared ready slot reuses persisted payload and idempotency key without g
   const result = await runDispatcher({ repository, publisher, content: generatedContent, clock: fixedClock });
   assert.equal(result.published, 1);
   assert.equal(calls.some((call) => call[0] === 'prepared'), false);
+});
+
+test('legacy ready caption without safety snapshot is failed without publishing', async () => {
+  const { calls, repository, publisher } = harness();
+  repository.claimDueSlot = async () => ({ id: 'old', automationSessionId: 'session-1', status: 'ready', requestPayload: { content: 'Lama', targets: [{ account_id: 'acct-1' }] }, idempotencyKey: 'old-key', factBearing: true, factIds: ['topup'] });
+  publisher.publishNow = async () => assert.fail('legacy facts must not be published');
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.failed, 1);
+  assert.ok(calls.some((entry) => entry[0] === 'activity' && entry[1].details.diagnosticCode === 'stale_facts'));
+});
+
+test('repository freshness rejection fails prepared content before Tebar', async () => {
+  const { calls, repository, publisher } = harness({ repository: { startPublishing: async () => 'stale_facts' } });
+  publisher.publishNow = async () => assert.fail('stale facts must not publish');
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.failed, 1);
+  assert.ok(calls.some((entry) => entry[0] === 'activity' && entry[1].details.diagnosticCode === 'stale_facts'));
 });
 
 test('database persistence failure after Tebar accepts publish never triggers a second publish', async () => {

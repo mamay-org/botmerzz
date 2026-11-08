@@ -3,6 +3,7 @@
 const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
+const { contentSafetyHash } = require('./content-safety');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Kuala_Lumpur';
 
 const SAFE_ERROR_CODES = new Set([
@@ -16,7 +17,7 @@ const SAFE_DIAGNOSTIC_CODES = new Set([
   'invalid_settings', 'approved_content_invalid', 'onboarding_incomplete', 'content_validation_failed',
   'ai_not_configured', 'ai_invalid_request', 'ai_unauthorized', 'ai_rate_limited',
   'ai_provider_error', 'ai_network_error', 'ai_invalid_response', 'ai_request_failed',
-  'content_service_error', 'stale_generation',
+  'content_service_error', 'stale_generation', 'stale_facts',
 ]);
 
 function safeCode(value) {
@@ -224,7 +225,7 @@ async function runDispatcher({
     // A crash after persistence but before publishing must replay the exact durable request.
     payload = slot.requestPayload;
     idempotencyKey = slot.idempotencyKey;
-    generated = { status: 'ready', text: slot.caption || payload.content, pillar: slot.pillar, factBearing: slot.factBearing === true, factIds: slot.factIds || [] };
+    generated = { status: 'ready', text: slot.caption || payload.content, pillar: slot.pillar, factBearing: slot.factBearing === true, factIds: slot.factIds || [], factVersions: slot.factVersions || [] };
   } else if (slot.status === 'unknown' || slot.status === 'publishing') {
     await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', errorCode: 'unknown_outcome' });
     result.unknown++;
@@ -263,6 +264,16 @@ async function runDispatcher({
     return result;
   }
 
+  if ((isPrepared && (!slot.contentSafetyHash || slot.contentSafetyHash !== contentSafetyHash(state.settings)))
+      || (generated.factBearing === true && (!Array.isArray(generated.factIds) || !generated.factIds.length
+      || !Array.isArray(generated.factVersions) || generated.factIds.some((id) => !generated.factVersions.some((version) => version?.id === id))))) {
+    await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
+    await sendNotice(notifier, 'generation_failed', { slotId: slot.id, diagnosticCode: 'stale_facts' });
+    result.failed++;
+    return result;
+  }
+
   if (!isPrepared) {
     idempotencyKey = makeIdempotencyKey(slot);
     payload = { content: generated.text, targets: [{ account_id: state.accountId }] };
@@ -273,6 +284,8 @@ async function runDispatcher({
       pillar: generated.pillar,
       factBearing: generated.factBearing === true,
       factIds: generated.factIds || [],
+      ...(generated.factVersions ? { factVersions: generated.factVersions } : {}),
+      contentSafetyHash: contentSafetyHash(state.settings),
     });
     if (saved === false) {
       await repository.appendActivity({ event: 'slot_not_published', slotId: slot.id, details: { code: 'automation_paused' } });
@@ -281,7 +294,14 @@ async function runDispatcher({
     }
   }
 
-  const started = await repository.startPublishing(slot.id, { now, minimumIntervalHours });
+  const started = await repository.startPublishing(slot.id, { now: clock(), minimumIntervalHours });
+  if (started === 'stale_facts') {
+    await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+    await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
+    await sendNotice(notifier, 'generation_failed', { slotId: slot.id, diagnosticCode: 'stale_facts' });
+    result.failed++;
+    return result;
+  }
   if (started === 'minimum_cadence') {
     await repository.appendActivity({ event: 'cadence_cooldown_wait', slotId: slot.id, details: { code: 'minimum_cadence' } });
     result.skipped++;
