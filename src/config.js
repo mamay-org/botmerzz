@@ -13,6 +13,17 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
     }
     return Number(value);
   };
+  const optionalNumber = (key, max) => {
+    const value = env[key];
+    if (value === undefined || value === '') return undefined;
+    if (typeof value !== 'string' || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(Number(value)) || Number(value) > max) {
+      errors.push(key);
+      return undefined;
+    }
+    return Number(value);
+  };
+  const temperature = optionalNumber('OPENROUTER_GENERATOR_TEMPERATURE', 2);
+  const topP = optionalNumber('OPENROUTER_GENERATOR_TOP_P', 1);
   const nodeEnv = env.NODE_ENV || "development";
   if (!["development", "test", "production"].includes(nodeEnv)) errors.push("NODE_ENV");
   const port = integer("PORT", 3000, 1, 65535);
@@ -64,7 +75,8 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
     },
     openRouter: {
       apiKey: env.OPENROUTER_API_KEY || undefined,
-      model: env.OPENROUTER_MODEL || "openai/gpt-4o-mini",
+      model: env.OPENROUTER_MODEL || "google/gemini-3.8-flash",
+      generatorSampling: { ...(temperature === undefined ? {} : { temperature }), ...(topP === undefined ? {} : { topP }) },
     },
     telegram: {
       botToken: env.TELEGRAM_BOT_TOKEN || undefined,
