@@ -1,4 +1,5 @@
 const { randomUUID, createHash } = require('node:crypto');
+const { formatSlotNotice } = require('./telegram-format');
 const { contentSafetyHash } = require('./content-safety');
 const { DateTime } = require('luxon');
 const { isInActiveWindow, validateSettings, isFactFresh } = require('./policy');
@@ -408,11 +409,37 @@ function createRepository(pool) {
     const [[state]]=await pool.execute('SELECT automation_enabled,settings_json FROM settings WHERE id=1');
     return Boolean(state?.automation_enabled)&&json(state?.settings_json).automationSessionId===sessionId;
   }
-  async function updateSlot(id,patch) { const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;const sql=keys.map(k=>`${allowed[k]}=?`).join(',');await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id]); }
+  async function suppressPendingNotices(connection,id,status) {
+    if(!['published','failed','partial','canceled'].includes(status))return;
+    const keys=['unknown_outcome',...(status==='published'?['provider_error','generation_failed','content_validation_failed']:[])].map(code=>createHash('sha256').update(`${code}:slot:${id}`).digest('hex'));
+    for(const key of keys) await connection.execute("UPDATE notification_outbox SET status='failed',last_error_code='superseded' WHERE dedupe_key=? AND status='pending'",[key]);
+  }
+  async function updateSlot(id,patch) {
+    const allowed={status:'status',providerPostId:'provider_post_id',providerStatus:'provider_status',errorCode:'error_code',cancellationStatus:'cancellation_status',completedAt:'completed_at'};
+    const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;
+    const sql=keys.map(k=>`${allowed[k]}=?`).join(',');
+    const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id];
+    if(!['published','failed','partial','canceled'].includes(patch.status)){await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,values);return;}
+    const c=await pool.getConnection();try{await c.beginTransaction();await c.execute(`UPDATE slots SET ${sql} WHERE id=?`,values);await suppressPendingNotices(c,id,patch.status);await c.commit();}catch(e){await c.rollback();throw e;}finally{c.release();}
+  }
   async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key})); }
-  async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status})); }
+  async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status,caption,pillar,scheduled_at,completed_at FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,scheduledAt:r.scheduled_at,completedAt:r.completed_at})); }
   async function recordCancellation(providerPostId,{status,errorCode}={}) { await pool.execute('UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?=\'canceled\',\'canceled\',status),completed_at=IF(?=\'canceled\',UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=?',[status,errorCode,status,status,providerPostId]);await appendActivity({event:'post_cancellation',details:{status,errorCode:errorCode||null}}); }
-  async function getDailySummaryCounts(date,timezone) { const start=DateTime.fromISO(`${date}T00:00:00`,{zone:timezone});if(!start.isValid)return {published:0,failed:0,skipped:0};const from=start.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');const to=start.plus({days:1}).toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');const [rows]=await pool.execute('SELECT status,COUNT(*) count FROM slots WHERE scheduled_at>=? AND scheduled_at<? GROUP BY status',[from,to]);const result={published:0,failed:0,skipped:0};for(const row of rows){if(row.status==='published')result.published+=Number(row.count);else if(['failed','partial','unknown'].includes(row.status))result.failed+=Number(row.count);else if(row.status==='skipped')result.skipped+=Number(row.count);}return result; }
+  async function getDailySummaryCounts(date,timezone) {
+    const start=DateTime.fromISO(`${date}T00:00:00`,{zone:timezone});
+    if(!start.isValid) throw new Error('INVALID_SUMMARY_DATE');
+    const from=start.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');const to=start.plus({days:1}).toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+    const [rows]=await pool.execute("SELECT id,status,pillar,error_code FROM slots WHERE COALESCE(completed_at,scheduled_at)>=? AND COALESCE(completed_at,scheduled_at)<?",[from,to]);
+    const result={published:0,failed:0,unknown:0,skipped:0,categories:{},failures:{},affectedSlotIds:[]};
+    for(const row of rows){
+      if(row.status==='published'){result.published++;if(row.pillar)result.categories[row.pillar]=(result.categories[row.pillar]||0)+1;}
+      else if(['failed','partial'].includes(row.status)){result.failed++;const code=row.error_code||'provider_error';result.failures[code]=(result.failures[code]||0)+1;result.affectedSlotIds.push(row.id);}
+      else if(['unknown','publishing'].includes(row.status)){result.unknown++;result.affectedSlotIds.push(row.id);}
+      else if(row.status==='skipped')result.skipped++;
+    }
+    result.failures=Object.entries(result.failures).map(([code,count])=>({code,count}));
+    return result;
+  }
   async function reserveDailySummary(date,timezone) { const [insert]=await pool.execute("INSERT IGNORE INTO daily_summaries (local_date,timezone,status,created_at) VALUES (?,?,'sending',UTC_TIMESTAMP(3))",[date,timezone]);if(insert.affectedRows===1)return true;const [claim]=await pool.execute("UPDATE daily_summaries SET status='sending',created_at=UTC_TIMESTAMP(3) WHERE local_date=? AND timezone=? AND (status='failed' OR (status='sending' AND created_at<DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 10 MINUTE)))",[date,timezone]);return claim.affectedRows===1; }
   async function completeDailySummary(date,timezone,status='sent') { await pool.execute('UPDATE daily_summaries SET status=?,sent_at=IF(?=\'sent\',UTC_TIMESTAMP(3),sent_at) WHERE local_date=? AND timezone=?',[status,status,date,timezone]); }
   async function recordWebhookEvent(eventId,payloadHash) { try{await pool.execute('INSERT INTO webhook_events (event_id,payload_hash) VALUES (?,?)',[eventId,payloadHash]);return true;}catch(e){if(e.code==='ER_DUP_ENTRY')return false;throw e;} }
@@ -422,8 +449,9 @@ function createRepository(pool) {
       await c.beginTransaction();
       try { await c.execute('INSERT INTO webhook_events (event_id,payload_hash) VALUES (?,?)',[eventId,payloadHash]); }
       catch(e) { if(e.code==='ER_DUP_ENTRY'){await c.rollback();return false;} throw e; }
-      const [[settingsRow]]=await c.query('SELECT settings_json,automation_enabled FROM settings WHERE id=1');
+      const [[settingsRow]]=await c.query('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
       const configured=json(settingsRow?.settings_json);
+      const knowledge=json(settingsRow?.knowledge_json);
       const eventType=String(type||'');
       const dataAccount=data.account_id||data.target?.account_id||data.account?.id;
       const postId=data.post_id||data.id;
@@ -453,17 +481,21 @@ function createRepository(pool) {
           const final=['published','failed','partial','canceled'].includes(slotStatus);
           const completedAt=providerStatus==='published'?webhookPublishedAt:null;
           await c.execute('UPDATE slots SET provider_status=?,status=?,error_code=IF(?,\'provider_error\',error_code),completed_at=IF(?,COALESCE(?,UTC_TIMESTAMP(3)),completed_at) WHERE provider_post_id=?',[providerStatus,slotStatus,activeSessionCanceledPost,final,completedAt,postId]);
+          if(slot && final) await suppressPendingNotices(c,slot.id,slotStatus);
         }
       }
       if(notificationCode&&profileId===configured.profileId&&accountId===configured.targetAccountId&&dataAccount===accountId) {
         let dedupeId=`tebar:${eventId}`;
         let message=`Kedai Merzz automation: ${notificationCode}. Semak status akaun dan log dashboard.`;
         if(notificationCode==='provider_error'&&String(data.status||eventType.split('.').at(-1)).toLowerCase()==='canceled'&&(!activeSessionCanceledPost||staleTerminalCancellation)) message=null;
-        if(notificationCode==='post_published') {
-          const [[slot]]=await c.execute("SELECT id FROM slots WHERE provider_post_id=? AND status='published' LIMIT 1",[postId]);
-          if(slot) {
-            dedupeId=`post_published:slot:${slot.id}`;
-            message=`Kedai Merzz automation: post_published. Slot: ${String(slot.id).slice(0,36)}.`;
+        if(eventType.startsWith('post.')) {
+          const [[slot]]=await c.execute('SELECT id,status,caption,pillar,scheduled_at,completed_at,error_code FROM slots WHERE provider_post_id=? LIMIT 1',[postId]);
+          const expectedStatus=notificationCode==='post_published'?'published':'failed';
+          if(slot && (slot.status===expectedStatus || (expectedStatus==='failed' && slot.status==='partial')) && message) {
+            dedupeId=`${notificationCode}:slot:${slot.id}`;
+            message=formatSlotNotice({status:expectedStatus,slotId:slot.id,brand:knowledge.brand?.name||configured.brand?.name,
+              time:slot.completed_at||slot.scheduled_at,timezone:configured.schedule?.timezone,pillar:slot.pillar,caption:slot.caption,
+              reason:slot.error_code||'provider_error',nextAt:settingsRow?.automation_enabled?configured.nextSlotAt:null});
           } else message=null;
         }
         if(message) {
@@ -477,7 +509,7 @@ function createRepository(pool) {
     finally { c.release(); }
   }
   async function enqueueNotification({dedupeKey,message}) {
-    if(!/^[a-f0-9]{64}$/.test(dedupeKey)||typeof message!=='string'||!message.trim()||message.length>1200)throw Object.assign(new Error('INVALID_NOTIFICATION'),{code:'INVALID_NOTIFICATION'});
+    if(!/^[a-f0-9]{64}$/.test(dedupeKey)||typeof message!=='string'||!message.trim()||message.length>4096)throw Object.assign(new Error('INVALID_NOTIFICATION'),{code:'INVALID_NOTIFICATION'});
     const [result]=await pool.execute('INSERT IGNORE INTO notification_outbox (dedupe_key,message) VALUES (?,?)',[dedupeKey,message]);
     return result.affectedRows===1;
   }
@@ -497,7 +529,7 @@ function createRepository(pool) {
   async function markNotificationSent(id) { await pool.execute("UPDATE notification_outbox SET status='sent',sent_at=UTC_TIMESTAMP(3),claimed_at=NULL,last_error_code=NULL WHERE id=? AND status='sending'",[id]); }
   async function retryNotification(id,errorCode) { await pool.execute("UPDATE notification_outbox SET status=IF(attempts>=8,'failed','pending'),available_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL LEAST(3600,15*POW(2,GREATEST(attempts-1,0))) SECOND),claimed_at=NULL,last_error_code=? WHERE id=? AND status='sending'",[String(errorCode).slice(0,64),id]); }
   async function claimDailySummary({localDate,timezone}) { return reserveDailySummary(localDate,timezone); }
-  async function getDailySummary({localDate,timezone}) { const counts=await getDailySummaryCounts(localDate,timezone);return {published:counts.published||0,failed:counts.failed||0,skipped:counts.skipped||0}; }
+  async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await pool.execute('SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
   return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,isAutomationSessionActive,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };

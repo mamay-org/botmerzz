@@ -29,7 +29,7 @@ function createOutboxNotifier({ repository, transport } = {}) {
   }
 
   async function enqueue(message, dedupeId = randomUUID()) {
-    if (typeof message !== 'string' || !message.trim() || message.length > 1200) {
+    if (typeof message !== 'string' || !message.trim() || message.length > 4096) {
       throw Object.assign(new Error('invalid_notification'), { code: 'invalid_notification' });
     }
     const dedupeKey = createHash('sha256').update(String(dedupeId)).digest('hex');

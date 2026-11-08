@@ -26,8 +26,8 @@ function harness(overrides = {}) {
     ...overrides.repository,
   };
   const publisher = {
-    publishNow: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }),
-    getPost: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }),
+    publishNow: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }),
+    getPost: async () => ({ id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }),
     listScheduledPosts: async () => ({ data: [], nextCursor: null }),
     cancelPost: async () => ({ id: 'post-1', status: 'canceled', targets: [] }),
     ...overrides.publisher,
@@ -44,7 +44,7 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   publisher.publishNow = async (payload, key) => {
     publishCalls++;
     assert.deepEqual(calls[0], ['prepared', 'slot-1', { requestPayload: payload, idempotencyKey: key, caption: payload.content, pillar: 'topup', factBearing: false, factIds: [], contentSafetyHash: contentSafetyHash((await repository.getRuntimeState()).settings) }]);
-    return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] };
+    return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.published, 1);
@@ -57,7 +57,7 @@ test('dispatcher persists and publishes the exact final caption including hashta
   const { calls, repository, publisher } = harness();
   const saved = async () => ({ status: 'ready', text: finalText, pillar: 'topup', factBearing: false, factIds: [] });
   let sentPayload;
-  publisher.publishNow = async (payload) => { sentPayload = payload; return { id: 'post-hashtag', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  publisher.publishNow = async (payload) => { sentPayload = payload; return { id: 'post-hashtag', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content: saved, clock: fixedClock });
   const prepared = calls.find(([kind]) => kind === 'prepared')[2];
   assert.equal(result.published, 1);
@@ -85,7 +85,7 @@ test('invalid AI result is recorded as a confirmed failure after content retry p
   assert.equal(result.skipped, 0);
   assert.ok(calls.some((c) => c[0] === 'update' && c[2].status === 'failed' && c[2].completedAt === '2026-11-05T04:02:00.000Z'));
   assert.ok(calls.some((c) => c[0] === 'activity' && c[1].event === 'ai_generation_failed'));
-  assert.ok(calls.some((c) => c[0] === 'notice' && /content_validation_failed/.test(c[1])));
+  assert.ok(calls.some((c) => c[0] === 'notice' && /tidak memenuhi aturan validasi/i.test(c[1])));
 });
 
 test('generation failure diagnostics are persisted and only allowlisted codes reach Telegram', async () => {
@@ -102,7 +102,7 @@ test('generation failure diagnostics are persisted and only allowlisted codes re
   assert.equal((await runFailure('ai_network_error')).failed, 1);
   const safeActivity = calls.find((call) => call[0] === 'activity' && call[1].event === 'ai_generation_failed');
   assert.equal(safeActivity[1].details.diagnosticCode, 'ai_network_error');
-  assert.ok(notices.some((message) => /generation_failed \(ai_network_error\)/.test(message)));
+  assert.ok(notices.some((message) => /tidak dapat dihubungi/i.test(message)));
 
   calls.length = 0;
   notices.length = 0;
@@ -127,7 +127,7 @@ test('stale generation slot details appear as a safe Telegram diagnostic', async
     clock: fixedClock,
   });
   assert.equal(result.failed, 1);
-  assert.ok(notices.some((message) => /generation_failed \(stale_generation\).*slot-stale/.test(message)));
+  assert.ok(notices.some((message) => /melewati batas waktu/i.test(message) && /slot-stale/.test(message)));
 });
 
 test('uncertain publishing outcome is recorded unknown and is not blindly retried', async () => {
@@ -156,7 +156,7 @@ test('known retryable provider error replays exactly the same request and idempo
   publisher.publishNow = async (body, key) => {
     sent.push({ body, key });
     if (sent.length === 1) throw Object.assign(new Error('safe'), { code: 'rate_limited', retryable: true, unknownOutcome: false });
-    return { id: 'p2', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] };
+    return { id: 'p2', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.published, 1);
@@ -187,7 +187,7 @@ test('pause between retry attempts records the confirmed provider failure withou
   assert.equal(result.skipped, 0);
   assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'failed' && call[2].errorCode === 'rate_limited' && call[2].completedAt === fixedClock().toISOString()));
   assert.ok(calls.some((call) => call[0] === 'activity' && call[1].event === 'publish_failed' && call[1].details.code === 'rate_limited'));
-  assert.ok(notices.some((message) => /rate_limited/.test(message)));
+  assert.ok(notices.some((message) => /membatasi permintaan/i.test(message)));
   assert.equal(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled'), false);
 });
 
@@ -231,7 +231,7 @@ test('planner duplicate return and empty atomic claim on repeated cron runs cann
     return { slot, created: false, skippedCount: 0 };
   };
   repository.claimDueSlot = async () => { if (claimed) return null; claimed = true; return slot; };
-  publisher.publishNow = async () => { publishes++; return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  publisher.publishNow = async () => { publishes++; return { id: 'post-1', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const first = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   const second = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(first.published, 1);
@@ -281,7 +281,7 @@ test('prepared ready slot reuses persisted payload and idempotency key without g
   publisher.publishNow = async (payload, key) => {
     assert.equal(payload, durablePayload);
     assert.equal(key, 'persisted-key');
-    return { id: 'post-ready', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] };
+    return { id: 'post-ready', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
   };
   const result = await runDispatcher({ repository, publisher, content: generatedContent, clock: fixedClock });
   assert.equal(result.published, 1);
@@ -309,7 +309,7 @@ test('database persistence failure after Tebar accepts publish never triggers a 
   const { calls, repository, publisher } = harness();
   let publishes = 0;
   let slotUpdates = 0;
-  publisher.publishNow = async () => { publishes++; return { id: 'accepted-post', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  publisher.publishNow = async () => { publishes++; return { id: 'accepted-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   repository.updateSlot = async (id, patch) => {
     slotUpdates++;
     calls.push(['update', id, patch]);
@@ -334,7 +334,7 @@ test('a claimed slot at night publishes despite legacy active hours', async () =
   repository.claimDueSlot = async () => ({ id: 'slot-late', automationSessionId: 'session-1', scheduledAt: '2026-11-05T15:00:00Z' });
   repository.getRuntimeState = async () => ({ automationEnabled: true, onboardingComplete: true, accountId: 'acct-1', settings: { automationSessionId: 'session-1', schedule: { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '09:00', activeEnd: '22:00' } }, facts: [], history: [] });
   let publishes = 0;
-  publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }; };
+  publisher.publishNow = async () => { publishes++; return { id: 'night-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }; };
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.skipped, 0);
   assert.equal(result.published, 1);
@@ -363,7 +363,7 @@ test('pause records a cancellation race as in_flight instead of canceled', async
 });
 
 test('reconciliation reads known provider IDs and persists provider status', async () => {
-  const { calls, repository, publisher } = harness({ repository: { listUnsettledSlots: async () => [{ id: 'slot-2', providerPostId: 'p2', requestPayload: { targets: [{ account_id: 'acct-1' }] } }] }, publisher: { getPost: async () => ({ id: 'p2', status: 'published', targets: [{ accountId: 'acct-1', status: 'published' }] }) } });
+  const { calls, repository, publisher } = harness({ repository: { listUnsettledSlots: async () => [{ id: 'slot-2', providerPostId: 'p2', requestPayload: { targets: [{ account_id: 'acct-1' }] } }] }, publisher: { getPost: async () => ({ id: 'p2', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] }) } });
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.reconciled, 1);
   assert.ok(calls.some((c) => c[0] === 'update' && c[1] === 'slot-2' && c[2].status === 'published'));
@@ -413,7 +413,7 @@ test('confirmed publication sends one deduplicated success notice', async () => 
   const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (...args) => notices.push(args) }, clock: fixedClock });
   assert.equal(result.published, 1);
   assert.equal(notices.length, 1);
-  assert.match(notices[0][0], /post_published/);
+  assert.match(notices[0][0], /POSTING BERHASIL/);
   assert.equal(notices[0][1], 'post_published:slot:slot-1');
 });
 
@@ -425,7 +425,7 @@ test('reconciled partial post is counted as failure and sends a safe alert', asy
   const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => calls.push(['notice', message]) }, clock: fixedClock });
   assert.equal(result.reconciled, 1);
   assert.equal(result.failed, 1);
-  assert.ok(calls.some((call) => call[0] === 'notice' && call[1].includes('provider_error')));
+  assert.ok(calls.some((call) => call[0] === 'notice' && call[1].includes('melaporkan kegagalan')));
 });
 
 test('reconciled provider cancellation in the active session is counted as a failed attempt', async () => {
@@ -441,7 +441,7 @@ test('reconciled provider cancellation in the active session is counted as a fai
   const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
   assert.equal(result.failed, 1);
   assert.ok(calls.some((call) => call[0] === 'update' && call[1] === 'slot-canceled' && call[2].status === 'failed'));
-  assert.ok(notices.some((message) => /provider_error/.test(message)));
+  assert.ok(notices.some((message) => /melaporkan kegagalan/i.test(message)));
 });
 
 test('top-level published status without a published target stays unknown', async () => {
@@ -456,9 +456,9 @@ test('provider acceptance as scheduled is not reported as a successful publicati
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.published, 0);
   assert.equal(result.failed, 0);
-  assert.equal(result.unknown, 0);
+  assert.equal(result.unknown, 1);
   assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'publishing' && call[2].providerPostId === 'p-scheduled'));
-  assert.equal(calls.some((call) => call[0] === 'notice' && /post_published/.test(call[1])), false);
+  assert.equal(calls.some((call) => call[0] === 'notice' && /POSTING BERHASIL/.test(call[1])), false);
 });
 
 test('provider-confirmed cancellation during an active session is recorded and notified as failure', async () => {
@@ -469,7 +469,7 @@ test('provider-confirmed cancellation during an active session is recorded and n
   const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (message) => notices.push(message) }, clock: fixedClock });
   assert.equal(result.failed, 1);
   assert.ok(calls.some((call) => call[0] === 'update' && call[2].status === 'failed' && call[2].completedAt === fixedClock().toISOString()));
-  assert.ok(notices.some((message) => /provider_error/.test(message)));
+  assert.ok(notices.some((message) => /melaporkan kegagalan/i.test(message)));
 });
 
 test('a provider acceptance arriving after pause is canceled when still scheduled', async () => {
@@ -517,7 +517,7 @@ test('dispatcher refreshes account and onboarding state after claiming a newer s
   repository.claimDueSlot = async () => ({ ...slot, automationSessionId: 'session-2' });
   publisher.publishNow = async (payload) => {
     publishedPayload = payload;
-    return { id: 'post-session-2', status: 'published', targets: [{ accountId: 'acct-2', status: 'published' }] };
+    return { id: 'post-session-2', status: 'published', targets: [{ accountId: 'acct-2', platform: 'threads', status: 'published' }] };
   };
   const freshContent = async (context) => {
     generatedForAccount = context.accountId;
@@ -527,4 +527,24 @@ test('dispatcher refreshes account and onboarding state after claiming a newer s
   assert.equal(generatedForAccount, 'acct-2');
   assert.equal(publishedPayload.targets[0].account_id, 'acct-2');
   assert.equal(result.published, 1);
+});
+
+test('published target on another platform remains unconfirmed and sends pending notice', async () => {
+  const notices = [];
+  const { repository, publisher } = harness({ publisher: { publishNow: async () => ({ id: 'other', status: 'published', targets: [{ accountId: 'acct-1', platform: 'instagram', status: 'published' }] }) } });
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (...args) => notices.push(args) }, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.unknown, 1);
+  assert.match(notices[0][0], /Menunggu konfirmasi publikasi/);
+  assert.equal(notices[0][1], 'unknown_outcome:slot:slot-1');
+});
+
+test('confirmed success notice includes actual caption and verified provider permalink', async () => {
+  const notices = [];
+  const { repository, publisher } = harness({ publisher: { publishNow: async () => ({ id: 'ok', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published', permalink: 'https://www.threads.net/@example/post/123', publishedAt: '2026-11-05T04:01:00Z' }] }) } });
+  const result = await runDispatcher({ repository, publisher, content, notifier: { send: async (...args) => notices.push(args) }, clock: fixedClock });
+  assert.equal(result.published, 1);
+  assert.match(notices[0][0], /Jom kongsi pilihan anda!/);
+  assert.match(notices[0][0], /https:\/\/www\.threads\.net\/@example\/post\/123/);
+  assert.match(notices[0][0], /Slot ID: slot-1$/);
 });

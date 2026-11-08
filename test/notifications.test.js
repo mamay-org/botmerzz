@@ -4,6 +4,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createOutboxNotifier } = require('../src/notifications');
 
+test('outbox accepts Telegram sized messages and rejects oversized messages', async () => {
+  let saved;
+  const notifier=createOutboxNotifier({repository:{enqueueNotification:async notice=>{saved=notice;}},transport:{send:async()=>{}}});
+  await notifier.enqueue('x'.repeat(4096));
+  assert.equal(saved.message.length,4096);
+  await assert.rejects(notifier.enqueue('x'.repeat(4097)),{code:'invalid_notification'});
+});
+
 test('outbox notification is persisted before delivery and completed after Telegram accepts it', async () => {
   const calls = [];
   const row = { id: 4, message: 'safe notice', attempts: 1 };
