@@ -34,6 +34,31 @@ test('settings normalize hashtag prefixes, spacing, and case-insensitive duplica
   assert.deepEqual(checked.settings.hashtags, ['#MobileLegends', '#KedaiMerzz']);
 });
 
+test('tracked CTA links require HTTPS on the official domain or its subdomains', () => {
+  for (const url of [
+    'https://kedaimerzz.com/topup',
+    'https://shop.kedaimerzz.com/topup',
+    'https://www.kedaimerzz.com:443/account',
+  ]) {
+    const checked = validateSettings({ trackedLinks: { topup: url } });
+    assert.equal(checked.valid, true, url);
+  }
+  for (const url of [
+    'https://kedaimerzz.com.evil.test/topup',
+    'https://evil-kedaimerzz.com/topup',
+    'https://attacker.kedaimerzz.com.evil.test/topup',
+    'http://kedaimerzz.com/topup',
+    'https://user@kedaimerzz.com/topup',
+    'https://kedaimerzz.com:444/topup',
+    'not a URL',
+    42,
+  ]) {
+    const checked = validateSettings({ trackedLinks: { topup: url } });
+    assert.equal(checked.valid, false, String(url));
+    assert.ok(checked.errors['trackedLinks.topup'], String(url));
+  }
+});
+
 test('settings trim and persist the bounded AI content direction', () => {
   const direction = '  Utamakan soalan santai tentang pengalaman bermain bersama kawan.  ';
   const checked = validateSettings({ brand: { contentDirection: direction } });

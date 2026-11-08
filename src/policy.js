@@ -4,6 +4,7 @@ const MAX_HASHTAGS = 30;
 const MAX_HASHTAG_LENGTH = 100;
 const MAX_APPROVED_ATTRIBUTE_COUNT = 20;
 const MAX_APPROVED_ATTRIBUTE_LENGTH = 100;
+const OFFICIAL_CTA_HOST = 'kedaimerzz.com';
 const HASHTAG_PATTERN = /(?<![\p{L}\p{N}_])[#＃]+([\p{L}\p{N}_]+)/gu;
 const NUMBER_WORDS = '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|kosong|sifar|satu|dua|tiga|empat|lima|enam|tujuh|lapan|sembilan|sepuluh|sebelas|belas|puluh|ratus|seratus|seribu|ribu|sejuta|juta|bilion|setengah|separuh|suku)';
 const QUANTITY_UNITS = '(?:diamond|diamonds|crystal|crystals|coin|coins|point|points|akaun|accounts?|skin|skins|item|items|unit|units|buah|kali|ringgit|rm|myr|dollar|dollars|percent|peratus|level|rank)';
@@ -30,6 +31,18 @@ function normalizeHashtags(input) {
     normalized.push(`#${body}`);
   }
   return normalized;
+}
+
+function isApprovedCtaUrl(value) {
+  if (typeof value !== 'string' || value.length > 300 || value !== value.trim()) return false;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/\.$/u, '');
+    const officialHost = hostname === OFFICIAL_CTA_HOST || hostname.endsWith(`.${OFFICIAL_CTA_HOST}`);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && officialHost;
+  } catch {
+    return false;
+  }
 }
 
 function splitAroundText(text, excludedText) {
@@ -99,11 +112,9 @@ function validateSettings(input = {}) {
   if (!hashtags) errors.hashtags = 'Use up to 30 hashtags with letters, numbers, or underscores.';
   const trackedLinks = input.trackedLinks || {};
   for (const pillar of ['topup', 'account']) {
-    if (!trackedLinks[pillar]) continue;
-    try {
-      const url = new URL(trackedLinks[pillar]);
-      if (typeof trackedLinks[pillar] !== 'string' || trackedLinks[pillar].length > 300 || url.protocol !== 'https:' || url.username || url.password) throw new Error('Invalid link');
-    } catch { errors[`trackedLinks.${pillar}`] = 'Use an HTTPS tracked homepage link.'; }
+    const link = trackedLinks[pillar];
+    if (link === undefined || link === '') continue;
+    if (!isApprovedCtaUrl(link)) errors[`trackedLinks.${pillar}`] = 'Use an HTTPS link on kedaimerzz.com or its subdomains.';
   }
   const brand = {};
   const brandTextLimits = { name: 2000, voice: 2000, audienceNotes: 7000, contentDirection: 7000 };
@@ -294,4 +305,4 @@ function validateCaption(text, context = {}) {
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };
+module.exports = { validateSettings, isApprovedCtaUrl, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };

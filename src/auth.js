@@ -25,16 +25,8 @@ async function verifyPassword(password, encoded) {
   } catch { return false; }
 }
 
-function createAuth({ repository, clock = () => new Date(), sessionHours = 12, maxFailures = 8, maxFailuresPerIp = 40, windowMs = 15 * 60 * 1000 }) {
+function createAuth({ repository, clock = () => new Date(), sessionHours = 12, maxFailures = 8, maxFailuresPerAccount = 20, maxFailuresPerIp = 40, windowMs = 15 * 60 * 1000 }) {
   if (!repository) throw new TypeError('repository is required');
-  const failures = new Map();
-  const ipFailures = new Map();
-  function pruneMap(map, nowMs) {
-    for (const [key, item] of map) if (item.until <= nowMs) map.delete(key);
-    while (map.size > 10000) map.delete(map.keys().next().value);
-  }
-  function pruneFailures(nowMs) { pruneMap(failures, nowMs); pruneMap(ipFailures, nowMs); }
-  const keyFor = (email, ip) => `${String(ip || 'unknown').slice(0, 64)}:${String(email || '').toLowerCase().slice(0, 254)}`;
   return {
     async createAdmin({ email, password, actorId }) {
       if (typeof email !== 'string' || email.length > 254 || !EMAIL_RE.test(email)) throw safeError('INVALID_EMAIL');
@@ -63,22 +55,38 @@ function createAuth({ repository, clock = () => new Date(), sessionHours = 12, m
     },
     async login({ email, password, ip }) {
       const now = clock();
-      pruneFailures(now.getTime());
-      const key = keyFor(email, ip);
-      const ipKey = String(ip || 'unknown').slice(0, 64);
-      const current = failures.get(key);
-      const ipCurrent = ipFailures.get(ipKey);
-      if ((current && current.count >= maxFailures) || (ipCurrent && ipCurrent.count >= maxFailuresPerIp)) throw safeError('LOGIN_RATE_LIMITED', 429);
-      const admin = typeof email === 'string' ? await repository.getAdminByEmail(email.trim().toLowerCase()) : null;
-      const valid = await verifyPassword(password, admin?.passwordHash || DUMMY_HASH);
-      if (!admin || admin.active !== true || !valid) {
-        const count = current && current.until > now.getTime() ? current.count + 1 : 1;
-        failures.set(key, { count, until: now.getTime() + windowMs });
-        const ipCount = ipCurrent && ipCurrent.until > now.getTime() ? ipCurrent.count + 1 : 1;
-        ipFailures.set(ipKey, { count: ipCount, until: now.getTime() + windowMs });
-        throw safeError('INVALID_CREDENTIALS', 401);
+      if (typeof repository.reserveLoginAttempt !== 'function'
+        || typeof repository.releaseLoginReservation !== 'function') {
+        throw safeError('AUTH_THROTTLE_UNAVAILABLE', 503);
       }
-      failures.delete(key);
+      const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+      const emailCanMatchAccount = normalizedEmail.length <= 254 && EMAIL_RE.test(normalizedEmail);
+      const normalizedIp = String(ip || 'unknown').slice(0, 64);
+      const reservation = await repository.reserveLoginAttempt({
+        email: normalizedEmail,
+        ip: normalizedIp,
+        now,
+        windowMs,
+        limits: { pair: maxFailures, account: maxFailuresPerAccount, ip: maxFailuresPerIp },
+      });
+      if (!reservation?.allowed) {
+        const error = safeError('LOGIN_RATE_LIMITED', 429);
+        if (Number.isSafeInteger(reservation.retryAfterSeconds) && reservation.retryAfterSeconds > 0) {
+          error.retryAfterSeconds = reservation.retryAfterSeconds;
+        }
+        throw error;
+      }
+      let admin;
+      let valid;
+      try {
+        admin = emailCanMatchAccount ? await repository.getAdminByEmail(normalizedEmail) : null;
+        valid = await verifyPassword(password, admin?.passwordHash || DUMMY_HASH);
+      } catch (error) {
+        await repository.releaseLoginReservation(reservation.reservation, clock());
+        throw error;
+      }
+      if (!admin || admin.active !== true || !valid) throw safeError('INVALID_CREDENTIALS', 401);
+      await repository.releaseLoginReservation(reservation.reservation, clock());
       const token = randomBytes(32).toString('base64url');
       const csrfToken = randomBytes(32).toString('base64url');
       const expiresAt = new Date(now.getTime() + sessionHours * 60 * 60 * 1000);

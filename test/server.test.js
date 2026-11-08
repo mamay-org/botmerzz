@@ -10,10 +10,10 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   let token='';const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
   const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},brand:{},guardrails:{}},facts:[],history:[],automationEnabled:false}),listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>x,saveFact:async()=>({}),setAutomationEnabled:async()=>{},};
   const auth={login:async()=>({token:'a'.repeat(43),csrfToken:'b'.repeat(43),expiresAt:new Date(Date.now()+3600000),admin:{id:1,email:'x@example.test'}}),authenticate:async value=>value===token?{admin:{id:1,email:'x@example.test'},csrfToken:'b'.repeat(43)}:null,logout:async()=>{token='';}};
-  const app=createServer({config,repository,auth,services:{getProviderStatus:async()=>({connected:false}),getClickMetric:async()=>({available:true,value:12,reason:null})}});
+  const app=createServer({config,repository,auth,services:{getProviderStatus:async()=>({connected:false}),getClickMetric:async()=>({available:true,value:12,reason:null}),schedulerStatus:()=>({enabled:true,lastErrorCode:'INTERNAL_DETAIL'})}});
   const server=require('node:http').createServer(app);const listening=new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});server.listen(0,'127.0.0.1');await listening;t.after(()=>closeServer(server));
   config.baseUrl=`http://127.0.0.1:${server.address().port}`;
-  assert.equal((await request(server,'/health/live')).status,200);assert.equal((await request(server,'/health/ready')).status,200);
+  assert.equal((await request(server,'/health/live')).status,200);const ready=await request(server,'/health/ready');assert.equal(ready.status,200);assert.deepEqual(JSON.parse(ready.body),{status:'ready'});
   const malformedCookie=await request(server,'/api/session',{headers:{cookie:'merzz_admin=%E0%A4%A'}});assert.equal(malformedCookie.status,200);assert.deepEqual(JSON.parse(malformedCookie.body),{authenticated:false});
   assert.equal((await request(server,'/api/dashboard')).status,401);
   const staticPage=await request(server,'/');assert.equal(staticPage.status,200);assert.match(staticPage.body,/Panel Threads/);assert.equal(staticPage.headers['x-frame-options'],'DENY');assert.match(staticPage.body,/name="intervalHours"[^>]*min="1"/);assert.match(staticPage.body,/name="hashtags"/);assert.match(staticPage.body,/name="contentDirection"/);assert.match(staticPage.body,/name="hookVocabulary"/);assert.match(staticPage.body,/Kosakata hook yang disarankan/);assert.doesNotMatch(staticPage.body,/Hook yang dibuat tetap harus memakai kosakata yang disetujui|Arahan yang memerlukan kata lain dapat ditolak/i);assert.doesNotMatch(staticPage.body,/id="active-days"|name="activeStart"|name="activeEnd"/);assert.match(staticPage.body,/22:00.*Malaysia/);
@@ -29,6 +29,22 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).guardrails.hookVocabulary,['Cerita pengalaman','Sembang santai']);
   const badCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'wrong'},body:'{}'});assert.equal(badCsrf.status,403);
   const goodCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:'{}'});assert.equal(goodCsrf.status,200);
+});
+
+test('login rate limiting returns the shared throttle Retry-After delay',async t=>{
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={};
+  const auth={
+    login:async()=>{throw Object.assign(new Error('LOGIN_RATE_LIMITED'),{code:'LOGIN_RATE_LIMITED',status:429,retryAfterSeconds:43});},
+    authenticate:async()=>null,
+  };
+  const server=http.createServer(createServer({config,repository,auth}));
+  server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));
+  config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const response=await request(server,'/api/session/login',{method:'POST',headers:{origin:config.baseUrl},body:JSON.stringify({email:'admin@example.test',password:'wrong'})});
+  assert.equal(response.status,429);
+  assert.equal(response.headers['retry-after'],'43');
+  assert.deepEqual(JSON.parse(response.body),{error:'LOGIN_RATE_LIMITED'});
 });
 
 test('settings and facts routes reject invalid data before persistence',async t=>{
@@ -52,7 +68,7 @@ test('settings and facts routes reject invalid data before persistence',async t=
 
 test('automation enable requires scheduler and triggers an immediate durable dispatch',async t=>{
   const now=new Date();let enabledCalls=0;let dispatchCalls=0;
-  const settings={brand:{name:'Kedai Merzz',voice:'Santai'}, hashtags:['#KedaiMerzz'], trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const settings={brand:{name:'Kedai Merzz',voice:'Santai'}, hashtags:['#KedaiMerzz'], trackedLinks:{topup:'https://kedaimerzz.com/topup',account:'https://kedaimerzz.com/account'}};
   const repository={
     getRuntimeState:async()=>({settings,automationEnabled:false}),
     listFacts:async()=>({}),
@@ -69,7 +85,7 @@ test('automation enable requires scheduler and triggers an immediate durable dis
 });
 
 test('automation enable requires brand, hashtags, both links, Threads account, and AI',async t=>{
-  const now=new Date();let settings={brand:{name:'Kedai Merzz',voice:'Santai'},hashtags:['#KedaiMerzz'],trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};let connected=true;let aiConfigured=true;let writes=0;
+  const now=new Date();let settings={brand:{name:'Kedai Merzz',voice:'Santai'},hashtags:['#KedaiMerzz'],trackedLinks:{topup:'https://kedaimerzz.com/topup',account:'https://kedaimerzz.com/account'}};let connected=true;let aiConfigured=true;let writes=0;
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>({}),setAutomationEnabled:async()=>{writes++;return{changed:true,firstPostAt:now.toISOString(),immediate:true};}};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const services={aiConfigured:true,getProviderStatus:async()=>({connected}),schedulerStatus:()=>({enabled:true}),triggerScheduler:async()=>{}};
@@ -91,7 +107,7 @@ test('automation enable requires brand, hashtags, both links, Threads account, a
 
 test('automation enable starts immediately even if the previous session posted under one hour ago',async t=>{
   const firstPostAt=new Date().toISOString();let dispatchCalls=0;
-  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],hashtags:['#KedaiMerzz'],guardrails:{approved:true},trackedLinks:{topup:'https://example.test/topup',account:'https://example.test/account'}};
+  const settings={schedule:{intervalHours:1},brand:{name:'Kedai Merzz',voice:'Santai'},gameWhitelist:['Mobile Legends'],hashtags:['#KedaiMerzz'],guardrails:{approved:true},trackedLinks:{topup:'https://kedaimerzz.com/topup',account:'https://kedaimerzz.com/account'}};
   const repository={getRuntimeState:async()=>({settings,automationEnabled:false}),listFacts:async()=>Object.fromEntries(['topup','account'].map(service=>[service,{active:true,updatedAt:new Date()}])),setAutomationEnabled:async()=>({changed:true,firstPostAt,immediate:true})};
   const auth={authenticate:async()=>({admin:{id:8},csrfToken:'c'.repeat(43)})};
   const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
@@ -161,4 +177,33 @@ test('brand templates accept and preserve the bounded AI content direction',asyn
   assert.equal(maxLength.status,201,maxLength.body);
   const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(7001)}})});
   assert.equal(tooLong.status,400);
+});
+
+test('brand templates reject offsite CTA URLs and accept official subdomains',async t=>{
+  const calls=[];let savedTemplate=null;const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={
+    getSettings:async()=>({gameWhitelist:[]}),
+    createTemplate:async input=>{calls.push(input);savedTemplate={id:'37f739cf-ff95-4d64-8d5e-51086cda56a9',...input};return savedTemplate;},
+    getTemplate:async id=>savedTemplate?.id===id?savedTemplate:null,
+    updateTemplate:async(_id,changes)=>{savedTemplate={...savedTemplate,...changes};return savedTemplate;},
+  };
+  const auth={authenticate:async()=>({admin:{id:7},csrfToken:'c'.repeat(43)})};
+  const app=createServer({config,repository,auth});const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const headers={cookie:`${require('../src/server').COOKIE}=${'x'.repeat(43)}`,origin:config.baseUrl,'x-csrf-token':'c'.repeat(43)};
+  const rejected=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'CTA luar',category:'brand',data:{trackedTopup:'https://kedaimerzz.com.evil.test/topup'}})});
+  assert.equal(rejected.status,400);assert.equal(calls.length,0);
+  const accepted=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'CTA resmi',category:'brand',data:{trackedTopup:'https://shop.kedaimerzz.com/topup'}})});
+  assert.equal(accepted.status,201,accepted.body);assert.equal(calls.length,1);assert.equal(calls[0].data.trackedTopup,'https://shop.kedaimerzz.com/topup');
+  const id=JSON.parse(accepted.body).template.id;
+  const unsafeUpdate=await request(server,`/api/templates/${id}`,{method:'PATCH',headers,body:JSON.stringify({data:{trackedTopup:'https://unrelated.test/topup'}})});
+  assert.equal(unsafeUpdate.status,400);
+});
+
+test('readiness failure response remains minimal when dependencies are unavailable',async t=>{
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{}};
+  const repository={healthCheck:async()=>{throw new Error('database unavailable');}};
+  const app=createServer({config,repository,auth:{},services:{schedulerStatus:()=>({lastErrorCode:'INTERNAL_DETAIL'})}});
+  const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
+  const response=await request(server,'/health/ready');
+  assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{status:'not_ready'});
 });

@@ -1,5 +1,7 @@
 'use strict';
 
+const { isApprovedCtaUrl } = require('../../policy');
+
 const templateCategories = new Set(['brand', 'topup', 'account']);
 
 function templateText(value, max, { required = false } = {}) {
@@ -44,12 +46,7 @@ function normalizeTemplateData(category, data, whitelist) {
     }
     for (const key of ['trackedTopup', 'trackedAccount']) {
       if (!result[key]) continue;
-      try {
-        const url = new URL(result[key]);
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-      } catch {
-        return null;
-      }
+      if (!isApprovedCtaUrl(result[key])) return null;
     }
     const listLimits = [
       ['gameWhitelist', { maxItems: 50, maxLength: 80 }],

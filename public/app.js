@@ -1,5 +1,62 @@
 (() => {
   'use strict';
+  function parseRetryAfterSeconds(payloadValue, headerValue) {
+    for (const value of [payloadValue, headerValue]) {
+      const seconds = typeof value === 'number' ? value
+        : typeof value === 'string' && /^\d{1,10}$/.test(value) ? Number(value)
+          : NaN;
+      if (Number.isSafeInteger(seconds) && seconds > 0) return seconds;
+    }
+    return null;
+  }
+  function formatLoginWait(retryAfterSeconds) {
+    if (!Number.isSafeInteger(retryAfterSeconds) || retryAfterSeconds < 1) {
+      return 'Terlalu banyak percobaan masuk. Tunggu beberapa saat lalu coba lagi.';
+    }
+    const hours = Math.floor(retryAfterSeconds / 3600);
+    const minutes = Math.floor((retryAfterSeconds % 3600) / 60);
+    const seconds = retryAfterSeconds % 60;
+    const duration = [];
+    if (hours) duration.push(hours + ' jam');
+    if (minutes) duration.push(minutes + ' menit');
+    if (seconds || !duration.length) duration.push(seconds + ' detik');
+    return 'Terlalu banyak percobaan masuk. Coba lagi dalam ' + duration.join(' ') + '.';
+  }
+  async function withPending(control, action, progressText, form = control?.closest?.('form')) {
+    if (!control || control.disabled || control.dataset.pending === 'true' || form?.dataset.pending === 'true') return false;
+    const originalText = control.textContent;
+    const originalDisabled = control.disabled;
+    const originalBusy = form?.getAttribute('aria-busy');
+    const formControls = form ? [...form.elements].map((field) => [field, field.disabled]) : [];
+    control.dataset.pending = 'true';
+    if (form) {
+      form.dataset.pending = 'true';
+      form.setAttribute('aria-busy', 'true');
+      formControls.forEach(([field]) => { field.disabled = true; });
+    }
+    control.disabled = true;
+    control.setAttribute('aria-busy', 'true');
+    if (progressText) control.textContent = progressText;
+    try {
+      return await action();
+    } finally {
+      delete control.dataset.pending;
+      control.disabled = originalDisabled;
+      control.textContent = originalText;
+      control.removeAttribute('aria-busy');
+      if (form) {
+        formControls.forEach(([field, disabled]) => { field.disabled = disabled; });
+        delete form.dataset.pending;
+        if (originalBusy === null) form.removeAttribute('aria-busy');
+        else form.setAttribute('aria-busy', originalBusy);
+      }
+    }
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { withPending, parseRetryAfterSeconds, formatLoginWait };
+    return;
+  }
+  if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const state = { csrf: '', data: null, templates: [] };
@@ -21,11 +78,95 @@
     INVALID_TEMPLATE: 'Data template tidak valid.', INVALID_TEMPLATE_DATA: 'Isi template tidak sesuai dengan jenisnya.',
     TEMPLATE_EXISTS: 'Nama template tersebut sudah digunakan pada kategori ini.', TEMPLATE_NOT_FOUND: 'Template tidak ditemukan.',
     GAME_NOT_WHITELISTED: 'Game harus lebih dulu disetujui di whitelist Konten & brand.',
+    INVALID_SETTINGS: 'Ada data pengaturan yang perlu diperiksa. Lihat pesan pada field yang ditandai.',
+    INVALID_KNOWLEDGE: 'Ada panduan brand atau guardrail yang perlu diperiksa.',
+    INVALID_FACT: 'Ringkasan produk tidak valid. Periksa kembali isinya.',
+    INVALID_FACT_PRICE: 'Harga harus berupa angka dengan maksimal dua angka desimal.',
+    INVALID_FACT_FIELDS: 'Periksa kembali game, informasi produk, dan atribut yang diisi.',
+    INVALID_ADMIN_STATUS: 'Status akun admin tidak valid.',
+    INVALID_CREDENTIALS: 'Email atau kata sandi tidak cocok.',
+    LOGIN_RATE_LIMITED: 'Terlalu banyak percobaan masuk. Tunggu beberapa saat lalu coba lagi.',
+    ORIGIN_REJECTED: 'Permintaan ditolak karena asal halaman tidak cocok. Muat ulang dashboard lalu coba lagi.',
+    RATE_LIMITED: 'Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.',
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
     ONBOARDING_INCOMPLETE: 'Lengkapi brand, hashtag, tautan top-up dan jual akun, koneksi Threads, serta penyedia AI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
   };
-  const errorText = (error) => errors[error?.message] || error?.message || 'Permintaan gagal. Silakan coba lagi.';
+  const fieldLabels = {
+    'brand.name': 'nama brand', 'brand.voice': 'gaya komunikasi', 'brand.contentDirection': 'arahan konten AI',
+    'brand.audienceNotes': 'wawasan pelanggan', 'guardrails.approved': 'persetujuan guardrail',
+    'guardrails.forbiddenClaims': 'klaim yang dilarang', 'guardrails.approvedClaims': 'klaim yang disetujui',
+    'guardrails.hookVocabulary': 'kosakata hook', gameWhitelist: 'whitelist game', hashtags: 'hashtag',
+    'trackedLinks.topup': 'tautan top-up', 'trackedLinks.account': 'tautan jual akun',
+    'schedule.intervalHours': 'interval posting', 'schedule.timezone': 'zona waktu', priceMode: 'mode harga/stok',
+    'summary.game': 'game', 'summary.denomination': 'nominal top-up', 'summary.price': 'harga',
+    'summary.availability': 'ketersediaan', 'summary.attributes': 'atribut akun',
+    email: 'email', password: 'kata sandi', game: 'game', price: 'harga',
+  };
+  const fieldNames = {
+    'brand.name': 'brandName', 'brand.voice': 'voice', 'brand.contentDirection': 'contentDirection',
+    'brand.audienceNotes': 'audienceNotes', 'guardrails.approved': 'guardrailsApproved',
+    'guardrails.forbiddenClaims': 'forbiddenClaims', 'guardrails.approvedClaims': 'approvedClaims',
+    'guardrails.hookVocabulary': 'hookVocabulary', 'trackedLinks.topup': 'trackedTopup',
+    'trackedLinks.account': 'trackedAccount', 'schedule.intervalHours': 'intervalHours',
+    'schedule.timezone': 'timezone', priceMode: 'priceMode', 'summary.game': 'game',
+    'summary.denomination': 'denomination', 'summary.price': 'price',
+    'summary.availability': 'availability', 'summary.attributes': 'attributes',
+  };
+  const errorText = (error) => {
+    const code = error?.code || error?.message;
+    if (code === 'LOGIN_RATE_LIMITED') return formatLoginWait(error.retryAfterSeconds);
+    if (errors[code]) return errors[code];
+    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code)) return 'Permintaan belum berhasil. Periksa kembali data atau coba lagi.';
+    return code || 'Permintaan gagal. Silakan coba lagi.';
+  };
+  function clearFieldError(control) {
+    const errorId = control?.dataset?.errorId;
+    if (!errorId) return;
+    document.getElementById(errorId)?.remove();
+    control.removeAttribute('aria-invalid');
+    const describedBy = (control.getAttribute('aria-describedby') || '').split(/\s+/).filter((id) => id && id !== errorId);
+    if (describedBy.length) control.setAttribute('aria-describedby', describedBy.join(' '));
+    else control.removeAttribute('aria-describedby');
+    delete control.dataset.errorId;
+  }
+  function clearFormErrors(form) { [...form.elements].forEach(clearFieldError); }
+  function showFormError(form, error, notice = '#global-error') {
+    clearFormErrors(form);
+    const fields = { ...(error?.fields || {}) };
+    const codeField = {
+      INVALID_EMAIL: 'email', INVALID_PASSWORD: 'password', ADMIN_EXISTS: 'email',
+      GAME_NOT_WHITELISTED: 'game', INVALID_FACT_PRICE: 'price',
+    }[error?.code];
+    if (!Object.keys(fields).length && codeField) fields[codeField] = error.code;
+    let firstInvalid = null;
+    for (const path of Object.keys(fields)) {
+      const name = fieldNames[path] || path;
+      const control = form.elements.namedItem(name);
+      if (!control || typeof control.setAttribute !== 'function') continue;
+      const label = control.closest('label');
+      if (!label) continue;
+      const errorId = `${form.id || 'form'}-${name}-error`;
+      const note = document.createElement('span');
+      note.className = 'field-error';
+      note.id = errorId;
+      note.setAttribute('role', 'alert');
+      note.textContent = `Periksa kembali ${fieldLabels[path] || name}.`;
+      label.append(note);
+      control.dataset.errorId = errorId;
+      control.setAttribute('aria-invalid', 'true');
+      const hint = label.querySelector('.field-hint');
+      if (hint && !hint.id) hint.id = `${form.id || 'form'}-${name}-hint`;
+      const describedBy = [...new Set([control.getAttribute('aria-describedby'), hint?.id, errorId].filter(Boolean))].join(' ');
+      control.setAttribute('aria-describedby', describedBy);
+      firstInvalid ||= control;
+    }
+    show(notice, errorText(error));
+    if (firstInvalid) {
+      firstInvalid.focus({ preventScroll: true });
+      firstInvalid.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    }
+  }
   const onboardingLabels = {
     brand: 'Nama dan gaya komunikasi brand sudah diisi',
     games: 'Daftar game top-up sudah diisi',
@@ -35,6 +176,16 @@
     facts: 'Informasi top-up dan akun sudah diperbarui',
     thread: 'Akun Threads testing aktif di Tebar',
     ai: 'Penyedia AI sudah dikonfigurasi',
+  };
+  const onboardingTargets = {
+    brand: { tab: 'content', field: 'brandName' },
+    games: { tab: 'content', field: 'gameWhitelist' },
+    guardrails: { tab: 'content', field: 'guardrailsApproved' },
+    links: { tab: 'content', field: 'trackedTopup' },
+    hashtags: { tab: 'content', field: 'hashtags' },
+    facts: { tab: 'facts', field: 'game' },
+    thread: { tab: 'content', element: 'provider-status' },
+    ai: { tab: 'content', element: 'automation-reason' },
   };
   const statusLabels = {
     pending: 'Menunggu', generating: 'Membuat konten', ready: 'Siap diterbitkan',
@@ -70,13 +221,22 @@
     if (options.method && !['GET', 'HEAD'].includes(options.method)) headers['X-CSRF-Token'] = state.csrf;
     const response = await fetch(path, { credentials: 'same-origin', ...options, headers });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `Permintaan gagal (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(payload.error || `Permintaan gagal (${response.status})`);
+      error.code = payload.error;
+      error.fields = payload.fields || {};
+      error.status = response.status;
+      error.retryAfterSeconds = parseRetryAfterSeconds(payload.retryAfterSeconds, response.headers?.get?.('Retry-After'));
+      throw error;
+    }
     return payload;
   }
 
   function setAuthenticated(authenticated) {
     $('#login-view').hidden = authenticated;
     $('#app-view').hidden = !authenticated;
+    const focusTarget = authenticated ? $('#dashboard-title') : $('#login-email');
+    focusTarget?.focus({ preventScroll: true });
   }
 
   function value(form, name) { return new FormData(form).get(name) || ''; }
@@ -173,10 +333,12 @@
       const actions = document.createElement('div'); actions.className = 'template-card-actions';
       const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; apply.textContent = 'Terapkan'; apply.addEventListener('click', () => applyTemplate(template));
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'button quiet'; edit.textContent = 'Ubah'; edit.addEventListener('click', () => openTemplateDialog({ mode: 'edit', ...template }));
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button danger'; remove.textContent = 'Hapus'; remove.addEventListener('click', async () => {
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button danger'; remove.textContent = 'Hapus'; remove.addEventListener('click', async (event) => {
         if (!window.confirm(`Hapus template “${template.name}”?`)) return;
-        try { await api(`/api/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); await loadTemplates(); show('#global-success', 'Template berhasil dihapus.'); }
-        catch (error) { show('#global-error', errorText(error)); }
+        await withPending(event.currentTarget, async () => {
+          try { await api(`/api/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); await loadTemplates(); show('#global-success', 'Template berhasil dihapus.'); }
+          catch (error) { show('#global-error', errorText(error)); }
+        }, 'Menghapus…');
       });
       actions.append(apply, edit, remove); card.append(title, detail, actions); return card;
     }));
@@ -250,9 +412,21 @@
   }
 
   function activateTab(name) {
-    const button = $(`.tab[data-tab="${name}"]`);
-    $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
-    $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${name}`));
+    const button = $('.tab[data-tab="' + name + '"]');
+    if (!button) return;
+    $$('.tab').forEach((tab) => {
+      const active = tab === button;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+    });
+    $$('.tab-panel').forEach((panel) => {
+      const active = panel.id === 'tab-' + name;
+      panel.classList.toggle('active', active);
+      panel.hidden = !active;
+      panel.setAttribute('aria-hidden', String(!active));
+    });
+    button.scrollIntoView?.({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
   }
 
   function renderOnboarding(items = []) {
@@ -261,7 +435,25 @@
       const li = document.createElement('li');
       if (item.required && !item.complete) li.classList.add('incomplete');
       if (item.required === false) li.classList.add('optional');
-      li.textContent = `${onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal'}${item.required === false ? ' — Opsional' : ''}`;
+      const text = document.createElement('span');
+      text.textContent = (onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal') + (item.required === false ? ' — Opsional' : '');
+      li.append(text);
+      const target = onboardingTargets[item.key];
+      if (!item.complete && target) {
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'onboarding-action';
+        action.dataset.onboardingTarget = item.key;
+        action.textContent = target.field ? 'Buka pengaturan' : 'Lihat status';
+        action.addEventListener('click', () => {
+          activateTab(target.tab);
+          const form = target.field ? $('#tab-' + target.tab + ' form') : null;
+          const focusTarget = target.field ? form?.elements.namedItem(target.field) : document.getElementById(target.element);
+          focusTarget?.focus({ preventScroll: true });
+          focusTarget?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+        });
+        li.append(action);
+      }
       return li;
     }));
     const missing = items.filter((item) => item.required && !item.complete).length;
@@ -344,43 +536,67 @@
   async function refresh() { render(await api('/api/dashboard')); hide('#global-error'); }
 
   $('#login-form').addEventListener('submit', async (event) => {
-    event.preventDefault(); hide('#login-error');
+    event.preventDefault();
+    const form = event.currentTarget;
+    clearFormErrors(form); hide('#login-error');
+    const button = event.submitter || $('button[type="submit"]', form);
+    const loginPayload = { email: value(form, 'email'), password: value(form, 'password') };
     try {
-      const form = event.currentTarget;
-      const result = await api('/api/session/login', { method: 'POST', body: JSON.stringify({ email: value(form, 'email'), password: value(form, 'password') }) });
-      state.csrf = result.csrfToken || '';
-      setAuthenticated(true); await refresh();
-    } catch (error) { show('#login-error', errorText(error)); }
+      await withPending(button, async () => {
+        const result = await api('/api/session/login', { method: 'POST', body: JSON.stringify(loginPayload) });
+        state.csrf = result.csrfToken || '';
+        setAuthenticated(true);
+        try { await refresh(); }
+        catch (error) { show('#global-error', errorText(error)); }
+      }, 'Memeriksa…', form);
+    } catch (error) { showFormError(form, error, '#login-error'); }
   });
 
-  $('#logout-button').addEventListener('click', async () => {
-    try { await api('/api/session/logout', { method: 'POST', body: '{}' }); } finally { state.csrf = ''; setAuthenticated(false); }
+  $('#logout-button').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    await withPending(button, async () => {
+      let logoutError = null;
+      try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
+      catch (error) { logoutError = error; }
+      finally { state.csrf = ''; setAuthenticated(false); }
+      if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
+    }, 'Keluar…');
   });
 
   $('#admin-create-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget;
+    clearFormErrors(form);
+    const adminPayload = { email: value(form, 'email'), password: value(form, 'password') };
     try {
-      await api('/api/admins', { method: 'POST', body: JSON.stringify({ email: value(form, 'email'), password: value(form, 'password') }) });
-      form.reset(); show('#global-success', 'Akun admin berhasil ditambahkan.'); await loadAdmins();
-    } catch (error) { show('#global-error', errorText(error)); }
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        await api('/api/admins', { method: 'POST', body: JSON.stringify(adminPayload) });
+        form.reset(); show('#global-success', 'Akun admin berhasil ditambahkan.'); await loadAdmins();
+      }, 'Menambahkan…', form);
+    } catch (error) { showFormError(form, error); }
   });
   $('#admin-list').addEventListener('submit', async (event) => {
     const form = event.target.closest('form[data-admin-id]'); if (!form) return;
     event.preventDefault();
     const changes = {}; const email = value(form, 'email'); if (email !== form.dataset.originalEmail) changes.email = email; const password = value(form, 'password'); if (password) changes.password = password;
     if (!Object.keys(changes).length) { show('#global-success', 'Tidak ada perubahan untuk disimpan.'); return; }
+    clearFormErrors(form);
+    const button = event.submitter || $('button[type="submit"]', form);
     try {
-      const result = await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify(changes) });
-      if (result.sessionRevoked) { state.csrf = ''; setAuthenticated(false); show('#login-error', 'Akun diperbarui. Masuk kembali dengan email atau kata sandi baru.'); return; }
-      show('#global-success', 'Perubahan akun admin berhasil disimpan.'); await loadAdmins();
-    } catch (error) { show('#global-error', errorText(error)); }
+      await withPending(button, async () => {
+        const result = await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify(changes) });
+        if (result.sessionRevoked) { state.csrf = ''; setAuthenticated(false); show('#login-error', 'Akun diperbarui. Masuk kembali dengan email atau kata sandi baru.'); return; }
+        show('#global-success', 'Perubahan akun admin berhasil disimpan.'); await loadAdmins();
+      }, 'Menyimpan…', form);
+    } catch (error) { showFormError(form, error); }
   });
   $('#admin-list').addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-active]'); if (!button) return;
     const form = button.closest('form[data-admin-id]'); const active = button.dataset.active !== 'true';
     if (!active && !window.confirm('Nonaktifkan akun ini? Semua sesi login akun akan dihentikan.')) return;
-    try { await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify({ active }) }); show('#global-success', active ? 'Akun admin diaktifkan kembali.' : 'Akun admin dinonaktifkan.'); await loadAdmins(); }
-    catch (error) { show('#global-error', errorText(error)); }
+    await withPending(button, async () => {
+      try { await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify({ active }) }); show('#global-success', active ? 'Akun admin diaktifkan kembali.' : 'Akun admin dinonaktifkan.'); await loadAdmins(); }
+      catch (error) { show('#global-error', errorText(error)); }
+    }, 'Memproses…', form);
   });
   $('#admins-refresh-button').addEventListener('click', () => loadAdmins().catch((error) => show('#global-error', errorText(error))));
 
@@ -395,64 +611,105 @@
     event.preventDefault(); hide('#template-dialog-error');
     const form = event.currentTarget; const name = value(form, 'templateName').trim();
     const payload = { name, data: readTemplateEditor(templateDialogState.category) };
+    clearFormErrors(form);
     try {
-      if (templateDialogState.mode === 'edit') await api(`/api/templates/${encodeURIComponent(templateDialogState.id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      else await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...payload, category: templateDialogState.category }) });
-      $('#template-dialog').close(); await loadTemplates(); show('#global-success', templateDialogState.mode === 'edit' ? 'Template diperbarui.' : 'Template disimpan dan dibagikan kepada semua admin.');
-    } catch (error) { show('#template-dialog-error', errorText(error)); }
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        if (templateDialogState.mode === 'edit') await api(`/api/templates/${encodeURIComponent(templateDialogState.id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+        else await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...payload, category: templateDialogState.category }) });
+        $('#template-dialog').close(); await loadTemplates(); show('#global-success', templateDialogState.mode === 'edit' ? 'Template diperbarui.' : 'Template disimpan dan dibagikan kepada semua admin.');
+      }, 'Menyimpan…', form);
+    } catch (error) { showFormError(form, error, '#template-dialog-error'); }
   });
 
   $('#content-form').addEventListener('submit', async (event) => {
-    event.preventDefault(); const form = event.currentTarget;
+    event.preventDefault(); const form = event.currentTarget; clearFormErrors(form);
     const settings = state.data.settings || {};
     settings.brand = { name: value(form, 'brandName'), voice: value(form, 'voice'), contentDirection: value(form, 'contentDirection'), audienceNotes: value(form, 'audienceNotes') };
     settings.gameWhitelist = lines(value(form, 'gameWhitelist'));
     settings.hashtags = lines(value(form, 'hashtags'));
     settings.trackedLinks = { ...(settings.trackedLinks || {}), topup: value(form, 'trackedTopup'), account: value(form, 'trackedAccount') };
     settings.guardrails = { ...(settings.guardrails || {}), approved: form.elements.guardrailsApproved.checked, forbiddenClaims: lines(value(form, 'forbiddenClaims')), approvedClaims: lines(value(form, 'approvedClaims')), hookVocabulary: lines(value(form, 'hookVocabulary')) };
-    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) });
+        show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh();
+      }, 'Menyimpan…', form);
+    } catch (error) { showFormError(form, error); }
   });
 
   $('#schedule-form').addEventListener('submit', async (event) => {
-    event.preventDefault(); const form = event.currentTarget; const settings = state.data.settings || {};
+    event.preventDefault(); const form = event.currentTarget; clearFormErrors(form); const settings = state.data.settings || {};
     settings.schedule = { intervalHours: Number(value(form, 'intervalHours')) };
     settings.priceMode = value(form, 'priceMode');
-    try { state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); show('#global-success', 'Jadwal berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) });
+        show('#global-success', 'Jadwal berhasil disimpan.'); await refresh();
+      }, 'Menyimpan…', form);
+    } catch (error) { showFormError(form, error); }
   });
 
   $$('.fact-form').forEach((form) => form.addEventListener('submit', async (event) => {
-    event.preventDefault(); const service = form.dataset.service;
+    event.preventDefault(); clearFormErrors(form); const service = form.dataset.service;
     const summary = service === 'topup'
       ? { game: value(form, 'game'), denomination: value(form, 'denomination'), price: value(form, 'price'), availability: value(form, 'availability') }
       : { game: 'Mobile Legends', price: value(form, 'price'), availability: value(form, 'availability'), attributes: lines(value(form, 'attributes')) };
     Object.keys(summary).forEach((key) => { if (!summary[key] || (Array.isArray(summary[key]) && !summary[key].length)) delete summary[key]; });
-    try { await api(`/api/facts/${service}`, { method: 'PUT', body: JSON.stringify({ summary, active: true }) }); show('#global-success', 'Informasi produk berhasil disimpan.'); await refresh(); } catch (error) { show('#global-error', errorText(error)); }
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        await api(`/api/facts/${service}`, { method: 'PUT', body: JSON.stringify({ summary, active: true }) });
+        show('#global-success', 'Informasi produk berhasil disimpan.'); await refresh();
+      }, 'Menyimpan…', form);
+    } catch (error) { showFormError(form, error); }
   }));
 
-  $('#automation-button').addEventListener('click', async () => {
-    try {
-      if (state.data?.automation?.enabled) {
-        const result = await api('/api/automation/pause', { method: 'POST', body: '{}' });
-        show('#global-success', result.message || 'Otomasi dijeda.');
-      } else {
-        if (!window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung? Sistem akan langsung memproses utas pertama, lalu menerbitkan berdasarkan interval yang tersimpan.')) return;
-        const result = await api('/api/automation/enable', { method: 'POST', body: '{}' });
-        const firstPostAt = result.firstPostAt ? new Date(result.firstPostAt).toLocaleString('id-ID', { timeZone: 'Asia/Kuala_Lumpur' }) : null;
-        show('#global-success', result.immediate
-          ? 'Otomasi aktif. Utas pertama sedang diproses.'
-          : `Otomasi aktif. Posting pertama dijadwalkan pada ${firstPostAt || 'setelah jeda minimum satu jam'}.`);
-      }
-      await refresh();
-    } catch (error) { show('#global-error', errorText(error)); }
+  $('#automation-button').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const enabled = state.data?.automation?.enabled === true;
+    if (!enabled && !window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung? Sistem akan langsung memproses utas pertama, lalu menerbitkan berdasarkan interval yang tersimpan.')) return;
+    await withPending(button, async () => {
+      try {
+        if (enabled) {
+          const result = await api('/api/automation/pause', { method: 'POST', body: '{}' });
+          show('#global-success', result.message || 'Otomasi dijeda.');
+        } else {
+          const result = await api('/api/automation/enable', { method: 'POST', body: '{}' });
+          const firstPostAt = result.firstPostAt ? new Date(result.firstPostAt).toLocaleString('id-ID', { timeZone: 'Asia/Kuala_Lumpur' }) : null;
+          show('#global-success', result.immediate
+            ? 'Otomasi aktif. Utas pertama sedang diproses.'
+            : `Otomasi aktif. Posting pertama dijadwalkan pada ${firstPostAt || 'setelah jeda minimum satu jam'}.`);
+        }
+        await refresh();
+      } catch (error) { show('#global-error', errorText(error)); }
+    }, 'Memproses…');
   });
 
   $('#refresh-button').addEventListener('click', () => refresh().catch((error) => show('#global-error', errorText(error))));
   $$('.tab').forEach((button) => button.addEventListener('click', () => {
-    $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
-    $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${button.dataset.tab}`));
+    activateTab(button.dataset.tab);
     if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (button.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
   }));
+  $('.tabs').addEventListener('keydown', (event) => {
+    const tabs = $$('.tab');
+    const currentIndex = tabs.indexOf(event.target.closest('.tab'));
+    if (currentIndex < 0) return;
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    const next = tabs[nextIndex];
+    activateTab(next.dataset.tab);
+    next.focus();
+    if (next.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
+    if (next.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
+  });
+  document.addEventListener('input', (event) => {
+    if (event.target?.closest('form')) clearFieldError(event.target);
+  });
 
   renderBuiltinTemplates();
   $$('input[type="password"]').forEach(addPasswordToggle);

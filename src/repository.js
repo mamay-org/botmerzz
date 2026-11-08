@@ -9,6 +9,19 @@ const json = (value, fallback = {}) => {
   try { return JSON.parse(value); } catch { return fallback; }
 };
 const safeId = (value) => String(value);
+function loginThrottleKeys(email, ip) {
+  const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const normalizedIp = String(ip || 'unknown').slice(0, 64);
+  const hash = (scope, value) => createHash('sha256').update(`${scope}\0${value}`).digest('hex');
+  return [
+    { scope: 'pair', subjectHash: hash('pair', `${normalizedIp}\0${normalizedEmail}`) },
+    { scope: 'account', subjectHash: hash('account', normalizedEmail) },
+    { scope: 'ip', subjectHash: hash('ip', normalizedIp) },
+  ];
+}
+function validThrottleTime(now) {
+  return now instanceof Date && Number.isFinite(now.getTime());
+}
 function normalizeCompletedAt(value) {
   if (value === null) return null;
   if (value instanceof Date) {
@@ -89,6 +102,98 @@ function createRepository(pool) {
   async function getAdminByEmail(email) {
     const [rows] = await pool.execute('SELECT id,email,password_hash,active FROM admins WHERE email=? LIMIT 1', [email]);
     const row = rows[0]; return row && { id: row.id, email: row.email, passwordHash: row.password_hash, active: Boolean(row.active) };
+  }
+  async function getLoginAttemptCounts({ email, ip, now }) {
+    if (!validThrottleTime(now)) throw Object.assign(new TypeError('now must be a valid date'), { code: 'INVALID_LOGIN_THROTTLE_TIME' });
+    const keys = loginThrottleKeys(email, ip);
+    const conditions = keys.map(() => '(scope=? AND subject_hash=?)').join(' OR ');
+    const values = keys.flatMap(({ scope, subjectHash }) => [scope, subjectHash]);
+    values.push(now);
+    const [rows] = await pool.execute(`SELECT scope,attempt_count FROM login_attempts WHERE (${conditions}) AND expires_at>?`, values);
+    const counts = { pair: 0, account: 0, ip: 0 };
+    for (const row of rows) if (Object.hasOwn(counts, row.scope)) counts[row.scope] = Number(row.attempt_count);
+    return counts;
+  }
+  async function reserveLoginAttempt({ email, ip, now, windowMs, limits }) {
+    const scopes = ['pair', 'account', 'ip'];
+    if (!validThrottleTime(now) || !Number.isSafeInteger(windowMs) || windowMs < 1 || windowMs > 86_400_000) {
+      throw Object.assign(new TypeError('invalid login throttle window'), { code: 'INVALID_LOGIN_THROTTLE_WINDOW' });
+    }
+    if (!limits || scopes.some((scope) => !Number.isSafeInteger(limits[scope]) || limits[scope] < 1 || limits[scope] > 10_000)) {
+      throw Object.assign(new TypeError('invalid login throttle limits'), { code: 'INVALID_LOGIN_THROTTLE_LIMITS' });
+    }
+    await pool.execute('DELETE FROM login_attempts WHERE expires_at<=? LIMIT 1000', [now]);
+    const expiresAt = new Date(now.getTime() + windowMs);
+    const keys = loginThrottleKeys(email, ip);
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const { scope, subjectHash } of keys) {
+        await connection.execute(
+          'INSERT INTO login_attempts (scope,subject_hash,attempt_count,window_started_at,expires_at) VALUES (?,?,1,?,?) ON DUPLICATE KEY UPDATE attempt_count=IF(expires_at<=?,1,attempt_count+1),window_started_at=IF(expires_at<=?,?,window_started_at),expires_at=IF(expires_at<=?,?,expires_at)',
+          [scope, subjectHash, now, expiresAt, now, now, now, now, expiresAt],
+        );
+      }
+      const conditions = keys.map(() => '(scope=? AND subject_hash=?)').join(' OR ');
+      const values = keys.flatMap(({ scope, subjectHash }) => [scope, subjectHash]);
+      values.push(now);
+      const [rows] = await connection.execute(
+        `SELECT scope,subject_hash,attempt_count,window_started_at,expires_at FROM login_attempts WHERE (${conditions}) AND expires_at>? FOR UPDATE`,
+        values,
+      );
+      const counts = { pair: 0, account: 0, ip: 0 };
+      const reservations = [];
+      const retryDelays = [];
+      for (const row of rows) {
+        if (!Object.hasOwn(counts, row.scope)) continue;
+        counts[row.scope] = Number(row.attempt_count);
+        reservations.push({ scope: row.scope, subjectHash: row.subject_hash, windowStartedAt: row.window_started_at });
+        if (counts[row.scope] > limits[row.scope]) {
+          const expiresAtMs = row.expires_at instanceof Date ? row.expires_at.getTime() : new Date(row.expires_at).getTime();
+          if (Number.isFinite(expiresAtMs)) retryDelays.push(Math.max(1, Math.ceil((expiresAtMs - now.getTime()) / 1000)));
+        }
+      }
+      if (reservations.length !== scopes.length) throw Object.assign(new Error('LOGIN_THROTTLE_STORAGE_INCOMPLETE'), { code: 'LOGIN_THROTTLE_STORAGE_INCOMPLETE' });
+      if (scopes.some((scope) => counts[scope] > limits[scope])) {
+        await connection.rollback();
+        return { allowed: false, counts, retryAfterSeconds: Math.max(1, ...retryDelays) };
+      }
+      await connection.commit();
+      return { allowed: true, counts, reservation: { keys: reservations } };
+    } catch (error) {
+      await connection.rollback().catch(() => {});
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+  async function releaseLoginReservation(reservation, now = new Date()) {
+    const scopes = ['pair', 'account', 'ip'];
+    if (!validThrottleTime(now) || !Array.isArray(reservation?.keys) || reservation.keys.length !== scopes.length
+      || scopes.some((scope) => !reservation.keys.some((key) => key.scope === scope
+        && /^[a-f0-9]{64}$/.test(key.subjectHash) && validThrottleTime(key.windowStartedAt)))) {
+      throw Object.assign(new TypeError('invalid login reservation'), { code: 'INVALID_LOGIN_RESERVATION' });
+    }
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      for (const { scope, subjectHash, windowStartedAt } of reservation.keys) {
+        await connection.execute(
+          'UPDATE login_attempts SET attempt_count=GREATEST(attempt_count-1,0) WHERE scope=? AND subject_hash=? AND window_started_at=? AND expires_at>?',
+          [scope, subjectHash, windowStartedAt, now],
+        );
+        await connection.execute(
+          'DELETE FROM login_attempts WHERE scope=? AND subject_hash=? AND window_started_at=? AND attempt_count=0',
+          [scope, subjectHash, windowStartedAt],
+        );
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback().catch(() => {});
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
   async function listAdmins() {
     const [rows] = await pool.execute('SELECT id,email,active,created_at FROM admins ORDER BY created_at,id');
@@ -532,7 +637,7 @@ function createRepository(pool) {
   async function getDailySummary({localDate,timezone}) { return getDailySummaryCounts(localDate,timezone); }
   async function finishDailySummary({localDate,timezone,status}) { return completeDailySummary(localDate,timezone,status); }
   async function updateSlotFromProvider(providerPostId,status,details={}) { const [rows]=await pool.execute('SELECT id FROM slots WHERE provider_post_id=? LIMIT 1',[providerPostId]);if(!rows.length)return false;const map={published:'published',partial:'partial',failed:'failed',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};await updateSlot(rows[0].id,{providerStatus:status,...(map[status]?{status:map[status]}:{}),...(map[status]&&['published','partial','failed','canceled'].includes(map[status])?{completedAt:new Date()}: {})});return true; }
-  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,isAutomationSessionActive,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
+  return { healthCheck,getSettings,getRuntimeState,saveSettings,saveKnowledge,listFacts,saveFact,getAdminByEmail,getLoginAttemptCounts,reserveLoginAttempt,releaseLoginReservation,listAdmins,listTemplates,getTemplate,createTemplate,updateTemplate,deleteTemplate,createAdmin,updateAdmin,createSession,getSession,deleteSession,deleteAdminSessions,listSlots,listActivity,listAudit,appendActivity,setAutomationEnabled,setProviderTarget,ensureDueSlot,ensureNextDueSlot,claimDueSlot,savePreparedSlot,startPublishing,isAutomationSessionActive,updateSlot,getUncertainSlots,listUnsettledSlots,recordCancellation,getDailySummaryCounts,reserveDailySummary,completeDailySummary,claimDailySummary,getDailySummary,finishDailySummary,recordWebhookEvent,applyWebhookEvent,updateSlotFromProvider,enqueueNotification,getNotificationStatus,claimNotifications,markNotificationSent,retryNotification };
 }
 
 module.exports={createRepository};
