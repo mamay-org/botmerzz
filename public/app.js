@@ -22,6 +22,7 @@
     TEMPLATE_EXISTS: 'Nama template tersebut sudah digunakan pada kategori ini.', TEMPLATE_NOT_FOUND: 'Template tidak ditemukan.',
     GAME_NOT_WHITELISTED: 'Game harus lebih dulu disetujui di whitelist Konten & brand.',
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
+    ONBOARDING_INCOMPLETE: 'Lengkapi brand, hashtag, tautan top-up dan jual akun, koneksi Threads, serta penyedia AI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
   };
   const errorText = (error) => errors[error?.message] || error?.message || 'Permintaan gagal. Silakan coba lagi.';
@@ -29,7 +30,8 @@
     brand: 'Nama dan gaya komunikasi brand sudah diisi',
     games: 'Daftar game top-up sudah diisi',
     guardrails: 'Batasan AI sudah disetujui klien',
-    links: 'Tautan halaman utama sudah diisi',
+    links: 'Tautan top-up dan jual akun sudah diisi',
+    hashtags: 'Hashtag otomatis sudah diisi',
     facts: 'Informasi top-up dan akun sudah diperbarui',
     thread: 'Akun Threads testing aktif di Tebar',
     ai: 'Penyedia AI sudah dikonfigurasi',

@@ -12,6 +12,8 @@ function registerAutomationRoutes(app, { repository, services, authenticated, mu
       const settings = validateSettings(state.settings || {});
       const provider = services.getProviderStatus ? await services.getProviderStatus() : { connected: false };
       const complete = settings.valid && Boolean(settings.settings.brand.name && settings.settings.brand.voice)
+        && Boolean(settings.settings.trackedLinks.topup && settings.settings.trackedLinks.account)
+        && settings.settings.hashtags.length > 0
         && provider.connected === true && services.aiConfigured === true;
       if (!complete) return res.status(409).json({ error: 'ONBOARDING_INCOMPLETE' });
       const activation = await repository.setAutomationEnabled(true, req.admin.id);

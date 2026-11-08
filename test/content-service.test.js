@@ -6,7 +6,7 @@ const now = '2026-11-05T04:00:00Z';
 const base = {
   now,
   settings: {
-    priceMode: 'ON', gameWhitelist: ['Mobile Legends'],
+    priceMode: 'ON', gameWhitelist: ['Mobile Legends'], hashtags: ['#KedaiMerzz', '#MLBB'],
     brand: { name: 'Kedai Merzz', voice: 'mesra', audienceNotes: 'Pemain santai', contentDirection: 'Bina perbualan yang santai.' },
     guardrails: { approved: true, forbiddenClaims: ['termurah'], approvedClaims: [] },
     trackedLinks: { topup: 'https://example.test/t', account: 'https://example.test/a' },
@@ -30,7 +30,7 @@ test('generates and checks a complete caption without appending a product templa
   const mock = mockGeneration();
   const result = await generatePost(base, mock);
   assert.equal(result.status, 'ready');
-  assert.equal(result.text, caption);
+  assert.equal(result.text, `${caption}\nhttps://example.test/t\n#KedaiMerzz #MLBB`);
   assert.equal(result.factBearing, false);
   assert.deepEqual(result.factIds, []);
   assert.equal(mock.requests.length, 2);
@@ -113,7 +113,7 @@ test('approved fresh product facts are passed to the model and used fact IDs are
   const mock = mockGeneration(text, { valid: true, factIds: ['topup'] });
   const result = await generatePost(base, mock);
   assert.equal(result.status, 'ready');
-  assert.equal(result.text, text);
+  assert.equal(result.text, `${text}\nhttps://example.test/t\n#KedaiMerzz #MLBB`);
   assert.equal(result.factBearing, true);
   assert.deepEqual(result.factIds, ['topup']);
   const prompt = JSON.parse(mock.requests[0].user);
@@ -126,4 +126,50 @@ test('OFF price mode excludes structured product facts from the model context', 
   const result = await generatePost({ ...base, settings: { ...base.settings, priceMode: 'OFF' } }, mock);
   assert.equal(result.status, 'ready');
   assert.deepEqual(JSON.parse(mock.requests[0].user).facts, []);
+});
+
+test('adds configured tags and only the link for the chosen pillar, without appending existing ones twice', async () => {
+  const text = 'Jom berbincang! https://example.test/t #kedaimerzz';
+  const topup = await generatePost(base, mockGeneration(text));
+  assert.equal(topup.status, 'ready');
+  assert.equal(topup.text, `${text}\n#MLBB`);
+  const history = [{ status: 'published', pillar: 'topup', caption: 'Post lama', completedAt: now }];
+  const account = await generatePost({ ...base, history }, mockGeneration('Apa yang korang cari?'));
+  assert.equal(account.status, 'ready');
+  assert.match(account.text, /https:\/\/example\.test\/a/);
+  assert.doesNotMatch(account.text, /https:\/\/example\.test\/t/);
+  assert.match(account.text, /#KedaiMerzz #MLBB/);
+});
+
+test('missing hashtag configuration or selected link fails before model calls', async () => {
+  for (const [settings, expected] of [
+    [{ ...base.settings, hashtags: [] }, 'MISSING_REQUIRED_HASHTAGS'],
+    [{ ...base.settings, trackedLinks: { account: 'https://example.test/a' } }, 'MISSING_REQUIRED_LINK'],
+  ]) {
+    const result = await generatePost({ ...base, settings }, { generate: async () => assert.fail('model must not run') });
+    assert.equal(result.status, 'skipped');
+    assert.ok(result.errors.includes(expected));
+    assert.equal(result.attempts, 0);
+  }
+});
+
+test('long captions are retried after including required suffix and never truncated', async () => {
+  const calls = [];
+  const result = await generatePost(base, { generate: async (request) => {
+    calls.push(request);
+    if (calls.length === 1) return 'A'.repeat(480);
+    if (calls.length === 2) return 'Korang suka bermain bersama kawan?';
+    return JSON.stringify({ valid: true, factIds: [] });
+  } });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.attempts, 2);
+  assert.ok([...result.text].length <= 500);
+  assert.match(result.text, /https:\/\/example\.test\/t\n#KedaiMerzz #MLBB$/);
+  assert.ok(JSON.parse(calls[1].user).correction.includes('CAPTION_TOO_LONG'));
+});
+
+test('an unapproved link cannot bypass validation when the approved link is appended', async () => {
+  const result = await generatePost(base, mockGeneration('Lihat https://example.test/t.evil untuk butiran.'));
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.text, undefined);
 });
