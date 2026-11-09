@@ -23,8 +23,8 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
 
 test('account validation and identity confirmation precede versioned activation', () => {
   const handler = section("$('#integration-account-form').addEventListener", "$('#integration-model-form').addEventListener");
-  assert.ok(handler.indexOf("'/api/integrations/validate-account'") < handler.indexOf('window.confirm('));
-  assert.ok(handler.indexOf('window.confirm(') < handler.indexOf("'/api/integrations/account'"));
+  assert.ok(handler.indexOf("'/api/integrations/validate-account'") < handler.indexOf('confirmAction('));
+  assert.ok(handler.indexOf('confirmAction(') < handler.indexOf("'/api/integrations/account'"));
   assert.match(handler, /account\.username/);
   assert.match(handler, /expectedVersion: version, confirmed: true/);
   assert.match(handler, /withPending\(/);
@@ -44,7 +44,7 @@ test('rollback validates changed destinations and requires confirmation with the
   const history = section('function renderIntegrationHistory(', 'async function loadIntegrations(');
   assert.match(history, /validate-account/);
   assert.match(history, /validate-model/);
-  assert.match(history, /window\.confirm/);
+  assert.match(history, /confirmAction/);
   assert.match(history, /expectedVersion, confirmed: true, component/);
   assert.match(history, /\['account', 'model'\]/);
   assert.match(history, /\['ACTIVE', 'NOT_CONFIGURED'\]\.includes\(item\.status\)/);
@@ -127,4 +127,48 @@ test('late account validation cannot overwrite a newer configuration', async () 
   rejectValidation(new Error('offline'));
   await pending;
   assert.equal(node('#integration-provider-status').textContent, 'Status baru');
+});
+
+test('dashboard feedback uses accessible dismissible deduplicated toasts', () => {
+  const vm = require('node:vm');
+  const region = { children: [], append(toast) { this.children.push(toast); } };
+  const makeNode = () => ({ attributes: {}, children: [], setAttribute(name, value) { this.attributes[name] = value; }, addEventListener(_, callback) { this.close = callback; }, append(...nodes) { this.children.push(...nodes); }, remove() { this.removed = true; } });
+  const context = { $: () => region, document: { createElement: makeNode }, Date, WeakMap, Map, setTimeout: () => 1, clearTimeout() {} };
+  vm.createContext(context);
+  vm.runInContext(section('  const toastTimers = new WeakMap();', '  function confirmAction(') + '\nthis.notify = notify;', context);
+  context.notify('success', 'Perubahan tersimpan.');
+  context.notify('success', 'Perubahan tersimpan.');
+  context.notify('error', 'Server tidak tersedia.');
+  assert.equal(region.children.length, 2);
+  assert.equal(region.children[0].attributes.role, 'status');
+  assert.equal(region.children[1].attributes.role, 'alert');
+  assert.equal(region.children[0].children[1].textContent, 'Perubahan tersimpan.');
+  assert.equal(region.children[0].children[2].attributes['aria-label'], 'Tutup notifikasi');
+  region.children[0].children[2].close();
+  assert.equal(region.children[0].removed, true);
+});
+
+test('post-save refresh failure reports partial success instead of a failed save', async () => {
+  const vm = require('node:vm');
+  const messages = [];
+  const context = { notify: (type, message) => messages.push({ type, message }) };
+  vm.createContext(context);
+  vm.runInContext(section('  async function refreshAfterMutation(', '  const hide ='), context);
+  await context.refreshAfterMutation(async () => { throw Error('offline'); });
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'info');
+  assert.match(messages[0].message, /berhasil disimpan.*tampilan belum dapat diperbarui/i);
+});
+
+test('successful integration update with stale dashboard summary uses informational feedback', () => {
+  const vm = require('node:vm');
+  const messages = [];
+  const nodes = new Map();
+  const context = { $: selector => { if (!nodes.has(selector)) nodes.set(selector, { textContent: '', hidden: true }); return nodes.get(selector); }, notify: (type, message) => messages.push({ type, message }) };
+  vm.createContext(context);
+  vm.runInContext(section('  const show = (selector, text) => {', '  function confirmAction(') + '\nthis.show = show;', context);
+  context.show('#global-error', 'Ringkasan dashboard belum dapat diperbarui.');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'info');
+  assert.match(messages[0].message, /berhasil disimpan.*ringkasan dashboard belum dapat diperbarui/i);
 });

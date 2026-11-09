@@ -70,7 +70,48 @@
     { id: 'voice-educational', name: 'Edukatif-fokus kepercayaan', description: 'Bantu pelanggan memahami hal yang perlu diperiksa.', voice: 'Edukatif dan membangun kepercayaan. Jelaskan pertimbangan pembelian secara netral, akui batas informasi, hindari jaminan keamanan atau hasil yang tidak disetujui. Tulis dalam bahasa Melayu Malaysia.' },
   ];
   const escapeText = (value) => String(value ?? '');
-  const show = (selector, text) => { const el = $(selector); el.textContent = text; el.hidden = false; };
+  const toastTimers = new WeakMap();
+  const toastHistory = new Map();
+  function notify(type, message) {
+    const text = String(message || '').trim();
+    const region = $('#toast-region');
+    if (!text || !region) return;
+    const key = `${type}:${text}`;
+    const now = Date.now();
+    if (now - (toastHistory.get(key) || 0) < 1800) return;
+    toastHistory.set(key, now);
+    for (const [oldKey, time] of toastHistory) if (now - time > 5000) toastHistory.delete(oldKey);
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    toast.setAttribute('aria-atomic', 'true');
+    const icon = document.createElement('span'); icon.className = 'toast-icon'; icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = ({ success: '✓', error: '!', warning: '⚠', info: 'i' })[type] || 'i';
+    const content = document.createElement('span'); content.className = 'toast-message'; content.textContent = text;
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'toast-close'; close.setAttribute('aria-label', 'Tutup notifikasi'); close.textContent = '×';
+    close.addEventListener('click', () => { clearTimeout(toastTimers.get(toast)); toast.remove(); });
+    toast.append(icon, content, close); region.append(toast);
+    const timer = type === 'error' || type === 'warning' ? 10000 : 5000;
+    toastTimers.set(toast, setTimeout(() => toast.remove(), timer));
+  }
+  const show = (selector, text) => {
+    const el = $(selector); el.textContent = text; el.hidden = false;
+    if (selector === '#global-success') notify('success', text);
+    else if (selector === '#global-error' || selector === '#login-error') {
+      const partialSuccess = /ringkasan dashboard belum dapat diperbarui/i.test(text);
+      notify(partialSuccess ? 'info' : /konflik|validasi|belum selesai|belum lengkap|periksa/i.test(text) ? 'warning' : 'error', partialSuccess ? `Perubahan berhasil disimpan, tetapi ${text.charAt(0).toLowerCase()}${text.slice(1)}` : text);
+    }
+    else if (selector === '#integration-account-error' || selector === '#integration-model-error' || selector === '#template-dialog-error') notify('error', text);
+  };
+  function confirmAction(message) {
+    const confirmed = window.confirm(message);
+    if (!confirmed) notify('info', 'Tindakan dibatalkan. Tidak ada perubahan yang disimpan.');
+    return confirmed;
+  }
+  async function refreshAfterMutation(loader) {
+    try { await loader(); }
+    catch { notify('info', 'Perubahan berhasil disimpan, tetapi tampilan belum dapat diperbarui. Muat ulang dashboard.'); }
+  }
   const hide = (selector) => { $(selector).hidden = true; };
   const errors = {
     INVALID_EMAIL: 'Format email tidak valid.', INVALID_PASSWORD: 'Kata sandi harus terdiri dari 12 sampai 256 karakter.',
@@ -353,9 +394,9 @@
       const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'button primary'; apply.textContent = 'Terapkan'; apply.addEventListener('click', () => applyTemplate(template));
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'button quiet'; edit.textContent = 'Ubah'; edit.addEventListener('click', () => openTemplateDialog({ mode: 'edit', ...template }));
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'button danger'; remove.textContent = 'Hapus'; remove.addEventListener('click', async (event) => {
-        if (!window.confirm(`Hapus template “${template.name}”?`)) return;
+        if (!confirmAction(`Hapus template “${template.name}”?`)) return;
         await withPending(event.currentTarget, async () => {
-          try { await api(`/api/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); await loadTemplates(); show('#global-success', 'Template berhasil dihapus.'); }
+          try { await api(`/api/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); show('#global-success', 'Template berhasil dihapus.'); await refreshAfterMutation(loadTemplates); }
           catch (error) { show('#global-error', errorText(error)); }
         }, 'Menghapus…');
       });
@@ -621,7 +662,7 @@
                 await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model: item.model }) });
                 summary = `Pulihkan model ke ${item.model}? Akun tetap ${current.accountId || 'belum dikonfigurasi'}.`;
               }
-              if (!window.confirm(`${summary} Versi referensi: ${item.version}.`)) return;
+              if (!confirmAction(`${summary} Versi referensi: ${item.version}.`)) return;
               const result = await api('/api/integrations/rollback', { method: 'POST', body: JSON.stringify({ version: item.version, expectedVersion, confirmed: true, component }) });
               await finishIntegrationMutation(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.', true);
             }, 'Memeriksa…');
@@ -701,7 +742,7 @@
         const account = checked.account || {};
         const identity = account.username ? `@${account.username}` : account.id || payload.accountId;
         show('#integration-account-preview', `Akun terverifikasi: ${identity} · Profile ${account.profileId || payload.profileId} · Platform ${account.platform || 'Threads'} · Status ${account.status || 'tidak diketahui'}.`);
-        if (!window.confirm(`Ganti tujuan posting ke ${identity} (Account ID ${payload.accountId}) di profile ${payload.profileId}? Otomasi akan dijeda dan post lama diperiksa.`)) return;
+        if (!confirmAction(`Ganti tujuan posting ke ${identity} (Account ID ${payload.accountId}) di profile ${payload.profileId}? Otomasi akan dijeda dan post lama diperiksa.`)) return;
         const result = await api('/api/integrations/account', { method: 'PUT', body: JSON.stringify({ ...payload, expectedVersion: version, confirmed: true }) });
         if (result.configuration?.status === 'ACTIVE') form.dataset.baseline = JSON.stringify(payload);
         await finishIntegrationMutation(result.configuration, 'Akun berhasil diganti. Otomasi tetap nonaktif sampai diaktifkan kembali.', true);
@@ -719,7 +760,7 @@
         const expectedVersion = integrationVersion();
         const checked = await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model }) });
         const identity = checked.model?.name || checked.model?.id || model;
-        if (!window.confirm(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
+        if (!confirmAction(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
         const result = await api('/api/integrations/model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
         form.dataset.baseline = model;
         await finishIntegrationMutation(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.');
@@ -803,7 +844,7 @@
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         await api('/api/admins', { method: 'POST', body: JSON.stringify(adminPayload) });
-        form.reset(); show('#global-success', 'Akun admin berhasil ditambahkan.'); await loadAdmins();
+        form.reset(); show('#global-success', 'Akun admin berhasil ditambahkan.'); await refreshAfterMutation(loadAdmins);
       }, 'Menambahkan…', form);
     } catch (error) { showFormError(form, error); }
   });
@@ -818,16 +859,16 @@
       await withPending(button, async () => {
         const result = await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify(changes) });
         if (result.sessionRevoked) { state.csrf = ''; setAuthenticated(false); show('#login-error', 'Akun diperbarui. Masuk kembali dengan email atau kata sandi baru.'); return; }
-        show('#global-success', 'Perubahan akun admin berhasil disimpan.'); await loadAdmins();
+        show('#global-success', 'Perubahan akun admin berhasil disimpan.'); await refreshAfterMutation(loadAdmins);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
   });
   $('#admin-list').addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-active]'); if (!button) return;
     const form = button.closest('form[data-admin-id]'); const active = button.dataset.active !== 'true';
-    if (!active && !window.confirm('Nonaktifkan akun ini? Semua sesi login akun akan dihentikan.')) return;
+    if (!active && !confirmAction('Nonaktifkan akun ini? Semua sesi login akun akan dihentikan.')) return;
     await withPending(button, async () => {
-      try { await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify({ active }) }); show('#global-success', active ? 'Akun admin diaktifkan kembali.' : 'Akun admin dinonaktifkan.'); await loadAdmins(); }
+      try { await api(`/api/admins/${form.dataset.adminId}`, { method: 'PATCH', body: JSON.stringify({ active }) }); show('#global-success', active ? 'Akun admin diaktifkan kembali.' : 'Akun admin dinonaktifkan.'); await refreshAfterMutation(loadAdmins); }
       catch (error) { show('#global-error', errorText(error)); }
     }, 'Memproses…', form);
   });
@@ -849,7 +890,7 @@
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         if (templateDialogState.mode === 'edit') await api(`/api/templates/${encodeURIComponent(templateDialogState.id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
         else await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...payload, category: templateDialogState.category }) });
-        $('#template-dialog').close(); await loadTemplates(); show('#global-success', templateDialogState.mode === 'edit' ? 'Template diperbarui.' : 'Template disimpan dan dibagikan kepada semua admin.');
+        $('#template-dialog').close(); show('#global-success', templateDialogState.mode === 'edit' ? 'Template diperbarui.' : 'Template disimpan dan dibagikan kepada semua admin.'); await refreshAfterMutation(loadTemplates);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error, '#template-dialog-error'); }
   });
@@ -865,7 +906,7 @@
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) });
-        show('#global-success', 'Panduan merek berhasil disimpan.'); await refresh();
+        show('#global-success', 'Panduan merek berhasil disimpan.'); await refreshAfterMutation(refresh);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
   });
@@ -877,7 +918,7 @@
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         state.data.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(settings) });
-        show('#global-success', 'Jadwal berhasil disimpan.'); await refresh();
+        show('#global-success', 'Jadwal berhasil disimpan.'); await refreshAfterMutation(refresh);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
   });
@@ -891,7 +932,7 @@
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         await api(`/api/facts/${service}`, { method: 'PUT', body: JSON.stringify({ summary, active: true }) });
-        show('#global-success', 'Informasi produk berhasil disimpan.'); await refresh();
+        show('#global-success', 'Informasi produk berhasil disimpan.'); await refreshAfterMutation(refresh);
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
   }));
@@ -899,7 +940,7 @@
   $('#automation-button').addEventListener('click', async (event) => {
     const button = event.currentTarget;
     const enabled = state.data?.automation?.enabled === true;
-    if (!enabled && !window.confirm('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung? Sistem akan langsung memproses utas pertama, lalu menerbitkan berdasarkan interval yang tersimpan.')) return;
+    if (!enabled && !confirmAction('Aktifkan penerbitan otomatis untuk workspace yang sedang terhubung? Sistem akan langsung memproses utas pertama, lalu menerbitkan berdasarkan interval yang tersimpan.')) return;
     await withPending(button, async () => {
       try {
         if (enabled) {
@@ -912,7 +953,7 @@
             ? 'Otomasi aktif. Utas pertama sedang diproses.'
             : `Otomasi aktif. Posting pertama dijadwalkan pada ${firstPostAt || 'setelah jeda minimum satu jam'}.`);
         }
-        await refresh();
+        await refreshAfterMutation(refresh);
       } catch (error) { show('#global-error', errorText(error)); }
     }, 'Memproses…');
   });
