@@ -36,8 +36,13 @@ function onboardingHarness() {
   const nodes = new Map();
   const context = {
     state: { onboardingComplete: null, onboardingExpanded: false },
-    onboardingLabels: {},
-    onboardingTargets: {},
+    onboardingLabels: {
+      brand: 'Nama dan gaya komunikasi brand', games: 'Daftar game yang disetujui',
+      guardrails: 'Batasan konten AI', links: 'Tautan top-up dan jual akun',
+      hashtags: 'Hashtag otomatis', facts: 'Informasi harga dan stok produk',
+      thread: 'Akun Threads testing', ai: 'Penyedia AI',
+    },
+    onboardingTargets: { brand: { tab: 'content', field: 'brandName' } },
     $: (selector) => {
       if (!nodes.has(selector)) nodes.set(selector, fakeNode());
       return nodes.get(selector);
@@ -67,8 +72,34 @@ test('onboarding prioritizes incomplete required settings and does not count opt
   assert.equal(nodes.get('#onboarding-summary').hidden, true);
   assert.equal(nodes.get('#onboarding-details').hidden, false);
   assert.match(nodes.get('#onboarding-progress').textContent, /3 dari 5 konfigurasi wajib selesai/);
-  assert.deepEqual(nodes.get('#onboarding-list').children.slice(0, 2).map((item) => item.children[0].textContent), ['brand', 'links']);
-  assert.ok(nodes.get('#onboarding-list').children.some((item) => item.children[1].textContent === 'Opsional · Perlu diisi'));
+  assert.deepEqual(nodes.get('#onboarding-list').children.slice(0, 2).map((item) => item.children[0].children[1].textContent), ['Nama dan gaya komunikasi brand', 'Tautan top-up dan jual akun']);
+  assert.ok(nodes.get('#onboarding-list').children.some((item) => item.children[1].children[0].textContent === 'Opsional · Perlu diisi'));
+});
+
+test('onboarding checklist cards keep labels, status badges, and actions in consistent regions', () => {
+  const { context, nodes } = onboardingHarness();
+  context.renderOnboarding(onboardingItems(['links', 'thread', 'ai'], ['games']));
+  const cards = nodes.get('#onboarding-list').children;
+  const brandCard = cards.find((item) => item.children[0]?.children[1]?.textContent === 'Nama dan gaya komunikasi brand');
+  const linksCard = cards.find((item) => item.children[0]?.children[1]?.textContent === 'Tautan top-up dan jual akun');
+  const gamesCard = cards.find((item) => item.children[0]?.children[1]?.textContent === 'Daftar game yang disetujui');
+
+  assert.ok(brandCard.classList.contains('required'));
+  assert.ok(brandCard.classList.contains('incomplete'));
+  assert.equal(brandCard.children.length, 2);
+  assert.equal(brandCard.children[0].className, 'onboarding-item-heading');
+  assert.equal(brandCard.children[0].children[0].className, 'onboarding-item-icon incomplete');
+  assert.equal(brandCard.children[0].children[0].getAttribute('aria-hidden'), 'true');
+  assert.equal(brandCard.children[1].className, 'onboarding-item-footer');
+  assert.equal(brandCard.children[1].children[0].textContent, 'Wajib · Belum selesai');
+  assert.equal(brandCard.children[1].children[1].dataset.onboardingTarget, 'brand');
+  assert.equal(brandCard.children[1].children[1].textContent, 'Buka pengaturan');
+
+  assert.equal(linksCard.children[1].children[0].textContent, 'Wajib · Selesai');
+  assert.equal(linksCard.children[1].children.length, 1);
+  assert.ok(gamesCard.classList.contains('optional'));
+  assert.equal(gamesCard.children[1].children[0].textContent, 'Opsional · Selesai');
+  assert.ok(cards.every((card) => card.children[0].className === 'onboarding-item-heading' && card.children[1].className === 'onboarding-item-footer'));
 });
 
 test('complete required configuration becomes a compact success summary with collapsed details', () => {
@@ -83,6 +114,31 @@ test('complete required configuration becomes a compact success summary with col
   assert.match(nodes.get('#onboarding-progress').textContent, /5 dari 5/);
   assert.match(nodes.get('#onboarding-announcement').textContent, /Konfigurasi wajib lengkap/);
   assert.equal(nodes.get('#onboarding-incomplete').hidden, true);
+});
+
+test('onboarding details toggle opens and closes content while syncing its accessible state', () => {
+  const state = { onboardingExpanded: false };
+  const nodes = new Map([
+    ['#onboarding-details-toggle', fakeNode()],
+    ['#onboarding-details', fakeNode()],
+  ]);
+  const context = { state, $: (selector) => nodes.get(selector) };
+  const toggle = nodes.get('#onboarding-details-toggle');
+  const details = nodes.get('#onboarding-details');
+  details.hidden = true;
+  toggle.textContent = 'Lihat detail';
+  vm.createContext(context);
+  vm.runInContext(sourceBetween("  $('#onboarding-details-toggle').addEventListener('click', (event) => {", "  $('#onboarding-settings').addEventListener"), context);
+
+  toggle.listeners.click({ currentTarget: toggle });
+  assert.equal(details.hidden, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(toggle.textContent, 'Sembunyikan detail');
+
+  toggle.listeners.click({ currentTarget: toggle });
+  assert.equal(details.hidden, true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.textContent, 'Lihat detail');
 });
 
 test('onboarding returns to its incomplete checklist when a required value becomes invalid', () => {

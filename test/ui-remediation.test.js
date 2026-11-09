@@ -167,6 +167,16 @@ test('dashboard shell and content use available width with adaptive summary card
   contains(css, /\.metric strong\{[^}]*overflow-wrap:anywhere/, 'long provider labels should wrap within summary cards');
 });
 
+test('expanded onboarding uses a bounded container-responsive card grid with bottom-aligned actions', () => {
+  contains(css, /\.checklist\{[^}]*grid-template-columns:repeat\(auto-fit,minmax\(min\(100%,300px\),1fr\)\)[^}]*align-items:stretch[^}]*max-width:1200px/s, 'onboarding cards should adapt to list width and stay within three columns');
+  contains(css, /\.checklist li\{[^}]*display:flex;min-width:0;flex-direction:column/s, 'each checklist entry should be a content-sized vertical card');
+  contains(css, /\.onboarding-item-footer\{[^}]*margin-top:auto/s, 'card badges and actions should align in a consistent footer');
+  contains(css, /\.checklist li\.required\.incomplete\{[^}]*border-color:/, 'required incomplete items should be more prominent than optional items');
+  assert.doesNotMatch(css, /@media\(min-width:(640|900)px\)\{[^}]*\.checklist\{grid-template-columns:repeat\([23],1fr\)/s, 'onboarding columns should not depend on viewport-only breakpoints');
+  contains(app, /icon\.setAttribute\('aria-hidden',\s*'true'\)/, 'the decorative status icon should be hidden from assistive technology');
+  contains(app, /details\.hidden\s*=\s*complete\s*&&\s*!state\.onboardingExpanded/, 'collapsed onboarding details should remain hidden from focus navigation');
+});
+
 test('incomplete onboarding items point to a settings tab and focus target', () => {
   contains(app, /onboardingTargets\s*=\s*\{/, 'onboarding items should map to dashboard destinations');
   contains(app, /dataset\.onboardingTarget/, 'incomplete items should expose a direct action');
