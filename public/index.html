@@ -24,15 +24,32 @@
     </section>
 
     <section id="app-view" hidden>
-      <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark small">KM</div>
-          <div><strong>Kedai Merzz</strong><span>Panel Threads</span></div>
-        </div>
-        <div class="top-actions">
-          <button id="logout-button" class="button quiet">Keluar</button>
-        </div>
-      </header>
+      <div class="dashboard-layout">
+        <aside id="dashboard-sidebar" class="sidebar" role="complementary" aria-label="Navigasi utama" aria-hidden="true" inert>
+          <div class="sidebar-heading">
+            <div class="brand-mark small">KM</div>
+            <div class="sidebar-brand"><strong>Kedai Merzz</strong><span>Panel Threads</span></div>
+            <button id="sidebar-close" class="sidebar-close" type="button" aria-label="Tutup navigasi">×</button>
+          </div>
+          <h2 id="sidebar-title" class="visually-hidden">Navigasi dashboard</h2>
+          <nav class="sidebar-nav" role="tablist" aria-orientation="vertical" aria-labelledby="sidebar-title">
+            <button class="tab active" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="true" tabindex="0"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>Konten &amp; brand</span></button>
+            <button class="tab" id="tab-button-templates" data-tab="templates" role="tab" aria-controls="tab-templates" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h5M9 12h7M9 16h7"/></svg><span>Template</span></button>
+            <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Jadwal</span></button>
+            <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg><span>Produk &amp; informasi</span></button>
+            <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="7" cy="5" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="19" r="1"/></svg><span>Riwayat &amp; catatan</span></button>
+            <button class="tab" id="tab-button-integrations" data-tab="integrations" role="tab" aria-controls="tab-integrations" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M8 4v5M16 4v5M6 9h12v4a6 6 0 0 1-6 6v2M6 13a6 6 0 0 0 6 6"/></svg><span>Integrasi</span></button>
+            <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span>Admin</span></button>
+          </nav>
+          <div class="sidebar-footer">Kelola konten dan penerbitan</div>
+        </aside>
+        <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Tutup navigasi" hidden></button>
+        <div class="dashboard-main">
+          <header class="topbar">
+            <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-controls="dashboard-sidebar" aria-expanded="false"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span>Menu</span></button>
+            <div class="top-actions"><button id="logout-button" class="button quiet">Keluar</button></div>
+          </header>
+          <div class="dashboard-content">
 
       <div class="page-heading">
         <div><p class="eyebrow">DASHBOARD</p><h1 id="dashboard-title" tabindex="-1">Otomasi konten</h1><p class="muted">Pantau koneksi dan kelola penerbitan dari satu tempat.</p></div>
@@ -55,16 +72,6 @@
         <div class="panel-heading"><div><p class="eyebrow">SEBELUM MULAI</p><h2>Daftar onboarding</h2><p class="muted">Nama dan gaya brand, hashtag, tautan top-up dan jual akun, akun Threads di Tebar, serta penyedia AI wajib disiapkan. Item lainnya bersifat opsional.</p></div><span id="onboarding-count" class="pill warning">Belum lengkap</span></div>
         <ul id="onboarding-list" class="checklist"></ul>
       </section>
-
-      <nav class="tabs" role="tablist" aria-label="Bagian dashboard">
-        <button class="tab active" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="true" tabindex="0">Konten & brand</button>
-        <button class="tab" id="tab-button-templates" data-tab="templates" role="tab" aria-controls="tab-templates" aria-selected="false" tabindex="-1">Template</button>
-        <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1">Jadwal</button>
-        <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1">Produk & informasi</button>
-        <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1">Riwayat & catatan</button>
-        <button class="tab" id="tab-button-integrations" data-tab="integrations" role="tab" aria-controls="tab-integrations" aria-selected="false" tabindex="-1">Integrasi</button>
-        <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1">Admin</button>
-      </nav>
 
       <section id="tab-content" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-content" aria-hidden="false" tabindex="0">
         <form id="content-form" class="panel form-grid">
@@ -185,6 +192,9 @@
         </form>
       </dialog>
       <footer class="footer">Lingkungan pengembangan / staging · Tidak terhubung ke akun production klien</footer>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 </body>

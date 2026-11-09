@@ -135,14 +135,25 @@ test('all mutating form and automation handlers call the pending guard', () => {
 });
 
 test('mobile navigation exposes all destinations and active panel semantics', () => {
-  for (const tab of ['content', 'templates', 'schedule', 'facts', 'activity', 'admins']) {
+  for (const tab of ['content', 'templates', 'schedule', 'facts', 'activity', 'integrations', 'admins']) {
     contains(html, new RegExp(`data-tab="${tab}"[^>]*aria-controls="tab-${tab}"`), tab + ' tab should control its panel');
     contains(html, new RegExp(`id="tab-${tab}"[^>]*aria-labelledby="tab-button-${tab}"`), tab + ' panel should reference its tab');
   }
-  assert.doesNotMatch(css, /scrollbar-width\s*:\s*none|\.tabs::-webkit-scrollbar\s*\{\s*display\s*:\s*none/);
-  contains(css, /\.tabs\s*\{[^}]*flex-wrap\s*:\s*wrap/s, 'mobile tab navigation should wrap so every destination stays visible');
-  contains(app, /event\.key === 'ArrowRight'/, 'tab list should support right-arrow navigation');
+  contains(html, /<nav class="sidebar-nav" role="tablist" aria-orientation="vertical"/, 'all dashboard destinations should live in the sidebar tablist');
+  contains(html, /id="sidebar-toggle"[^>]*aria-controls="dashboard-sidebar"[^>]*aria-expanded="false"/, 'mobile drawer should have an accessible toggle');
+  contains(html, /id="sidebar-backdrop"[^>]*aria-label="Tutup navigasi"/, 'mobile drawer should expose a close backdrop');
+  assert.doesNotMatch(html, /<nav class="tabs"/, 'duplicate horizontal control panel navigation should be removed');
+  contains(css, /\.dashboard-layout\{[^}]*grid-template-columns:248px/s, 'desktop layout should reserve a left sidebar');
+  contains(css, /@media\(max-width:899px\)\{\.sidebar:not\(\.is-open\)\{visibility:hidden\}/, 'mobile sidebar should remain closed until requested');
+  contains(app, /event\.key === 'ArrowDown'/, 'vertical tablist should support down-arrow navigation');
+  contains(app, /event\.key === 'ArrowUp'/, 'vertical tablist should support up-arrow navigation');
   contains(app, /event\.key === 'Home'/, 'tab list should support Home navigation');
+  contains(app, /event\.key === 'Escape'/, 'mobile drawer should close with Escape');
+  contains(app, /sidebar\.inert = !open/, 'closed mobile drawer should be removed from keyboard navigation');
+  contains(app, /button:not\(\[disabled\]\):not\(\[tabindex="-1"\]\)/, 'mobile focus trap should follow the roving tab stop');
+  contains(app, /focusWasInSidebar\s*=\s*sidebar\.contains\(document\.activeElement\)/, 'breakpoint changes should detect focus inside the sidebar');
+  contains(app, /if\s*\(focusWasInSidebar\)\s*sidebarToggle\.focus\(\)/, 'breakpoint changes should restore focus from an inert sidebar');
+  contains(app, /focusWasOnMobileControl[\s\S]*sidebarClose[\s\S]*sidebarBackdrop/, 'desktop breakpoint should restore focus from hidden drawer controls');
 });
 
 test('incomplete onboarding items point to a settings tab and focus target', () => {
