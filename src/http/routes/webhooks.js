@@ -12,7 +12,6 @@ function registerWebhookRoutes(app, { config, repository, services, webhookRateL
         signature: req.get('Tebar-Signature'),
         secret: config.tebar.webhookSecret,
         repository,
-        accountId: config.tebar.accountId,
       });
       if (result.status < 300 && result.notificationCode && services.flushNotifications) {
         void services.flushNotifications().catch(() => {});

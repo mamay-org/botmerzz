@@ -59,7 +59,7 @@
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, templates: [] };
+  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
     { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
@@ -91,6 +91,22 @@
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
     ONBOARDING_INCOMPLETE: 'Lengkapi brand, hashtag, tautan top-up dan jual akun, koneksi Threads, serta penyedia AI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
+    CONFIG_CONFLICT: 'Konfigurasi sudah berubah. Muat ulang konfigurasi dan periksa lagi; isian Anda tetap tersimpan di form.',
+    INVALID_ACCOUNT: 'Profile ID atau Account ID tidak valid. Periksa kedua isian.',
+    INVALID_MODEL: 'Model ID tidak valid. Periksa kembali format dan nama model.',
+    MODEL_INCOMPATIBLE: 'Model tidak mendukung kebutuhan teks atau parameter aplikasi.',
+    PROVIDER_UNAVAILABLE: 'Penyedia belum dapat dihubungi. Coba lagi setelah koneksi pulih.',
+    SWITCH_BLOCKED: 'Pergantian tertahan karena status posting lama belum pasti. Periksa dan lanjutkan rekonsiliasi.',
+    ACCOUNT_NOT_AVAILABLE: 'Akun tidak tersedia pada profile ini, bukan Threads, tidak aktif, atau sedang ditangguhkan.',
+    TEBAR_NOT_CONFIGURED: 'Koneksi Tebar belum dikonfigurasi di server.', TEBAR_UNAUTHORIZED: 'Kunci Tebar tidak memiliki akses ke profile ini.',
+    TEBAR_UNAVAILABLE: 'Tebar belum dapat dihubungi. Coba lagi nanti.', TEBAR_RATE_LIMITED: 'Tebar membatasi permintaan. Tunggu sebentar lalu coba lagi.',
+    MODEL_NOT_FOUND: 'Model tidak ditemukan di OpenRouter.', OPENROUTER_NOT_CONFIGURED: 'Koneksi OpenRouter belum dikonfigurasi di server.',
+    OPENROUTER_UNAUTHORIZED: 'Koneksi OpenRouter tidak memiliki izin untuk memeriksa model.', OPENROUTER_UNAVAILABLE: 'OpenRouter belum dapat dihubungi. Coba lagi nanti.',
+    OPENROUTER_RATE_LIMITED: 'OpenRouter membatasi permintaan. Tunggu sebentar lalu coba lagi.',
+    CONFIG_SWITCH_IN_PROGRESS: 'Pergantian akun masih berlangsung. Selesaikan pemeriksaan terlebih dahulu.',
+    CONFIG_VERSION_NOT_RESTORABLE: 'Versi ini tidak dapat dipulihkan karena informasinya belum lengkap.',
+    CONFIG_UNAVAILABLE: 'Konfigurasi belum dapat dibaca. Coba lagi atau hubungi administrator server.',
+    CONFIG_NOT_LOADED: 'Muat ulang konfigurasi sebelum melanjutkan.',
   };
   const fieldLabels = {
     'brand.name': 'nama brand', 'brand.voice': 'gaya komunikasi', 'brand.contentDirection': 'arahan konten AI',
@@ -102,6 +118,7 @@
     'summary.game': 'game', 'summary.denomination': 'nominal top-up', 'summary.price': 'harga',
     'summary.availability': 'ketersediaan', 'summary.attributes': 'atribut akun',
     email: 'email', password: 'kata sandi', game: 'game', price: 'harga',
+    profileId: 'Profile ID', accountId: 'Account ID', model: 'model ID',
   };
   const fieldNames = {
     'brand.name': 'brandName', 'brand.voice': 'voice', 'brand.contentDirection': 'contentDirection',
@@ -535,6 +552,171 @@
 
   async function refresh() { render(await api('/api/dashboard')); hide('#global-error'); }
 
+  function integrationVersion() {
+    const version = state.integrations?.configuration?.version;
+    if (version === undefined || version === null) throw new Error('CONFIG_NOT_LOADED');
+    return version;
+  }
+  function integrationError(error) {
+    if (error?.code === 'CONFIG_NOT_LOADED') return 'Muat ulang konfigurasi sebelum melanjutkan.';
+    return errorText(error);
+  }
+  function showIntegrationOutcome(configuration, successMessage) {
+    hide('#global-error'); hide('#global-success');
+    const status = String(configuration?.status || '').toUpperCase();
+    if (status === 'BLOCKED_RECONCILIATION' || status === 'SWITCHING') {
+      show('#global-error', 'Pergantian akun belum selesai. Periksa status post lama dan lanjutkan rekonsiliasi.');
+    } else if (status === 'NOT_CONFIGURED') {
+      show('#global-error', 'Pengaturan tersimpan, tetapi konfigurasi integrasi belum lengkap. Lengkapi akun dan model sebelum mengaktifkan otomasi.');
+    } else if (status === 'ACTIVE') show('#global-success', successMessage);
+    else show('#global-error', 'Status konfigurasi belum dapat dipastikan. Muat ulang dan periksa sebelum melanjutkan.');
+  }
+  function renderIntegrationHistory(history = []) {
+    const container = $('#integration-history');
+    container.replaceChildren();
+    if (!history.length) {
+      const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Belum ada riwayat konfigurasi.'; container.append(empty); return;
+    }
+    history.forEach((item) => {
+      const row = document.createElement('article'); row.className = 'integration-history-item';
+      const title = document.createElement('strong'); title.textContent = `Versi ${item.version ?? '—'} · ${item.action || 'Perubahan'}`;
+      const details = document.createElement('p');
+      const date = item.createdAt ? new Date(item.createdAt) : null;
+      const dateText = date && Number.isFinite(date.getTime()) ? date.toLocaleString('id-ID') : 'Waktu tidak tersedia';
+      details.textContent = `${dateText} · Admin ${item.actorEmail || item.actorId || 'sistem'} · ${item.status || '—'} · Profile ${item.profileId || '—'} · Akun ${item.accountId || '—'} · Model ${item.model || '—'}`;
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      for (const component of ['account', 'model']) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet';
+        button.textContent = component === 'account' ? 'Pulihkan akun' : 'Pulihkan model';
+        const restorable = ['ACTIVE', 'NOT_CONFIGURED'].includes(item.status);
+        button.disabled = !restorable || (component === 'account' ? !item.profileId || !item.accountId : !item.model);
+        if (!restorable) button.title = 'Versi yang masih menunggu rekonsiliasi tidak dapat dipulihkan.';
+        button.addEventListener('click', async () => {
+          hide('#global-error'); hide('#global-success');
+          try {
+            await withPending(button, async () => {
+              const expectedVersion = integrationVersion();
+              const current = state.integrations?.configuration || {};
+              let summary;
+              if (component === 'account') {
+                const checked = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify({ profileId: item.profileId, accountId: item.accountId }) });
+                const accountName = checked.account?.username ? `@${checked.account.username} (${item.accountId})` : item.accountId;
+                summary = `Pulihkan akun ke ${accountName}? Model tetap ${current.model || 'belum dikonfigurasi'}. Otomasi akan dijeda dan post lama diperiksa.`;
+              } else {
+                await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model: item.model }) });
+                summary = `Pulihkan model ke ${item.model}? Akun tetap ${current.accountId || 'belum dikonfigurasi'}.`;
+              }
+              if (!window.confirm(`${summary} Versi referensi: ${item.version}.`)) return;
+              const result = await api('/api/integrations/rollback', { method: 'POST', body: JSON.stringify({ version: item.version, expectedVersion, confirmed: true, component }) });
+              await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.');
+            }, 'Memeriksa…');
+          } catch (error) { show('#global-error', integrationError(error)); }
+        });
+        actions.append(button);
+      }
+      row.append(title, details, actions); container.append(row);
+    });
+  }
+  async function loadIntegrations() {
+    const result = await api('/api/integrations');
+    const configuration = result.configuration || {};
+    state.integrations = result;
+    $('#integration-active-profile').textContent = configuration.profileId || 'Belum dikonfigurasi';
+    const verification = state.integrationVerification;
+    const verifiedAccount = verification?.profileId === configuration.profileId && verification?.accountId === configuration.accountId ? verification.account : null;
+    $('#integration-active-account').textContent = `${configuration.accountId || 'Belum dikonfigurasi'}${verifiedAccount?.username ? ` · @${verifiedAccount.username}` : ''}`;
+    $('#integration-provider-status').textContent = verifiedAccount ? `Terverifikasi · ${verifiedAccount.status || 'status tidak diketahui'}` : 'Belum diverifikasi pada halaman ini';
+    $('#integration-check-active').disabled = !configuration.profileId || !configuration.accountId;
+    $('#integration-active-model').textContent = configuration.model || 'Belum dikonfigurasi';
+    const status = String(configuration.status || 'NOT_CONFIGURED').toUpperCase();
+    const labels = { ACTIVE: 'Aktif', PAUSED: 'Dijeda', SWITCHING: 'Pergantian berlangsung', BLOCKED_RECONCILIATION: 'Tertahan: post lama perlu diperiksa', NOT_CONFIGURED: 'Belum dikonfigurasi' };
+    $('#integration-switch-status').textContent = labels[status] || status;
+    $('#integration-automation-status').textContent = state.data?.automation?.enabled ? 'Aktif' : 'Nonaktif';
+    const pending = configuration.pendingProfileId || configuration.pendingAccountId;
+    $('#integration-notice').textContent = pending ? `Pergantian menunggu pemeriksaan: profile ${configuration.pendingProfileId || '—'}, akun ${configuration.pendingAccountId || '—'}. Otomasi tetap dijeda.` : 'Perubahan akun dapat menjeda otomasi. Periksa status sebelum mengaktifkannya kembali.';
+    $('#integration-reconcile').hidden = !['SWITCHING', 'BLOCKED_RECONCILIATION'].includes(status);
+    const accountForm = $('#integration-account-form');
+    if (!accountForm.dataset.initialized) {
+      accountForm.elements.profileId.value = configuration.profileId || '';
+      accountForm.elements.accountId.value = configuration.accountId || '';
+      accountForm.dataset.initialized = 'true';
+    }
+    const modelForm = $('#integration-model-form');
+    if (!modelForm.dataset.initialized) { modelForm.elements.model.value = configuration.model || ''; modelForm.dataset.initialized = 'true'; }
+    renderIntegrationHistory(Array.isArray(result.history) ? result.history : []);
+  }
+
+  $('#integration-account-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const form = event.currentTarget; hide('#global-error'); hide('#global-success'); hide('#integration-account-error'); hide('#integration-account-preview'); clearFormErrors(form);
+    const payload = { profileId: value(form, 'profileId').trim(), accountId: value(form, 'accountId').trim() };
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        const version = integrationVersion();
+        const checked = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify(payload) });
+        const account = checked.account || {};
+        const identity = account.username ? `@${account.username}` : account.id || payload.accountId;
+        show('#integration-account-preview', `Akun terverifikasi: ${identity} · Profile ${account.profileId || payload.profileId} · Status ${account.status || 'tidak diketahui'}.`);
+        if (!window.confirm(`Ganti tujuan posting ke ${identity} (Account ID ${payload.accountId}) di profile ${payload.profileId}? Otomasi akan dijeda dan post lama diperiksa.`)) return;
+        const result = await api('/api/integrations/account', { method: 'PUT', body: JSON.stringify({ ...payload, expectedVersion: version, confirmed: true }) });
+        await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Akun berhasil diganti. Otomasi tetap nonaktif sampai diaktifkan kembali.');
+      }, 'Memeriksa…', form);
+    } catch (error) {
+      if (['INVALID_ACCOUNT', 'ACCOUNT_NOT_AVAILABLE'].includes(error.code)) error.fields = { profileId: error.code, accountId: error.code };
+      showFormError(form, error, '#integration-account-error');
+    }
+  });
+  $('#integration-model-form').addEventListener('submit', async (event) => {
+    event.preventDefault(); const form = event.currentTarget; hide('#global-error'); hide('#global-success'); hide('#integration-model-error'); clearFormErrors(form);
+    const model = value(form, 'model').trim();
+    try {
+      await withPending(event.submitter || $('button[type="submit"]', form), async () => {
+        const expectedVersion = integrationVersion();
+        const checked = await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model }) });
+        const identity = checked.model?.name || checked.model?.id || model;
+        if (!window.confirm(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
+        const result = await api('/api/integrations/model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
+        await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.');
+      }, 'Memeriksa…', form);
+    } catch (error) {
+      if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { model: error.code };
+      showFormError(form, error, '#integration-model-error');
+    }
+  });
+  $('#integration-model-catalog').addEventListener('click', async (event) => {
+    try {
+      await withPending(event.currentTarget, async () => {
+        const result = await api('/api/integrations/models');
+        const list = $('#integration-model-list'); list.replaceChildren();
+        (Array.isArray(result.models) ? result.models : []).forEach((model) => {
+          if (typeof model.id !== 'string') return;
+          const option = document.createElement('option'); option.value = model.id; option.label = model.name || model.id; list.append(option);
+        });
+        $('#integration-model-catalog-status').textContent = list.children.length ? `${list.children.length} model tersedia. Anda juga dapat memasukkan ID secara manual.` : 'Daftar kosong; masukkan model ID secara manual.';
+      }, 'Memuat…', null);
+    } catch (error) { $('#integration-model-catalog-status').textContent = 'Daftar model tidak tersedia; masukkan model ID secara manual.'; show('#integration-model-error', integrationError(error)); }
+  });
+  $('#integration-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));
+  $('#integration-check-active').addEventListener('click', async (event) => {
+    try {
+      await withPending(event.currentTarget, async () => {
+        const { profileId, accountId } = state.integrations?.configuration || {};
+        if (!profileId || !accountId) throw new Error('CONFIG_NOT_LOADED');
+        const result = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify({ profileId, accountId }) });
+        state.integrationVerification = { profileId, accountId, account: result.account || {} };
+        await loadIntegrations();
+      }, 'Memeriksa…');
+    } catch (error) { state.integrationVerification = null; $('#integration-provider-status').textContent = 'Pemeriksaan gagal'; show('#global-error', integrationError(error)); }
+  });
+  $('#integration-reconcile').addEventListener('click', async (event) => {
+    hide('#global-error'); hide('#global-success');
+    try {
+      await withPending(event.currentTarget, async () => {
+        const result = await api('/api/integrations/reconcile', { method: 'POST', body: JSON.stringify({ expectedVersion: integrationVersion() }) });
+        await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Pergantian akun selesai. Otomasi tetap nonaktif sampai diaktifkan kembali.');
+      }, 'Memeriksa…');
+    } catch (error) { show('#global-error', integrationError(error)); }
+  });
+
   $('#login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -558,7 +740,7 @@
       let logoutError = null;
       try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
       catch (error) { logoutError = error; }
-      finally { state.csrf = ''; setAuthenticated(false); }
+      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; delete $('#integration-account-form').dataset.initialized; delete $('#integration-model-form').dataset.initialized; setAuthenticated(false); }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');
   });
@@ -689,6 +871,7 @@
     activateTab(button.dataset.tab);
     if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (button.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
+    if (button.dataset.tab === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
   }));
   $('.tabs').addEventListener('keydown', (event) => {
     const tabs = $$('.tab');
@@ -706,6 +889,7 @@
     next.focus();
     if (next.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (next.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
+    if (next.dataset.tab === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
   });
   document.addEventListener('input', (event) => {
     if (event.target?.closest('form')) clearFieldError(event.target);

@@ -2,6 +2,7 @@
 
 const express = require('express');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { createIpRateLimiter } = require('./rate-limit');
 const { createHttpMiddleware, COOKIE } = require('./http/middleware');
 const { registerSessionAdminRoutes } = require('./http/routes/session-admin');
@@ -9,6 +10,7 @@ const { registerTemplateRoutes } = require('./http/routes/templates');
 const { registerDashboardRoutes } = require('./http/routes/dashboard');
 const { registerAutomationRoutes } = require('./http/routes/automation');
 const { registerWebhookRoutes } = require('./http/routes/webhooks');
+const { registerIntegrationRoutes } = require('./http/routes/integrations');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 
@@ -18,6 +20,18 @@ function createServer({ config, repository, auth, services = {} }) {
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy === true ? 1 : false);
   const webhookRateLimit = createIpRateLimiter({ limit: 120, windowMs: 60_000 });
+
+  app.use((req, res, next) => {
+    if (req.path === '/webhooks/tebar' || req.path === '/api/integrations' || req.path.startsWith('/api/integrations/')) {
+      const correlationId = randomUUID();
+      req.correlationId = correlationId;
+      res.set('X-Correlation-ID', correlationId);
+      res.once('finish', () => {
+        try { services.logger?.info('integration.http', { correlationId, actorId: req.admin?.id, method: req.method, route: req.route?.path || 'unknown', status: res.statusCode }); } catch { /* Logging must not interrupt requests. */ }
+      });
+    }
+    next();
+  });
 
   app.use((req, res, next) => {
     res.set({
@@ -49,6 +63,7 @@ function createServer({ config, repository, auth, services = {} }) {
   });
 
   registerSessionAdminRoutes(app, { repository, auth, middleware });
+  registerIntegrationRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerTemplateRoutes(app, {
     repository,
     authenticated: middleware.authenticated,

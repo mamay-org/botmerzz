@@ -110,7 +110,7 @@ async function cancelIfSessionRevoked({ repository, publisher, slot, post, statu
   }
 }
 
-async function reconcileUnsettled({ repository, publisher, notifier, counts, clock = () => new Date() }) {
+async function reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts, logger, correlationId = randomUUID(), clock = () => new Date() }) {
   const slots = await repository.listUnsettledSlots();
   let checked = 0;
   for (const slot of slots) {
@@ -120,18 +120,22 @@ async function reconcileUnsettled({ repository, publisher, notifier, counts, clo
       // the original request may not have reached Tebar, so replay could create
       // the first post after a pause or a restart.
       if (!slot.providerPostId) continue;
-      const post = await publisher.getPost(slot.providerPostId);
-      const expectedAccountId = slot.requestPayload?.targets?.[0]?.account_id;
+      if (publisherForProfile && (!slot.profileId || !slot.accountId || slot.requestPayload?.targets?.[0]?.account_id !== slot.accountId)) continue;
+      const slotPublisher = publisherForProfile ? await publisherForProfile(slot.profileId) : publisher;
+      const post = await slotPublisher.getPost(slot.providerPostId);
+      const expectedAccountId = slot.accountId || slot.requestPayload?.targets?.[0]?.account_id;
       const status = await providerOutcomeStatus(repository, slot, post, expectedAccountId);
       const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
       const completedAt = terminal ? confirmedCompletedAt(status, post, expectedAccountId, clock()) : null;
-      await repository.updateSlot(slot.id, {
+      const saved = await repository.updateSlot(slot.id, {
         status,
         providerStatus: post.status,
         providerPostId: post.id,
         errorCode: status === 'failed' || status === 'partial' || post.targets?.some((target) => target.status === 'failed') ? 'provider_error' : null,
         completedAt,
       });
+      if (saved === false) { if (counts) counts.unknown++; continue; }
+      try { logger?.info('publication.reconciled', { correlationId, slotId: slot.id, profileId: slot.profileId, accountId: expectedAccountId, status }); } catch { /* Observability must not change publishing. */ }
       checked++;
       if (counts && status === 'published') {
         counts.published++;
@@ -152,10 +156,14 @@ async function runDispatcher({
   repository,
   content,
   publisher,
+  publisherForProfile,
   notifier,
   clock = () => new Date(),
   timezone = 'Asia/Kuala_Lumpur',
   contentGenerator,
+  generatorForModel,
+  logger,
+  correlationId = randomUUID(),
   maxPublishAttempts = 2,
 } = {}) {
   if (!repository || !publisher || typeof content !== 'function') {
@@ -169,7 +177,7 @@ async function runDispatcher({
   if (typeof notifier?.flush === 'function') {
     try { await notifier.flush(); } catch { /* Notification retries must not block publishing safety checks. */ }
   }
-  result.reconciled = await reconcileUnsettled({ repository, publisher, notifier, counts: result, clock });
+  result.reconciled = await reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts: result, logger, correlationId, clock });
   await maybeSendDailySummary({ repository, notifier, now, counts: result });
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
 
@@ -206,6 +214,7 @@ async function runDispatcher({
   const slot = await repository.claimDueSlot({ now, minimumIntervalHours });
   if (!slot) return result;
   result.claimed = 1;
+  try { logger?.info('publication.claimed', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId }); } catch { /* Observability must not change publishing. */ }
 
   const claimedState = await repository.getRuntimeState();
   if (!claimedState?.automationEnabled || claimedState.onboardingComplete !== true || !claimedState.accountId
@@ -216,6 +225,23 @@ async function runDispatcher({
     return result;
   }
   state = claimedState;
+  if (publisherForProfile) {
+    if (!slot.profileId || !slot.accountId || slot.profileId !== state.profileId || slot.accountId !== state.accountId) {
+      await repository.updateSlot(slot.id, { status: 'canceled', errorCode: 'target_snapshot_missing', completedAt: clock().toISOString() });
+      result.skipped++;
+      return result;
+    }
+    publisher = await publisherForProfile(slot.profileId);
+    state = { ...state, accountId: slot.accountId, profileId: slot.profileId };
+  }
+  if (generatorForModel && slot.status !== 'ready') {
+    if (!slot.model) {
+      await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
+      result.failed++;
+      return result;
+    }
+    contentGenerator = await generatorForModel(slot.model);
+  }
   schedule = { ...(state.settings?.schedule || {}), intervalHours: 1 };
 
   if (schedule && !isInActiveWindow(slot.scheduledAt || now, schedule)) {
@@ -350,6 +376,7 @@ async function runDispatcher({
     }
     attempt++;
     try {
+      try { logger?.info('publication.sending', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId, attempt }); } catch { /* Do not log request bodies or credentials. */ }
       acceptedPost = await publisher.publishNow(payload, idempotencyKey);
       break;
     } catch (error) {
@@ -359,13 +386,15 @@ async function runDispatcher({
           const post = await publisher.getPost(providerPostId);
           const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
           const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
-          await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
+          const saved = await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
+          if (saved === false) { result.unknown++; return result; }
           const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId: state.accountId });
           const finalPost = cancellation.post;
           const finalStatus = cancellation.status;
           if (finalPost !== post || cancellation.cancellationStatus) {
             const finalCompletedAt = ['published', 'failed', 'canceled', 'partial'].includes(finalStatus) ? confirmedCompletedAt(finalStatus, finalPost, state.accountId, clock()) : null;
-            await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
+            const savedFinal = await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
+            if (savedFinal === false) { result.unknown++; return result; }
           }
           if (cancellation.cancellationStatus) {
             try { await repository.recordCancellation(providerPostId, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); } catch { /* The provider state remains durable on the slot. */ }
@@ -422,7 +451,8 @@ async function runDispatcher({
     try {
       // Persist the provider ID before checking the session so a concurrent pause
       // can find and cancel an accepted but not yet published post.
-      await repository.updateSlot(slot.id, initialUpdate);
+      const saved = await repository.updateSlot(slot.id, initialUpdate);
+      if (saved === false) { result.unknown++; return result; }
     } catch {
       // Tebar accepted the publish. Database failure must never fall through to a publish retry.
       try {
@@ -446,7 +476,7 @@ async function runDispatcher({
         completedAt: ['published', 'failed', 'canceled', 'partial'].includes(status) ? confirmedCompletedAt(status, post, state.accountId, clock()) : null,
         ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}),
       };
-      try { await repository.updateSlot(slot.id, finalUpdate); }
+      try { const saved = await repository.updateSlot(slot.id, finalUpdate); if (saved === false) { result.unknown++; return result; } }
       catch {
         await repository.updateSlot(slot.id, { ...finalUpdate, status: 'unknown', errorCode: 'unknown_outcome' }).catch(() => {});
         await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });

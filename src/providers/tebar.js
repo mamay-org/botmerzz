@@ -71,7 +71,7 @@ function createTebarClient({ apiKey, profileId, http = axios }) {
       username: account.username || null, displayName: account.display_name || null,
       status: ["active", "expired", "revoked"].includes(account.status) ? account.status : "unknown",
       tokenExpiresAt: account.token_expires_at || null,
-      planSuspended: account.plan_suspended === true,
+      planSuspended: typeof account.plan_suspended === 'boolean' ? account.plan_suspended : null,
     }));
   }
 

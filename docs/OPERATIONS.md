@@ -2,7 +2,9 @@
 
 ## Start, stop and health
 
-Use the matching Compose project and file to start or stop services while preserving the named database volume. Do not use `down -v` unless intentionally deleting that environment's database. Check application health at `/health/live` and `/health/ready`; readiness includes scheduler enabled/running state and the last safe result code. Inspect logs with `docker compose logs --tail=200 app` and `docker compose logs --tail=200 db`.
+Use the matching Compose project and file to start or stop services while preserving the named database volume. Do not use `down -v` unless intentionally deleting that environment's database. Check application health at `/health/live` and `/health/ready`; readiness exposes only a minimal status. Inspect logs with `docker compose logs --tail=200 app` and `docker compose logs --tail=200 db`.
+
+For changing accounts or models, blocked switches, and uncertain or legacy slots, follow [Dynamic integration configuration](DYNAMIC-CONFIGURATION.md). Do not reactivate automation until the target account and any unresolved publication are verified.
 
 ## Schedule policy and quota
 

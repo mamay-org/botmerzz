@@ -12,7 +12,7 @@
     "admin:create": "node src/cli.js admin:create",
     "dispatch": "node src/cli.js dispatch",
     "test": "node --test test/*.test.js",
-    "test:integration": "node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js",
+    "test:integration": "node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js && node --test test/configuration.mysql.js",
     "check": "node scripts/check.js"
   },
   "engines": {

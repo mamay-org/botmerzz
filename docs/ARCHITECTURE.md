@@ -19,6 +19,7 @@ The dispatcher calls the same application services. OpenRouter generates content
 - Dispatcher claims one due slot at a time, generates and validates content, persists the exact request and idempotency key, submits the post, then reconciles status. It never blindly creates a new publish request after an uncertain outcome.
 - Telegram delivery uses a MySQL outbox with deduplication, retry backoff, and claim leases. Webhook state and its notification enqueue commit together; dispatcher runs retry pending notifications.
 - HTTP application serves static dashboard assets, authenticated JSON routes, login/session/logout, provider webhooks, health status, and safe error responses.
+- The integration configuration service persists a versioned Tebar profile/account pair and OpenRouter model in MySQL after one-time bootstrap. Each slot snapshots its publishing identity and the generation model; account switching is fenced through database state and leaves automation paused. See [Dynamic integration configuration](DYNAMIC-CONFIGURATION.md) for precedence, recovery, and provider limits.
 
 ## Scheduling model
 
@@ -38,6 +39,7 @@ Each slot has a unique scheduled instant and durable state: pending, generating,
 - Passwords use Node's scrypt with a random salt. Session tokens are random, stored as hashes in MySQL, expire server-side, and rotate on login.
 - Mutating dashboard requests require same-origin validation and a per-session CSRF token. Cookies are secure in deployed HTTPS environments, HTTP-only, and SameSite strict.
 - Tebar, OpenRouter, Telegram, and database credentials are environment-only. The dashboard never returns their values.
+- The three non-secret integration identifiers are managed separately from environment-only credentials; configuration updates require authenticated sessions, Origin/CSRF checks, provider validation, and an expected version.
 - Webhook signatures are verified using the raw request body, a timestamp freshness window, constant-time HMAC comparison, and event-ID deduplication.
 - Provider errors are normalized to safe codes; raw response bodies and auth headers are not logged or sent through Telegram.
 
@@ -47,7 +49,7 @@ MySQL is chosen because the dashboard and one-shot dispatcher need durable trans
 
 ## Deployment constraints
 
-The runtime Docker image is environment-neutral and is the default build target. VPS Compose requires an immutable GHCR commit-SHA image, a private MySQL volume, HTTPS termination and protected environment variables. Publishing remains disabled by default; no VPS deployment workflow is configured.
+The runtime Docker image is environment-neutral and is the default build target. VPS Compose requires an immutable GHCR commit-SHA image, a private MySQL volume, HTTPS termination and protected environment variables. Publishing remains disabled by default; staging deployment is opt-in and production deployment is not configured.
 
 ## Provider capabilities and MVP limits
 
@@ -76,6 +78,14 @@ Tebar documents immediate publishing and scheduled publishing, idempotency keys,
 | `src/http/routes/dashboard.js` | PUT | `/api/settings` |
 | `src/http/routes/dashboard.js` | PUT | `/api/knowledge` |
 | `src/http/routes/dashboard.js` | PUT | `/api/facts/:service` |
+| `src/http/routes/integrations.js` | GET | `/api/integrations` |
+| `src/http/routes/integrations.js` | GET | `/api/integrations/models` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/validate-account` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/validate-model` |
+| `src/http/routes/integrations.js` | PUT | `/api/integrations/account` |
+| `src/http/routes/integrations.js` | PUT | `/api/integrations/model` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/reconcile` |
+| `src/http/routes/integrations.js` | POST | `/api/integrations/rollback` |
 | `src/http/routes/automation.js` | POST | `/api/automation/enable` |
 | `src/http/routes/automation.js` | POST | `/api/automation/pause` |
 
