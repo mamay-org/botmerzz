@@ -135,7 +135,7 @@ test('all mutating form and automation handlers call the pending guard', () => {
 });
 
 test('mobile navigation exposes all destinations and active panel semantics', () => {
-  for (const tab of ['content', 'templates', 'schedule', 'facts', 'activity', 'integrations', 'admins']) {
+  for (const tab of ['dashboard', 'content', 'templates', 'schedule', 'facts', 'activity', 'ai', 'integrations', 'admins']) {
     contains(html, new RegExp(`data-tab="${tab}"[^>]*aria-controls="tab-${tab}"`), tab + ' tab should control its panel');
     contains(html, new RegExp(`id="tab-${tab}"[^>]*aria-labelledby="tab-button-${tab}"`), tab + ' panel should reference its tab');
   }
@@ -161,6 +161,8 @@ test('incomplete onboarding items point to a settings tab and focus target', () 
   contains(app, /dataset\.onboardingTarget/, 'incomplete items should expose a direct action');
   contains(app, /activateTab\(target\.tab\)/, 'onboarding actions should open the relevant tab');
   contains(app, /focusTarget\?\.focus/, 'onboarding actions should focus the missing setting/status');
+  contains(app, /thread:\s*\{\s*tab:\s*'integrations',\s*field:\s*'profileId'\s*\}/, 'Threads setup should navigate to its integration field');
+  contains(app, /ai:\s*\{\s*tab:\s*'ai',\s*field:\s*'model'\s*\}/, 'AI setup should navigate to its model field');
 });
 
 test('authentication view changes move focus to the newly visible view', () => {
@@ -174,4 +176,22 @@ test('dashboard navigation exposes active state and uses the dark native color s
   contains(app, /aria-selected/, 'active tab state should be announced');
   contains(app, /aria-hidden/, 'inactive tab panels should be hidden from assistive technology');
   contains(html, /aria-controls="tab-content"/, 'tab controls should be associated with their panels');
+});
+
+test('dashboard overview is its own initial page and settings stay page-specific', () => {
+  contains(html, /id="tab-button-dashboard" data-tab="dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0"/, 'Dashboard should be the initially selected sidebar page');
+  const dashboardStart = html.indexOf('<section id="tab-dashboard"');
+  const contentStart = html.indexOf('<section id="tab-content"');
+  assert.ok(dashboardStart >= 0 && contentStart > dashboardStart);
+  const dashboard = html.slice(dashboardStart, contentStart);
+  contains(dashboard, /id="automation-button"/, 'automation controls should live on Dashboard');
+  contains(dashboard, /class="metrics" aria-label="Ringkasan operasional"/, 'operational statistics should live on Dashboard');
+  contains(dashboard, /id="onboarding-list"/, 'onboarding should live on Dashboard');
+  assert.match(html, /id="tab-content"[^>]*aria-hidden="true"[^>]*hidden/);
+  const integrations = html.slice(html.indexOf('<section id="tab-integrations"'), html.indexOf('<section id="tab-ai"'));
+  const ai = html.slice(html.indexOf('<section id="tab-ai"'), html.indexOf('<section id="tab-admins"'));
+  assert.doesNotMatch(integrations, /integration-model-form|integration-model-catalog|Model OpenRouter/);
+  contains(integrations, /integration-account-form/, 'Tebar account configuration should remain under Integrations');
+  contains(ai, /integration-model-form/, 'OpenRouter settings should live under AI');
+  contains(ai, /integration-model-history/, 'model rollback history should stay with AI settings');
 });

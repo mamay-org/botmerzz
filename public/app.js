@@ -61,7 +61,7 @@
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null };
+  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
     { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
@@ -244,8 +244,8 @@
     links: { tab: 'content', field: 'trackedTopup' },
     hashtags: { tab: 'content', field: 'hashtags' },
     facts: { tab: 'facts', field: 'game' },
-    thread: { tab: 'content', element: 'provider-status' },
-    ai: { tab: 'content', element: 'automation-reason' },
+    thread: { tab: 'integrations', field: 'profileId' },
+    ai: { tab: 'ai', field: 'model' },
   };
   const statusLabels = {
     pending: 'Menunggu', generating: 'Membuat konten', ready: 'Siap diterbitkan',
@@ -527,7 +527,7 @@
   function loadTabData(name) {
     if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (name === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
-    if (name === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
+    if (name === 'integrations' || name === 'ai') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
   }
   syncSidebarViewport();
   sidebarViewport.addEventListener?.('change', syncSidebarViewport);
@@ -544,15 +544,49 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
-  function renderOnboarding(items = []) {
+  function setOnboardingLoadState(status) {
+    const loading = $('#onboarding-loading');
+    const error = $('#onboarding-error');
+    const summary = $('#onboarding-summary');
+    const incomplete = $('#onboarding-incomplete');
+    const details = $('#onboarding-details');
+    loading.hidden = status !== 'loading';
+    error.hidden = status !== 'error';
+    summary.hidden = true;
+    incomplete.hidden = true;
+    details.hidden = true;
+    const badge = $('#onboarding-count');
+    badge.textContent = status === 'loading' ? 'Memuat status' : 'Status tidak tersedia';
+    badge.className = 'pill neutral';
+  }
+
+  function renderOnboarding(items) {
+    if (!Array.isArray(items) || items.length === 0 || items.some((item) => !item || typeof item.required !== 'boolean' || typeof item.complete !== 'boolean')) {
+      setOnboardingLoadState('error');
+      return;
+    }
     const list = $('#onboarding-list');
-    list.replaceChildren(...items.map((item) => {
+    const required = items.filter((item) => item.required);
+    const completeRequired = required.filter((item) => item.complete).length;
+    const missing = required.length - completeRequired;
+    const complete = required.length > 0 && missing === 0;
+    const sortedItems = [...items].sort((a, b) => {
+      const rank = (item) => item.required ? item.complete ? 1 : 0 : item.complete ? 3 : 2;
+      return rank(a) - rank(b);
+    });
+    list.replaceChildren(...sortedItems.map((item) => {
       const li = document.createElement('li');
-      if (item.required && !item.complete) li.classList.add('incomplete');
+      if (!item.complete) li.classList.add('incomplete');
       if (item.required === false) li.classList.add('optional');
+      else li.classList.add('required');
       const text = document.createElement('span');
-      text.textContent = (onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal') + (item.required === false ? ' — Opsional' : '');
+      text.className = 'onboarding-label';
+      text.textContent = onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal';
       li.append(text);
+      const status = document.createElement('span');
+      status.className = `onboarding-item-status ${item.complete ? 'complete' : 'incomplete'}`;
+      status.textContent = `${item.required ? 'Wajib' : 'Opsional'} · ${item.complete ? 'Selesai' : 'Perlu diisi'}`;
+      li.append(status);
       const target = onboardingTargets[item.key];
       if (!item.complete && target) {
         const action = document.createElement('button');
@@ -562,6 +596,7 @@
         action.textContent = target.field ? 'Buka pengaturan' : 'Lihat status';
         action.addEventListener('click', () => {
           activateTab(target.tab);
+          loadTabData(target.tab);
           const form = target.field ? $('#tab-' + target.tab + ' form') : null;
           const focusTarget = target.field ? form?.elements.namedItem(target.field) : document.getElementById(target.element);
           focusTarget?.focus({ preventScroll: true });
@@ -571,9 +606,30 @@
       }
       return li;
     }));
-    const missing = items.filter((item) => item.required && !item.complete).length;
-    const badge = $('#onboarding-count'); badge.textContent = missing ? `${missing} wajib dilengkapi` : 'Wajib lengkap';
-    badge.className = `pill ${missing ? 'warning' : 'good'}`;
+    const loading = $('#onboarding-loading'); loading.hidden = true;
+    const error = $('#onboarding-error'); error.hidden = true;
+    const summary = $('#onboarding-summary'); summary.hidden = !complete;
+    const incomplete = $('#onboarding-incomplete'); incomplete.hidden = complete;
+    const details = $('#onboarding-details');
+    const badge = $('#onboarding-count');
+    badge.textContent = complete ? 'Wajib lengkap' : `${missing} wajib tersisa`;
+    badge.className = `pill ${complete ? 'good' : 'warning'}`;
+    $('#onboarding-progress').textContent = `${completeRequired} dari ${required.length} konfigurasi wajib selesai.`;
+    if (complete && state.onboardingComplete !== true) state.onboardingExpanded = false;
+    if (!complete) state.onboardingExpanded = false;
+    if (state.onboardingComplete !== complete) {
+      $('#onboarding-announcement').textContent = complete
+        ? `Konfigurasi wajib lengkap: ${completeRequired} dari ${required.length} item selesai.`
+        : state.onboardingComplete === true
+          ? 'Onboarding kembali belum lengkap. Periksa item wajib yang perlu diperbaiki.'
+          : `Onboarding belum lengkap. ${missing} dari ${required.length} item wajib masih perlu disiapkan.`;
+    }
+    state.onboardingComplete = complete;
+    details.hidden = complete && !state.onboardingExpanded;
+    const toggle = $('#onboarding-details-toggle');
+    toggle.hidden = !complete;
+    toggle.setAttribute('aria-expanded', String(complete && state.onboardingExpanded));
+    toggle.textContent = state.onboardingExpanded ? 'Sembunyikan detail' : 'Lihat detail';
   }
 
   function renderPosts(posts = []) {
@@ -645,10 +701,23 @@
     $('#metric-clicks').textContent = data.metrics?.clicks?.available ? String(data.metrics.clicks.value) : 'Belum tersedia';
     $('#metric-failed').textContent = String(data.metrics?.attention ?? 0);
     $('#metric-facts').textContent = `${data.metrics?.freshFacts ?? 0} / 2`;
-    renderOnboarding(data.onboarding || []); renderPosts(data.posts || []); renderActivity(data.activity || []); readSettings();
+    renderOnboarding(data.onboarding); renderPosts(data.posts || []); renderActivity(data.activity || []); readSettings();
   }
 
-  async function refresh() { render(await api('/api/dashboard')); hide('#global-error'); }
+  async function refresh() {
+    const request = state.dashboardLoad = (state.dashboardLoad || 0) + 1;
+    setOnboardingLoadState('loading');
+    try {
+      const data = await api('/api/dashboard');
+      if (request !== state.dashboardLoad) return false;
+      render(data);
+      hide('#global-error');
+      return true;
+    } catch (error) {
+      if (request === state.dashboardLoad) setOnboardingLoadState('error');
+      throw error;
+    }
+  }
 
   function integrationVersion() {
     const version = state.integrations?.configuration?.version;
@@ -682,27 +751,33 @@
       show('#global-error', `${error.hidden ? '' : error.textContent + ' '}Ringkasan dashboard belum dapat diperbarui.`);
     }
   }
-  function renderIntegrationHistory(history = []) {
-    const container = $('#integration-history');
+  function renderIntegrationHistory(history = [], component = 'account') {
+    const container = $(`#integration-${component}-history`);
     container.replaceChildren();
-    if (!history.length) {
+    const relevant = history.filter((item) => {
+      const action = String(item.action || '');
+      return action === 'bootstrap' || action.startsWith(`${component}_`) || (component === 'account' && action.startsWith('switch_'));
+    });
+    if (!relevant.length) {
       const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = 'Belum ada riwayat konfigurasi.'; container.append(empty); return;
     }
-    history.forEach((item) => {
+    relevant.forEach((item) => {
       const row = document.createElement('article'); row.className = 'integration-history-item';
       const title = document.createElement('strong'); title.textContent = `Versi ${item.version ?? '—'} · ${item.action || 'Perubahan'}`;
       const details = document.createElement('p');
       const date = item.createdAt ? new Date(item.createdAt) : null;
       const dateText = date && Number.isFinite(date.getTime()) ? date.toLocaleString('id-ID') : 'Waktu tidak tersedia';
-      details.textContent = `${dateText} · Admin ${item.actorEmail || item.actorId || 'sistem'} · ${item.status || '—'} · Profile ${item.profileId || '—'} · Akun ${item.accountId || '—'} · Model ${item.model || '—'}`;
+      const actor = item.actorEmail || item.actorId || 'sistem';
+      details.textContent = component === 'account'
+        ? `${dateText} · Admin ${actor} · ${item.status || '—'} · Profile ${item.profileId || '—'} · Akun ${item.accountId || '—'}`
+        : `${dateText} · Admin ${actor} · ${item.status || '—'} · Model ${item.model || '—'}`;
       const actions = document.createElement('div'); actions.className = 'form-actions';
-      for (const component of ['account', 'model']) {
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet';
-        button.textContent = component === 'account' ? 'Pulihkan akun' : 'Pulihkan model';
-        const restorable = ['ACTIVE', 'NOT_CONFIGURED'].includes(item.status);
-        button.disabled = !restorable || (component === 'account' ? !item.profileId || !item.accountId : !item.model);
-        if (!restorable) button.title = 'Versi yang masih menunggu rekonsiliasi tidak dapat dipulihkan.';
-        button.addEventListener('click', async () => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet';
+      button.textContent = component === 'account' ? 'Pulihkan akun' : 'Pulihkan model';
+      const restorable = ['ACTIVE', 'NOT_CONFIGURED'].includes(item.status);
+      button.disabled = !restorable || (component === 'account' ? !item.profileId || !item.accountId : !item.model);
+      if (!restorable) button.title = 'Versi yang masih menunggu rekonsiliasi tidak dapat dipulihkan.';
+      button.addEventListener('click', async () => {
           hide('#global-error'); hide('#global-success');
           try {
             await withPending(button, async () => {
@@ -722,9 +797,8 @@
               await finishIntegrationMutation(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.', true);
             }, 'Memeriksa…');
           } catch (error) { show('#global-error', integrationError(error)); }
-        });
-        actions.append(button);
-      }
+      });
+      actions.append(button);
       row.append(title, details, actions); container.append(row);
     });
   }
@@ -740,18 +814,20 @@
     state.integrationVerification = null;
     syncIntegrationControls();
     hide('#integration-account-preview');
-    for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-active-model', '#integration-switch-status', '#integration-automation-status']) $(selector).textContent = 'Tidak tersedia';
+    for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia';
     $('#integration-check-active').disabled = true;
     $('#integration-reconcile').hidden = true;
     $('#integration-notice').textContent = 'Memuat konfigurasi terkini. Isian perubahan tetap disimpan.';
-    renderIntegrationHistory([]);
+    $('#ai-notice').textContent = 'Memuat model aktif dari konfigurasi server.';
+    renderIntegrationHistory([], 'account');
+    renderIntegrationHistory([], 'model');
     let result;
-    let dashboard;
     try {
-      [result, dashboard] = await Promise.all([api('/api/integrations'), api('/api/dashboard').catch(() => null)]);
+      result = await api('/api/integrations');
     } catch (error) {
       if (request !== state.integrationLoad) return false;
       $('#integration-notice').textContent = 'Konfigurasi tidak tersedia. Muat ulang sebelum menyimpan perubahan.';
+      $('#ai-notice').textContent = 'Model aktif belum dapat dimuat. Coba muat ulang sebelum menyimpan perubahan.';
       throw error;
     }
     if (request !== state.integrationLoad) return false;
@@ -764,11 +840,11 @@
     $('#integration-active-account').textContent = `${configuration.accountId || 'Belum dikonfigurasi'}${verifiedAccount?.username ? ` · @${verifiedAccount.username}` : ''}`;
     $('#integration-provider-status').textContent = verifiedAccount ? `Terverifikasi · ${verifiedAccount.platform || 'Threads'} · ${verifiedAccount.status || 'status tidak diketahui'}` : 'Belum diverifikasi pada halaman ini';
     $('#integration-check-active').disabled = !configuration.profileId || !configuration.accountId;
-    $('#integration-active-model').textContent = configuration.model || 'Belum dikonfigurasi';
+    $('#ai-active-model').textContent = configuration.model || 'Belum dikonfigurasi';
+    $('#ai-notice').textContent = configuration.model ? 'Model aktif dibaca dari konfigurasi server.' : 'Belum ada model yang dikonfigurasi.';
     const status = String(configuration.status || 'NOT_CONFIGURED').toUpperCase();
     const labels = { ACTIVE: 'Aktif', PAUSED: 'Dijeda', SWITCHING: 'Pergantian berlangsung', BLOCKED_RECONCILIATION: 'Tertahan: post lama perlu diperiksa', NOT_CONFIGURED: 'Belum dikonfigurasi' };
     $('#integration-switch-status').textContent = labels[status] || status;
-    $('#integration-automation-status').textContent = typeof dashboard?.automation?.enabled === 'boolean' ? (dashboard.automation.enabled ? 'Aktif' : 'Nonaktif') : 'Tidak tersedia';
     const pending = configuration.pendingProfileId || configuration.pendingAccountId;
     $('#integration-notice').textContent = pending ? `Pergantian menunggu pemeriksaan: profile ${configuration.pendingProfileId || '—'}, akun ${configuration.pendingAccountId || '—'}. Otomasi tetap dijeda.` : 'Perubahan akun dapat menjeda otomasi. Periksa status sebelum mengaktifkannya kembali.';
     $('#integration-reconcile').hidden = !['SWITCHING', 'BLOCKED_RECONCILIATION'].includes(status);
@@ -782,7 +858,9 @@
     const modelForm = $('#integration-model-form');
     if ((modelForm.dataset.baseline === undefined && !modelForm.elements.model.value) || modelForm.elements.model.value === modelForm.dataset.baseline) modelForm.elements.model.value = configuration.model || '';
     modelForm.dataset.baseline = configuration.model || '';
-    renderIntegrationHistory(Array.isArray(result.history) ? result.history : []);
+    const history = Array.isArray(result.history) ? result.history : [];
+    renderIntegrationHistory(history, 'account');
+    renderIntegrationHistory(history, 'model');
     return true;
   }
 
@@ -818,7 +896,7 @@
         if (!confirmAction(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
         const result = await api('/api/integrations/model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
         form.dataset.baseline = model;
-        await finishIntegrationMutation(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.');
+        await finishIntegrationMutation(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.', true);
       }, 'Memeriksa…', form);
     } catch (error) {
       if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { model: error.code };
@@ -839,6 +917,7 @@
     } catch (error) { $('#integration-model-catalog-status').textContent = 'Daftar model tidak tersedia; masukkan model ID secara manual.'; show('#integration-model-error', integrationError(error)); }
   });
   $('#integration-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));
+  $('#ai-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));
   $('#integration-check-active').addEventListener('click', async (event) => {
     const checkLoad = state.integrationLoad;
     try {
@@ -887,7 +966,7 @@
       let logoutError = null;
       try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
       catch (error) { logoutError = error; }
-      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-active-model', '#integration-switch-status', '#integration-automation-status']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([]); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false); }
+      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false); }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');
   });
@@ -1019,6 +1098,24 @@
     if (sidebarViewport.matches && sidebar.classList.contains('is-open')) setSidebarOpen(false, { restoreFocus: false, focusPanel: true });
     loadTabData(button.dataset.tab);
   }));
+  $('#onboarding-details-toggle').addEventListener('click', (event) => {
+    state.onboardingExpanded = !state.onboardingExpanded;
+    $('#onboarding-details').hidden = !state.onboardingExpanded;
+    event.currentTarget.setAttribute('aria-expanded', String(state.onboardingExpanded));
+    event.currentTarget.textContent = state.onboardingExpanded ? 'Sembunyikan detail' : 'Lihat detail';
+  });
+  $('#onboarding-settings').addEventListener('click', () => {
+    activateTab('content');
+    loadTabData('content');
+    const setting = $('#content-form').elements.namedItem('brandName');
+    setting?.focus({ preventScroll: true });
+    setting?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+  });
+  $('#onboarding-retry').addEventListener('click', (event) => {
+    const pending = withPending(event.currentTarget, refresh, 'Memuat…').catch(() => false);
+    $('#onboarding-loading').focus({ preventScroll: true });
+    return pending;
+  });
   $('.sidebar-nav').addEventListener('keydown', (event) => {
     const tabs = $$('.sidebar-nav .tab');
     const currentIndex = tabs.indexOf(event.target.closest('.tab'));

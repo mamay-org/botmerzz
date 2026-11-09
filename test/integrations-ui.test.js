@@ -16,6 +16,10 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
   assert.match(html, /id="tab-integrations"[^>]*role="tabpanel"[^>]*aria-labelledby="tab-button-integrations"/);
   assert.match(html, /<label>Profile ID<input name="profileId"/);
   assert.match(html, /<label>Account ID<input name="accountId"/);
+  const integrations = html.slice(html.indexOf('<section id="tab-integrations"'), html.indexOf('<section id="tab-ai"'));
+  const ai = html.slice(html.indexOf('<section id="tab-ai"'), html.indexOf('<section id="tab-admins"'));
+  assert.doesNotMatch(integrations, /integration-model-form|integration-model-catalog|Model OpenRouter/);
+  assert.match(ai, /name="model" list="integration-model-list"/);
   assert.match(html, /name="model" list="integration-model-list"/);
   assert.match(html, /id="integration-account-error"[^>]*role="alert"/);
   assert.match(css, /\.integration-summary\{display:grid;grid-template-columns:1fr/);
@@ -40,13 +44,15 @@ test('model catalog failure leaves a manual input and activation follows validat
   assert.match(app, /Daftar model tidak tersedia; masukkan model ID secara manual/);
 });
 
-test('rollback validates changed destinations and requires confirmation with the observed version', () => {
-  const history = section('function renderIntegrationHistory(', 'async function loadIntegrations(');
+test('rollback validates component-specific history and requires confirmation with the observed version', () => {
+  const history = section('function renderIntegrationHistory(', 'function syncIntegrationControls(');
   assert.match(history, /validate-account/);
   assert.match(history, /validate-model/);
   assert.match(history, /confirmAction/);
   assert.match(history, /expectedVersion, confirmed: true, component/);
-  assert.match(history, /\['account', 'model'\]/);
+  assert.match(history, /history\.filter/);
+  assert.match(history, /component === 'account'/);
+  assert.doesNotMatch(history, /for\s*\(const component of \['account', 'model'\]\)/);
   assert.match(history, /\['ACTIVE', 'NOT_CONFIGURED'\]\.includes\(item\.status\)/);
   assert.match(history, /button\.disabled = !restorable/);
   assert.match(history, /\.textContent/);
@@ -75,7 +81,7 @@ test('integration refresh rejects stale responses, clears failed state and prese
   requests[1].resolve(config(2, 'new')); await newer;
   requests[0].resolve(config(1, 'old')); await older;
   assert.equal(state.integrations.configuration.accountId, 'new');
-  assert.equal(node('#integration-automation-status').textContent, 'Aktif');
+  assert.equal(node('#ai-active-model').textContent, 'vendor/model');
   node('#integration-account-form').elements.accountId.value = 'draft';
   const fail = context.loadIntegrations(); requests[2].reject(new Error('offline'));
   await assert.rejects(fail, /offline/);
