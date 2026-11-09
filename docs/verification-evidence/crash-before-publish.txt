@@ -1,0 +1,2 @@
+{"point":"claimed-before-publish","slot":"c9f3bd03-f718-4633-b7c6-7c0c35436f42"}
+{"after_sigkill":[{"status":"generating","tebar_profile_id":"test-old-profile","tebar_account_id":"test-old-account","provider_post_id":null}]}

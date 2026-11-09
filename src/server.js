@@ -13,6 +13,10 @@ const { registerWebhookRoutes } = require('./http/routes/webhooks');
 const { registerIntegrationRoutes } = require('./http/routes/integrations');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
+const PUBLIC_SERVER_ERRORS = new Set([
+  'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
+  'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE',
+]);
 
 function createServer({ config, repository, auth, services = {} }) {
   if (!config || !repository || !auth) throw new TypeError('config, repository, and auth are required');
@@ -88,7 +92,9 @@ function createServer({ config, repository, auth, services = {} }) {
   app.use(async (error, _req, res, _next) => {
     if (res.headersSent) return;
     const status = Number.isInteger(error.status) ? error.status : 500;
-    const code = error.code && /^[A-Z0-9_]{2,64}$/.test(error.code) ? error.code : status >= 500 ? 'INTERNAL_ERROR' : 'INVALID_REQUEST';
+    const code = status >= 500
+      ? (PUBLIC_SERVER_ERRORS.has(error.code) ? error.code : 'INTERNAL_ERROR')
+      : (typeof error.code === 'string' && /^[A-Z0-9_]{2,64}$/.test(error.code) ? error.code : 'INVALID_REQUEST');
     if (status === 429 && Number.isSafeInteger(error.retryAfterSeconds)
       && error.retryAfterSeconds > 0 && error.retryAfterSeconds <= 86_400) {
       res.set('Retry-After', String(error.retryAfterSeconds));

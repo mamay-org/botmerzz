@@ -1,0 +1,4 @@
+{"started":true}
+{"mock_provider":"request_received","target":"test-old-account"}
+{"signal":"SIGKILL","after":{"status":"publishing","tebar_profile_id":"test-old-profile","tebar_account_id":"test-old-account","provider_post_id":null}}
+{"reclaim":null}

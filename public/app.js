@@ -44,11 +44,13 @@
       control.disabled = originalDisabled;
       control.textContent = originalText;
       control.removeAttribute('aria-busy');
+      if (control.id === 'integration-check-active') control.disabled = !state.integrations?.configuration?.profileId || !state.integrations?.configuration?.accountId;
       if (form) {
         formControls.forEach(([field, disabled]) => { field.disabled = disabled; });
         delete form.dataset.pending;
         if (originalBusy === null) form.removeAttribute('aria-busy');
         else form.setAttribute('aria-busy', originalBusy);
+        if (form.id === 'integration-account-form' || form.id === 'integration-model-form') syncIntegrationControls();
       }
     }
   }
@@ -554,7 +556,7 @@
 
   function integrationVersion() {
     const version = state.integrations?.configuration?.version;
-    if (version === undefined || version === null) throw new Error('CONFIG_NOT_LOADED');
+    if (version === undefined || version === null) { const error = new Error('CONFIG_NOT_LOADED'); error.code = 'CONFIG_NOT_LOADED'; throw error; }
     return version;
   }
   function integrationError(error) {
@@ -570,6 +572,19 @@
       show('#global-error', 'Pengaturan tersimpan, tetapi konfigurasi integrasi belum lengkap. Lengkapi akun dan model sebelum mengaktifkan otomasi.');
     } else if (status === 'ACTIVE') show('#global-success', successMessage);
     else show('#global-error', 'Status konfigurasi belum dapat dipastikan. Muat ulang dan periksa sebelum melanjutkan.');
+  }
+  async function finishIntegrationMutation(configuration, successMessage, updateDashboard = false) {
+    try { if (!await loadIntegrations()) return; }
+    catch {
+      show('#global-error', 'Permintaan perubahan diterima, tetapi status terkini belum tersedia. Muat ulang konfigurasi sebelum melanjutkan.');
+      return;
+    }
+    const dashboardError = updateDashboard && await refresh().catch(() => true);
+    showIntegrationOutcome(state.integrations?.configuration || configuration, successMessage);
+    if (dashboardError) {
+      const error = $('#global-error');
+      show('#global-error', `${error.hidden ? '' : error.textContent + ' '}Ringkasan dashboard belum dapat diperbarui.`);
+    }
   }
   function renderIntegrationHistory(history = []) {
     const container = $('#integration-history');
@@ -608,7 +623,7 @@
               }
               if (!window.confirm(`${summary} Versi referensi: ${item.version}.`)) return;
               const result = await api('/api/integrations/rollback', { method: 'POST', body: JSON.stringify({ version: item.version, expectedVersion, confirmed: true, component }) });
-              await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.');
+              await finishIntegrationMutation(result.configuration, component === 'account' ? 'Akun berhasil dipulihkan. Aktifkan otomasi kembali secara manual.' : 'Model berhasil dipulihkan.', true);
             }, 'Memeriksa…');
           } catch (error) { show('#global-error', integrationError(error)); }
         });
@@ -617,35 +632,65 @@
       row.append(title, details, actions); container.append(row);
     });
   }
-  async function loadIntegrations() {
-    const result = await api('/api/integrations');
+  function syncIntegrationControls() {
+    for (const selector of ['#integration-account-form', '#integration-model-form']) {
+      const form = $(selector);
+      $('button[type="submit"]', form).disabled = !state.integrations || form.dataset.pending === 'true';
+    }
+  }
+  async function loadIntegrations({ verification = null } = {}) {
+    const request = state.integrationLoad = (state.integrationLoad || 0) + 1;
+    state.integrations = null;
+    state.integrationVerification = null;
+    syncIntegrationControls();
+    hide('#integration-account-preview');
+    for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-active-model', '#integration-switch-status', '#integration-automation-status']) $(selector).textContent = 'Tidak tersedia';
+    $('#integration-check-active').disabled = true;
+    $('#integration-reconcile').hidden = true;
+    $('#integration-notice').textContent = 'Memuat konfigurasi terkini. Isian perubahan tetap disimpan.';
+    renderIntegrationHistory([]);
+    let result;
+    let dashboard;
+    try {
+      [result, dashboard] = await Promise.all([api('/api/integrations'), api('/api/dashboard').catch(() => null)]);
+    } catch (error) {
+      if (request !== state.integrationLoad) return false;
+      $('#integration-notice').textContent = 'Konfigurasi tidak tersedia. Muat ulang sebelum menyimpan perubahan.';
+      throw error;
+    }
+    if (request !== state.integrationLoad) return false;
     const configuration = result.configuration || {};
     state.integrations = result;
+    syncIntegrationControls();
+    state.integrationVerification = verification;
     $('#integration-active-profile').textContent = configuration.profileId || 'Belum dikonfigurasi';
-    const verification = state.integrationVerification;
     const verifiedAccount = verification?.profileId === configuration.profileId && verification?.accountId === configuration.accountId ? verification.account : null;
     $('#integration-active-account').textContent = `${configuration.accountId || 'Belum dikonfigurasi'}${verifiedAccount?.username ? ` · @${verifiedAccount.username}` : ''}`;
-    $('#integration-provider-status').textContent = verifiedAccount ? `Terverifikasi · ${verifiedAccount.status || 'status tidak diketahui'}` : 'Belum diverifikasi pada halaman ini';
+    $('#integration-provider-status').textContent = verifiedAccount ? `Terverifikasi · ${verifiedAccount.platform || 'Threads'} · ${verifiedAccount.status || 'status tidak diketahui'}` : 'Belum diverifikasi pada halaman ini';
     $('#integration-check-active').disabled = !configuration.profileId || !configuration.accountId;
     $('#integration-active-model').textContent = configuration.model || 'Belum dikonfigurasi';
     const status = String(configuration.status || 'NOT_CONFIGURED').toUpperCase();
     const labels = { ACTIVE: 'Aktif', PAUSED: 'Dijeda', SWITCHING: 'Pergantian berlangsung', BLOCKED_RECONCILIATION: 'Tertahan: post lama perlu diperiksa', NOT_CONFIGURED: 'Belum dikonfigurasi' };
     $('#integration-switch-status').textContent = labels[status] || status;
-    $('#integration-automation-status').textContent = state.data?.automation?.enabled ? 'Aktif' : 'Nonaktif';
+    $('#integration-automation-status').textContent = typeof dashboard?.automation?.enabled === 'boolean' ? (dashboard.automation.enabled ? 'Aktif' : 'Nonaktif') : 'Tidak tersedia';
     const pending = configuration.pendingProfileId || configuration.pendingAccountId;
     $('#integration-notice').textContent = pending ? `Pergantian menunggu pemeriksaan: profile ${configuration.pendingProfileId || '—'}, akun ${configuration.pendingAccountId || '—'}. Otomasi tetap dijeda.` : 'Perubahan akun dapat menjeda otomasi. Periksa status sebelum mengaktifkannya kembali.';
     $('#integration-reconcile').hidden = !['SWITCHING', 'BLOCKED_RECONCILIATION'].includes(status);
     const accountForm = $('#integration-account-form');
-    if (!accountForm.dataset.initialized) {
+    const oldAccount = accountForm.dataset.baseline && JSON.parse(accountForm.dataset.baseline);
+    if ((!oldAccount && !accountForm.elements.profileId.value && !accountForm.elements.accountId.value) || (oldAccount && accountForm.elements.profileId.value === oldAccount.profileId && accountForm.elements.accountId.value === oldAccount.accountId)) {
       accountForm.elements.profileId.value = configuration.profileId || '';
       accountForm.elements.accountId.value = configuration.accountId || '';
-      accountForm.dataset.initialized = 'true';
     }
+    accountForm.dataset.baseline = JSON.stringify({ profileId: configuration.profileId || '', accountId: configuration.accountId || '' });
     const modelForm = $('#integration-model-form');
-    if (!modelForm.dataset.initialized) { modelForm.elements.model.value = configuration.model || ''; modelForm.dataset.initialized = 'true'; }
+    if ((modelForm.dataset.baseline === undefined && !modelForm.elements.model.value) || modelForm.elements.model.value === modelForm.dataset.baseline) modelForm.elements.model.value = configuration.model || '';
+    modelForm.dataset.baseline = configuration.model || '';
     renderIntegrationHistory(Array.isArray(result.history) ? result.history : []);
+    return true;
   }
 
+  $('#integration-account-form').addEventListener('input', () => hide('#integration-account-preview'));
   $('#integration-account-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget; hide('#global-error'); hide('#global-success'); hide('#integration-account-error'); hide('#integration-account-preview'); clearFormErrors(form);
     const payload = { profileId: value(form, 'profileId').trim(), accountId: value(form, 'accountId').trim() };
@@ -655,10 +700,11 @@
         const checked = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify(payload) });
         const account = checked.account || {};
         const identity = account.username ? `@${account.username}` : account.id || payload.accountId;
-        show('#integration-account-preview', `Akun terverifikasi: ${identity} · Profile ${account.profileId || payload.profileId} · Status ${account.status || 'tidak diketahui'}.`);
+        show('#integration-account-preview', `Akun terverifikasi: ${identity} · Profile ${account.profileId || payload.profileId} · Platform ${account.platform || 'Threads'} · Status ${account.status || 'tidak diketahui'}.`);
         if (!window.confirm(`Ganti tujuan posting ke ${identity} (Account ID ${payload.accountId}) di profile ${payload.profileId}? Otomasi akan dijeda dan post lama diperiksa.`)) return;
         const result = await api('/api/integrations/account', { method: 'PUT', body: JSON.stringify({ ...payload, expectedVersion: version, confirmed: true }) });
-        await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Akun berhasil diganti. Otomasi tetap nonaktif sampai diaktifkan kembali.');
+        if (result.configuration?.status === 'ACTIVE') form.dataset.baseline = JSON.stringify(payload);
+        await finishIntegrationMutation(result.configuration, 'Akun berhasil diganti. Otomasi tetap nonaktif sampai diaktifkan kembali.', true);
       }, 'Memeriksa…', form);
     } catch (error) {
       if (['INVALID_ACCOUNT', 'ACCOUNT_NOT_AVAILABLE'].includes(error.code)) error.fields = { profileId: error.code, accountId: error.code };
@@ -675,7 +721,8 @@
         const identity = checked.model?.name || checked.model?.id || model;
         if (!window.confirm(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
         const result = await api('/api/integrations/model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
-        await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.');
+        form.dataset.baseline = model;
+        await finishIntegrationMutation(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.');
       }, 'Memeriksa…', form);
     } catch (error) {
       if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { model: error.code };
@@ -697,22 +744,26 @@
   });
   $('#integration-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));
   $('#integration-check-active').addEventListener('click', async (event) => {
+    const checkLoad = state.integrationLoad;
     try {
       await withPending(event.currentTarget, async () => {
         const { profileId, accountId } = state.integrations?.configuration || {};
-        if (!profileId || !accountId) throw new Error('CONFIG_NOT_LOADED');
+        if (!profileId || !accountId) { const error = new Error('CONFIG_NOT_LOADED'); error.code = 'CONFIG_NOT_LOADED'; throw error; }
+        state.integrationVerification = null;
+        $('#integration-active-account').textContent = accountId;
+        $('#integration-provider-status').textContent = 'Memeriksa akun…';
         const result = await api('/api/integrations/validate-account', { method: 'POST', body: JSON.stringify({ profileId, accountId }) });
-        state.integrationVerification = { profileId, accountId, account: result.account || {} };
-        await loadIntegrations();
+        if (checkLoad !== state.integrationLoad) return;
+        await loadIntegrations({ verification: { profileId, accountId, account: result.account || {} } });
       }, 'Memeriksa…');
-    } catch (error) { state.integrationVerification = null; $('#integration-provider-status').textContent = 'Pemeriksaan gagal'; show('#global-error', integrationError(error)); }
+    } catch (error) { if (checkLoad !== state.integrationLoad) return; state.integrationVerification = null; $('#integration-provider-status').textContent = 'Pemeriksaan gagal'; show('#global-error', integrationError(error)); }
   });
   $('#integration-reconcile').addEventListener('click', async (event) => {
     hide('#global-error'); hide('#global-success');
     try {
       await withPending(event.currentTarget, async () => {
         const result = await api('/api/integrations/reconcile', { method: 'POST', body: JSON.stringify({ expectedVersion: integrationVersion() }) });
-        await refresh(); await loadIntegrations(); showIntegrationOutcome(result.configuration, 'Pergantian akun selesai. Otomasi tetap nonaktif sampai diaktifkan kembali.');
+        await finishIntegrationMutation(result.configuration, 'Pergantian akun selesai. Otomasi tetap nonaktif sampai diaktifkan kembali.', true);
       }, 'Memeriksa…');
     } catch (error) { show('#global-error', integrationError(error)); }
   });
@@ -740,7 +791,7 @@
       let logoutError = null;
       try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
       catch (error) { logoutError = error; }
-      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; delete $('#integration-account-form').dataset.initialized; delete $('#integration-model-form').dataset.initialized; setAuthenticated(false); }
+      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-active-model', '#integration-switch-status', '#integration-automation-status']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([]); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false); }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');
   });

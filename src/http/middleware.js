@@ -43,8 +43,9 @@ function createHttpMiddleware({ config, auth }) {
   function mutation(req, res, next) {
     if (!sameOrigin(req)) return res.status(403).json({ error: 'ORIGIN_REJECTED' });
     const token = req.get('x-csrf-token');
-    if (!req.session || typeof token !== 'string' || token.length !== req.session.csrfToken.length
-      || !timingSafeEqual(Buffer.from(token), Buffer.from(req.session.csrfToken))) {
+    const supplied = typeof token === 'string' ? Buffer.from(token) : Buffer.alloc(0);
+    const expected = typeof req.session?.csrfToken === 'string' ? Buffer.from(req.session.csrfToken) : Buffer.alloc(0);
+    if (!supplied.length || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
       return res.status(403).json({ error: 'CSRF_REJECTED' });
     }
     return next();

@@ -1,0 +1,2 @@
+const root=process.cwd();const {loadEnv}=require(root+'/src/config');const {createPool}=require(root+'/src/db');const {createRepository}=require(root+'/src/repository');
+(async()=>{const pool=createPool(loadEnv());const repo=createRepository(pool);const slot=await repo.claimDueSlot({now:new Date(),minimumIntervalHours:1});if(!slot)throw Error('no claim');process.stdout.write(JSON.stringify({point:'claimed-before-publish',slot:slot.id})+'\n',()=>process.kill(process.pid,'SIGKILL'));})().catch(e=>{console.error(e);process.exitCode=1});

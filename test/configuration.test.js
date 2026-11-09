@@ -18,6 +18,7 @@ test('account verification rejects mismatch, non-Threads, inactive and suspended
   let target={id:'acct',profileId:'profile',platform:'threads',status:'active',planSuspended:false,username:'tester'};
   const validator=createConfigurationValidators({config,tebarFactory:()=>({listAccounts:async()=>[target]})});
   assert.equal((await validator.validateAccount({profileId:'profile',accountId:'acct'})).username,'tester');
+  assert.equal((await validator.validateAccount({profileId:'profile',accountId:'acct'})).platform,'threads');
   for(const change of [{profileId:'other'},{platform:'instagram'},{status:'expired'},{planSuspended:true},{planSuspended:null},{planSuspended:undefined}]) {
     target={id:'acct',profileId:'profile',platform:'threads',status:'active',planSuspended:false,...change};
     await assert.rejects(validator.validateAccount({profileId:'profile',accountId:'acct'}),e=>e.code==='ACCOUNT_NOT_AVAILABLE');
@@ -43,6 +44,22 @@ test('model validation checks metadata, sampling parameters and provider errors'
   await assert.rejects(validator.validateModel('vendor/model:free'),e=>e.code==='MODEL_INCOMPATIBLE');
   const down=createConfigurationValidators({config,http:{request:async()=>{throw Object.assign(new Error('secret'),{response:{status:429}});}}});
   await assert.rejects(down.validateModel('vendor/model:free'),e=>e.code==='OPENROUTER_RATE_LIMITED'&&!e.message.includes('secret'));
+});
+test('provider timeouts and rate limits fail closed without exposing upstream details',async()=>{
+  const secret='sensitive-provider-response';
+  for(const [provider,failure,expected] of [
+    ['tebar',Object.assign(new Error(secret),{code:'ECONNABORTED'}),'TEBAR_UNAVAILABLE'],
+    ['tebar',Object.assign(new Error(secret),{response:{status:429,data:{error:{message:secret}}}}),'TEBAR_RATE_LIMITED'],
+    ['openrouter',Object.assign(new Error(secret),{code:'ECONNABORTED'}),'OPENROUTER_UNAVAILABLE'],
+    ['openrouter',Object.assign(new Error(secret),{response:{status:429,data:{error:{message:secret}}}}),'OPENROUTER_RATE_LIMITED'],
+  ]) {
+    let request;
+    const validator=createConfigurationValidators({config,http:{request:async options=>{request=options;throw failure;}}});
+    const operation=provider==='tebar' ? validator.validateAccount({profileId:'profile',accountId:'acct'}) : validator.validateModel('vendor/model');
+    await assert.rejects(operation,error=>error.code===expected && error.status===503 && !error.message.includes(secret) && !JSON.stringify(error).includes(secret));
+    assert.equal(request.timeout,provider==='tebar'?30000:15000);
+    assert.equal(request.maxRedirects,0);
+  }
 });
 test('integration API enforces auth, CSRF, strict fields, confirmation, validation and version conflict',async t=>{
   let authenticated=false,writes=0,checks=0;const logs=[];const serverConfig={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};

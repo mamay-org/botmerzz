@@ -1,0 +1,10 @@
+Integration tab static CSS contrast calculation
+Environment: source CSS, no browser rendering; WCAG relative luminance formula.
+Expected: >=4.5:1 for normal text (specific opaque color pairs only).
+Actual:
+#ffffff on #2356d1 (primary button): 6.32:1 PASS
+#ffffff on #0b1240 (panel): 17.88:1 PASS
+#ffffff on #172650 (info notice): 14.69:1 PASS
+#fec700 on #0b1240 (heading): 11.39:1 PASS
+#ffffff on #3b1d35 (error notice): 14.86:1 PASS
+Limitations: no computed-style, opacity, focus, disabled-state, zoom, or visual rendering measurement. Browser unavailable in this session (CUA browser inventory empty). This is not an accessibility audit.
