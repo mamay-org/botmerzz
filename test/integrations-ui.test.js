@@ -10,6 +10,7 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
+const { searchOpenRouterModels, modelValidationStatusFromError } = require('../public/app.js');
 
 test('integration tab exposes linked accessible controls and mobile layout', () => {
   assert.match(html, /data-tab="integrations"[^>]*aria-controls="tab-integrations"/);
@@ -19,8 +20,8 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
   const integrations = html.slice(html.indexOf('<section id="tab-integrations"'), html.indexOf('<section id="tab-ai"'));
   const ai = html.slice(html.indexOf('<section id="tab-ai"'), html.indexOf('<section id="tab-admins"'));
   assert.doesNotMatch(integrations, /integration-model-form|integration-model-catalog|Model OpenRouter/);
-  assert.match(ai, /name="model" list="integration-model-list"/);
-  assert.match(html, /name="model" list="integration-model-list"/);
+  assert.match(ai, /role="combobox"/);
+  assert.match(ai, /name="model"/);
   assert.match(html, /id="integration-account-error"[^>]*role="alert"/);
   assert.match(css, /\.integration-summary\{display:grid;grid-template-columns:1fr/);
 });
@@ -38,10 +39,79 @@ test('account validation and identity confirmation precede versioned activation'
 
 test('model catalog failure leaves a manual input and activation follows validation', () => {
   const handler = section("$('#integration-model-form').addEventListener", "$('#integration-model-catalog').addEventListener");
+  const ai = html.slice(html.indexOf('<section id="tab-ai"'), html.indexOf('<section id="tab-admins"'));
   assert.ok(handler.indexOf("'/api/integrations/validate-model'") < handler.indexOf("'/api/integrations/model'"));
   assert.match(handler, /expectedVersion/);
+  assert.match(handler, /activationAttempted/);
+  assert.match(handler, /handleModelSaveFailure\(form, error\)/);
   assert.doesNotMatch(handler, /form\.reset\(/);
-  assert.match(app, /Daftar model tidak tersedia; masukkan model ID secara manual/);
+  assert.match(app, /UNVERIFIED · katalog tidak dapat dimuat/);
+  assert.match(ai, /Opsi lanjutan: masukkan Model ID manual/);
+});
+
+test('a lost model activation response is reconciled without claiming the old model remains active', async () => {
+  const vm = require('node:vm');
+  const nodes = new Map();
+  const node = selector => { if (!nodes.has(selector)) nodes.set(selector, { hidden: true, textContent: '' }); return nodes.get(selector); };
+  let reloads = 0;
+  const validation = [];
+  const notices = [];
+  const state = { integrations: null, modelValidation: { model: 'vendor/new', version: 2, status: 'AVAILABLE' } };
+  const context = {
+    state,
+    $: node,
+    loadIntegrations: async () => { reloads++; state.integrations = { configuration: { model: 'vendor/new' } }; return true; },
+    renderModelValidation: (...args) => validation.push(args),
+    updateModelVerificationFailure() { throw Error('uncertain mutation must not be reported as a validation failure'); },
+    showFormError() { throw Error('uncertain mutation must not become a definitive form error'); },
+    notify: (...args) => notices.push(args),
+    updateOpenRouterActions() {},
+  };
+  vm.createContext(context);
+  vm.runInContext(section('  async function handleModelSaveFailure(', '  function showIntegrationOutcome(') + '\nthis.handleModelSaveFailure = handleModelSaveFailure;', context);
+  await context.handleModelSaveFailure({}, new TypeError('connection closed after PUT'));
+  assert.equal(reloads, 1);
+  assert.equal(validation.at(-1)[0], 'UNVERIFIED');
+  assert.match(validation.at(-1)[1], /Respons penyimpanan tidak dapat dipastikan/);
+  assert.match(validation.at(-1)[1], /model aktif vendor\/new/);
+  assert.doesNotMatch(validation.at(-1)[1], /sebelumnya tetap aktif/i);
+  assert.match(node('#integration-model-error').textContent, /vendor\/new/);
+  assert.deepEqual(notices[0], ['warning', validation.at(-1)[1]]);
+  state.integrations = { configuration: { model: 'stale/old' } };
+  context.loadIntegrations = async () => { reloads++; return false; };
+  await context.handleModelSaveFailure({}, new TypeError('connection closed after PUT'));
+  assert.match(validation.at(-1)[1], /status model aktif belum dapat dimuat/i);
+  assert.doesNotMatch(validation.at(-1)[1], /stale\/old/);
+});
+
+test('OpenRouter selection exposes an accessible searchable listbox and explicit verification states', () => {
+  const ai = html.slice(html.indexOf('<section id="tab-ai"'), html.indexOf('<section id="tab-admins"'));
+  assert.match(ai, /role="combobox"/);
+  assert.match(ai, /aria-autocomplete="list"/);
+  assert.match(ai, /aria-controls="integration-model-options"/);
+  assert.match(ai, /role="listbox"/);
+  assert.match(ai, /id="integration-model-verify"/);
+  assert.match(ai, /Opsi lanjutan/);
+  assert.match(ai, /name="model"/);
+  assert.match(app, /AVAILABLE: 'Tersedia/);
+  assert.match(app, /INCOMPATIBLE: 'Tidak kompatibel/);
+  assert.match(app, /NOT_FOUND: 'Tidak ditemukan/);
+  assert.match(app, /UNVERIFIED: 'Belum dapat diverifikasi/);
+  assert.match(css, /\.model-options\{position:absolute/);
+});
+
+test('OpenRouter search matches model name, namespace, and ID without provider requests', () => {
+  const models = [
+    { id: 'google/gemini-flash', name: 'Gemini Flash', provider: 'google' },
+    { id: 'anthropic/claude-sonnet', name: 'Claude Sonnet', provider: 'anthropic' },
+  ];
+  assert.deepEqual(searchOpenRouterModels(models, 'gemini').map((model) => model.id), ['google/gemini-flash']);
+  assert.deepEqual(searchOpenRouterModels(models, 'ANTHROPIC').map((model) => model.id), ['anthropic/claude-sonnet']);
+  assert.deepEqual(searchOpenRouterModels(models, 'claude-sonnet').map((model) => model.id), ['anthropic/claude-sonnet']);
+  assert.equal(searchOpenRouterModels(models, 'missing').length, 0);
+  assert.equal(modelValidationStatusFromError({ code: 'MODEL_NOT_FOUND' }), 'NOT_FOUND');
+  assert.equal(modelValidationStatusFromError({ code: 'MODEL_INCOMPATIBLE' }), 'INCOMPATIBLE');
+  assert.equal(modelValidationStatusFromError({ code: 'OPENROUTER_UNAVAILABLE' }), 'UNVERIFIED');
 });
 
 test('rollback validates component-specific history and requires confirmation with the observed version', () => {
@@ -71,7 +141,7 @@ test('integration refresh rejects stale responses, clears failed state and prese
   node('#integration-model-form').elements = { model: { value: '' } };
   const requests = [];
   const state = { integrations: null, integrationVerification: null };
-  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, hide() {} };
+  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, renderModelValidation() {}, updateOpenRouterActions() {}, hide() {} };
   vm.createContext(context);
   const source = section('  function syncIntegrationControls()', "  $('#integration-account-form').addEventListener");
   vm.runInContext(source + '\nthis.loadIntegrations = loadIntegrations;', context);
