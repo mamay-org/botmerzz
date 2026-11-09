@@ -156,6 +156,17 @@ test('mobile navigation exposes all destinations and active panel semantics', ()
   contains(app, /focusWasOnMobileControl[\s\S]*sidebarClose[\s\S]*sidebarBackdrop/, 'desktop breakpoint should restore focus from hidden drawer controls');
 });
 
+test('dashboard shell and content use available width with adaptive summary cards', () => {
+  contains(css, /\.shell\{width:100%;max-width:none;margin:0;padding:0\}/, 'app shell should not cap or center the dashboard width');
+  contains(css, /\.dashboard-content\{width:100%;min-width:0;margin:0;/, 'dashboard content should fill its main column');
+  contains(css, /\.dashboard-layout\{[^}]*grid-template-columns:248px minmax\(0,1fr\)/s, 'desktop sidebar should keep its fixed width beside a fluid main column');
+  contains(css, /\.metrics\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(min\(100%,220px\),1fr\)\)/, 'summary cards should adapt to the available content width');
+  assert.doesNotMatch(css, /\.metrics\{grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/, 'summary card count should not be locked to four columns');
+  contains(css, /\.login-card\{width:calc\(100% - 24px\);max-width:430px/, 'full-width shell should preserve login card gutters and reading width');
+  contains(css, /\.metric\{min-width:0;/, 'summary cards should shrink without forcing horizontal overflow');
+  contains(css, /\.metric strong\{[^}]*overflow-wrap:anywhere/, 'long provider labels should wrap within summary cards');
+});
+
 test('incomplete onboarding items point to a settings tab and focus target', () => {
   contains(app, /onboardingTargets\s*=\s*\{/, 'onboarding items should map to dashboard destinations');
   contains(app, /dataset\.onboardingTarget/, 'incomplete items should expose a direct action');
