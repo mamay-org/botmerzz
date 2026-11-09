@@ -204,15 +204,16 @@
       const name = fieldNames[path] || path;
       const control = form.elements.namedItem(name);
       if (!control || typeof control.setAttribute !== 'function') continue;
-      const label = control.closest('label');
+      const label = control.labels?.[0] || control.closest('label');
       if (!label) continue;
+      const fieldContainer = control.closest('.login-field') || label;
       const errorId = `${form.id || 'form'}-${name}-error`;
       const note = document.createElement('span');
       note.className = 'field-error';
       note.id = errorId;
       note.setAttribute('role', 'alert');
       note.textContent = `Periksa kembali ${fieldLabels[path] || name}.`;
-      label.append(note);
+      fieldContainer.append(note);
       control.dataset.errorId = errorId;
       control.setAttribute('aria-invalid', 'true');
       const hint = label.querySelector('.field-hint');
@@ -292,7 +293,19 @@
     return payload;
   }
 
+  function clearLoginFeedback() {
+    const message = $('#login-error').textContent;
+    hide('#login-error');
+    if (!message) return;
+    $$('#toast-region .toast').forEach((toast) => {
+      if (toast.querySelector('.toast-message')?.textContent !== message) return;
+      clearTimeout(toastTimers.get(toast));
+      toast.remove();
+    });
+  }
+
   function setAuthenticated(authenticated) {
+    clearLoginFeedback();
     $('#login-view').hidden = authenticated;
     $('#app-view').hidden = !authenticated;
     const focusTarget = authenticated ? $('#dashboard-title') : $('#login-email');

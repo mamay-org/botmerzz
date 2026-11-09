@@ -4,23 +4,42 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Kedai Merzz · Panel Threads</title>
+  <title>BotMerzz · Panel Threads</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <main class="shell">
-    <section id="login-view" class="login-card" aria-labelledby="login-title">
-      <div class="brand-mark">KM</div>
-      <p class="eyebrow">KEDAI MERZZ</p>
-      <h1 id="login-title">Panel Threads</h1>
-      <p class="muted">Masuk untuk mengelola jadwal, konten, dan status otomasi.</p>
-      <form id="login-form" class="stack">
-        <label>Email administrator<input id="login-email" name="email" type="email" autocomplete="username" required maxlength="254"></label>
-        <label>Kata sandi<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
-        <button class="button primary" type="submit">Masuk</button>
-        <p id="login-error" class="notice error" role="alert" hidden></p>
-      </form>
+    <section id="login-view" class="login-layout" aria-labelledby="login-title">
+      <div class="login-brand-panel">
+        <div class="login-brand-lockup">
+          <span class="login-brand-wordmark">BotMerzz</span>
+          <span class="login-brand-subtitle">AI-Powered Threads Automation</span>
+        </div>
+        <div class="login-welcome">
+          <p class="login-kicker">WELCOME TO BOTMERZZ</p>
+          <h1 id="login-title">Otomasi konten Threads, lebih mudah dari satu dashboard.</h1>
+          <p class="login-welcome-copy">Kelola konten, jadwal publikasi, dan performa Threads secara praktis dengan bantuan AI.</p>
+        </div>
+        <ul class="login-highlights" aria-label="Fitur BotMerzz">
+          <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><span>Otomasi publikasi Threads</span></li>
+          <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"></path><circle cx="12" cy="12" r="3"></circle></svg><span>AI Content Generator</span></li>
+          <li><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 19V5M4 19h17M8 15v-3M13 15V8M18 15V5"></path></svg><span>Monitoring dan pengelolaan terpusat</span></li>
+        </ul>
+      </div>
+      <section class="login-form-panel" aria-labelledby="login-form-title">
+        <div class="login-form-inner">
+          <p class="login-form-kicker">Masuk ke akun</p>
+          <h2 id="login-form-title">Selamat datang kembali</h2>
+          <p class="login-form-description">Masukkan email dan password untuk mengakses dashboard BotMerzz.</p>
+          <form id="login-form" class="stack">
+            <div class="login-field"><label for="login-email">Email administrator</label><input id="login-email" name="email" type="email" autocomplete="username" required maxlength="254"></div>
+            <div class="login-field"><label for="login-password">Kata sandi</label><input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256"></div>
+            <button class="button primary login-submit" type="submit">Masuk</button>
+            <p id="login-error" class="notice error" role="alert" hidden></p>
+          </form>
+        </div>
+      </section>
     </section>
 
     <section id="app-view" hidden>
