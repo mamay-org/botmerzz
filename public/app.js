@@ -489,6 +489,61 @@
     button.scrollIntoView?.({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
   }
 
+  const sidebar = $('#dashboard-sidebar');
+  const sidebarToggle = $('#sidebar-toggle');
+  const sidebarBackdrop = $('#sidebar-backdrop');
+  const sidebarClose = $('#sidebar-close');
+  const sidebarViewport = window.matchMedia('(max-width: 899px)');
+  function setSidebarOpen(open, { restoreFocus = true, focusPanel = false } = {}) {
+    if (!sidebarViewport.matches) return;
+    sidebar.classList.toggle('is-open', open);
+    sidebar.inert = !open;
+    sidebar.setAttribute('aria-hidden', String(!open));
+    sidebar.setAttribute('role', open ? 'dialog' : 'complementary');
+    if (open) sidebar.setAttribute('aria-modal', 'true'); else sidebar.removeAttribute('aria-modal');
+    sidebarToggle.setAttribute('aria-expanded', String(open));
+    sidebarBackdrop.hidden = !open;
+    document.body.classList.toggle('nav-open', open);
+    if (open) $('.tab[aria-selected="true"]', sidebar).focus();
+    else if (focusPanel) $('#tab-' + $('.tab[aria-selected="true"]', sidebar).dataset.tab).focus();
+    else if (restoreFocus) sidebarToggle.focus();
+  }
+  function syncSidebarViewport() {
+    if (sidebarViewport.matches) {
+      const focusWasInSidebar = sidebar.contains(document.activeElement);
+      setSidebarOpen(false, { restoreFocus: false });
+      if (focusWasInSidebar) sidebarToggle.focus();
+    }
+    else {
+      const focusWasOnMobileControl = document.activeElement === sidebarToggle
+        || document.activeElement === sidebarClose || document.activeElement === sidebarBackdrop;
+      sidebar.classList.remove('is-open'); sidebar.inert = false;
+      sidebar.setAttribute('aria-hidden', 'false'); sidebar.setAttribute('role', 'complementary');
+      sidebar.removeAttribute('aria-modal'); sidebarToggle.setAttribute('aria-expanded', 'false');
+      sidebarBackdrop.hidden = true; document.body.classList.remove('nav-open');
+      if (focusWasOnMobileControl) $('.tab[aria-selected="true"]', sidebar).focus();
+    }
+  }
+  function loadTabData(name) {
+    if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
+    if (name === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
+    if (name === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
+  }
+  syncSidebarViewport();
+  sidebarViewport.addEventListener?.('change', syncSidebarViewport);
+  sidebarToggle.addEventListener('click', () => setSidebarOpen(true));
+  sidebarClose.addEventListener('click', () => setSidebarOpen(false));
+  sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (!sidebarViewport.matches || !sidebar.classList.contains('is-open')) return;
+    if (event.key === 'Escape') { event.preventDefault(); setSidebarOpen(false); return; }
+    if (event.key !== 'Tab') return;
+    const focusable = $$('button:not([disabled]):not([tabindex="-1"])', sidebar);
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+
   function renderOnboarding(items = []) {
     const list = $('#onboarding-list');
     list.replaceChildren(...items.map((item) => {
@@ -959,19 +1014,18 @@
   });
 
   $('#refresh-button').addEventListener('click', () => refresh().catch((error) => show('#global-error', errorText(error))));
-  $$('.tab').forEach((button) => button.addEventListener('click', () => {
+  $$('.sidebar-nav .tab').forEach((button) => button.addEventListener('click', () => {
     activateTab(button.dataset.tab);
-    if (button.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
-    if (button.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
-    if (button.dataset.tab === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
+    if (sidebarViewport.matches && sidebar.classList.contains('is-open')) setSidebarOpen(false, { restoreFocus: false, focusPanel: true });
+    loadTabData(button.dataset.tab);
   }));
-  $('.tabs').addEventListener('keydown', (event) => {
-    const tabs = $$('.tab');
+  $('.sidebar-nav').addEventListener('keydown', (event) => {
+    const tabs = $$('.sidebar-nav .tab');
     const currentIndex = tabs.indexOf(event.target.closest('.tab'));
     if (currentIndex < 0) return;
     let nextIndex = currentIndex;
-    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
-    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
     else if (event.key === 'Home') nextIndex = 0;
     else if (event.key === 'End') nextIndex = tabs.length - 1;
     else return;
@@ -979,9 +1033,7 @@
     const next = tabs[nextIndex];
     activateTab(next.dataset.tab);
     next.focus();
-    if (next.dataset.tab === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
-    if (next.dataset.tab === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
-    if (next.dataset.tab === 'integrations') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
+    loadTabData(next.dataset.tab);
   });
   document.addEventListener('input', (event) => {
     if (event.target?.closest('form')) clearFieldError(event.target);
