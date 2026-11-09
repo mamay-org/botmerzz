@@ -292,8 +292,8 @@ test('MySQL migrations and repository are reachable in integration environment',
       const due=await repo.ensureDueSlot({scheduledAt,sessionId:testSettings.automationSessionId});
       testSlotId=due.id;
       const claims=await Promise.all([
-        repo.claimDueSlot({now:new Date(),minimumIntervalHours:6}),
-        repo.claimDueSlot({now:new Date(),minimumIntervalHours:6}),
+        repo.claimDueSlot({now:new Date()}),
+        repo.claimDueSlot({now:new Date()}),
       ]);
       const winners=claims.filter(Boolean);
       assert.equal(winners.length,1,'only one concurrent database claim may win');
@@ -305,7 +305,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       await pool.end();
       pool=createPool(config);
       const afterRestart=createRepository(pool);
-      const reclaimed=await afterRestart.claimDueSlot({now:new Date(),minimumIntervalHours:6});
+      const reclaimed=await afterRestart.claimDueSlot({now:new Date()});
       assert.equal(reclaimed.id,due.id);
       assert.equal(reclaimed.status,'ready');
       assert.deepEqual(reclaimed.requestPayload,payload);
@@ -327,17 +327,17 @@ test('MySQL migrations and repository are reachable in integration environment',
       const firstPlan=await afterRestart.ensureNextDueSlot({now:new Date(firstActivation.firstPostAt),schedule:testSettings.schedule});
       assert.ok(firstPlan.slot);
       assert.equal(firstPlan.slot.automationSessionId,firstSessionId);
-      const firstClaim=await afterRestart.claimDueSlot({now:new Date(firstActivation.firstPostAt),minimumIntervalHours:1});
+      const firstClaim=await afterRestart.claimDueSlot({now:new Date(firstActivation.firstPostAt)});
       assert.equal(firstClaim.id,firstPlan.slot.id);
       assert.equal(firstClaim.automationSessionId,firstSessionId);
 
       const failureAt=new Date(new Date(firstActivation.firstPostAt).getTime()+12*60*1000);
       await afterRestart.updateSlot(firstClaim.id,{status:'failed',providerStatus:'failed',errorCode:'provider_error',completedAt:failureAt});
-      const retryDueAt=new Date(failureAt.getTime()+3600000);
+      const retryDueAt=new Date(failureAt.getTime()+6*3600000);
       const retryPlan=await afterRestart.ensureNextDueSlot({now:new Date(failureAt.getTime()+1000),schedule:testSettings.schedule});
       assert.ok(retryPlan.slot);
       assert.equal(retryPlan.slot.automationSessionId,firstSessionId);
-      assert.ok(Math.abs(new Date(retryPlan.slot.scheduledAt)-retryDueAt)<5000,'a confirmed failure anchors the next attempt one hour after confirmation');
+      assert.ok(Math.abs(new Date(retryPlan.slot.scheduledAt)-retryDueAt)<5000,'a confirmed failure anchors the next attempt to the configured six-hour interval');
 
       assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
       const [[pausedState]]=await pool.execute('SELECT settings_json,automation_enabled FROM settings WHERE id=1');
@@ -349,7 +349,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       const [[pausedSlots]]=await pool.execute('SELECT SUM(status=\'canceled\') canceled,SUM(status=\'failed\') failed FROM slots');
       assert.equal(Number(pausedSlots.canceled),1,'pause cancels the unclaimed retry slot but preserves prior failure history');
       assert.equal(Number(pausedSlots.failed),1);
-      assert.equal(await afterRestart.claimDueSlot({now:retryDueAt,minimumIntervalHours:1}),null);
+      assert.equal(await afterRestart.claimDueSlot({now:retryDueAt}),null);
 
       const resumedAt=new Date();
       const secondActivation=await afterRestart.setAutomationEnabled(true,null);
@@ -364,7 +364,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       const secondPlan=await afterRestart.ensureNextDueSlot({now:delayedFirstRunAt,schedule:testSettings.schedule});
       assert.equal(secondPlan.slot.automationSessionId,secondSessionId);
       assert.ok(Math.abs(new Date(secondPlan.slot.scheduledAt)-new Date(secondActivation.firstPostAt))<5000,'the activation-first slot remains available after a temporary verification block');
-      const secondClaim=await afterRestart.claimDueSlot({now:delayedFirstRunAt,minimumIntervalHours:1});
+      const secondClaim=await afterRestart.claimDueSlot({now:delayedFirstRunAt});
       assert.equal(secondClaim.id,secondPlan.slot.id,'only the newest activation session can claim a slot');
       assert.equal(secondClaim.automationSessionId,secondSessionId);
       assert.equal((await afterRestart.setAutomationEnabled(true,null)).changed,false,'repeated enable does not create another session or immediate slot');
@@ -373,7 +373,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       await afterRestart.updateSlot(secondClaim.id,{status:'published',providerStatus:'published',completedAt:successAt});
       const successNext=await afterRestart.ensureNextDueSlot({now:new Date(successAt.getTime()+1000),schedule:testSettings.schedule});
       assert.ok(successNext.slot);
-      assert.ok(Math.abs(new Date(successNext.slot.scheduledAt)-new Date(successAt.getTime()+3600000))<5000,'success anchors the following post one hour after provider confirmation');
+      assert.ok(Math.abs(new Date(successNext.slot.scheduledAt)-new Date(successAt.getTime()+6*3600000))<5000,'success anchors the following post to the configured six-hour interval');
 
       assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
     } finally {
@@ -392,7 +392,7 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
   const { createPool } = require('../src/db');
   const { runMigrations } = require('../src/migrate');
   const { createRepository } = require('../src/repository');
-  const { contentSafetyHash } = require('../src/content-safety');
+  const { contentSafetyHash, legacyContentSafetyHash } = require('../src/content-safety');
   const pool = createPool(loadEnv());
   await runMigrations(pool);
   const repo = createRepository(pool);
@@ -414,7 +414,7 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[settings.profileId,settings.targetAccountId]);
     await pool.execute('DELETE FROM service_facts');
-    const cases = ['valid', 'changed', 'inactive', 'expired', 'settings', 'legacy'];
+    const cases = ['valid', 'changed', 'inactive', 'expired', 'settings', 'legacy', 'legacy_hash'];
     for (const [index, scenario] of cases.entries()) {
       await pool.execute('DELETE FROM slots');
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
@@ -424,7 +424,8 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
       const id = randomUUID();
       await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'generating',?,?,1)", [id, new Date(Date.now() - 5000 - index), sessionId,settings.profileId,settings.targetAccountId]);
       const payload = { content: 'Cerita pilihan pemain.', targets: [{ account_id: settings.targetAccountId }] };
-      const hash = scenario === 'legacy' ? null : contentSafetyHash(await repo.getSettings());
+      const currentSettings = await repo.getSettings();
+      const hash = scenario === 'legacy' ? null : scenario === 'legacy_hash' ? legacyContentSafetyHash(currentSettings) : contentSafetyHash(currentSettings);
       assert.equal(await repo.savePreparedSlot(id, {
         requestPayload: payload, idempotencyKey: `test-${id}`, caption: payload.content, pillar: 'topup',
         factBearing: false, factIds: [], factVersions: [{ id: 'topup', updatedAt: fact.updated_at }], contentSafetyHash: hash,
@@ -432,10 +433,11 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
       if (scenario === 'changed') await pool.execute("UPDATE service_facts SET updated_at=DATE_ADD(updated_at, INTERVAL 1 SECOND) WHERE service='topup'");
       if (scenario === 'inactive') await pool.execute("UPDATE service_facts SET active=FALSE WHERE service='topup'");
       if (scenario === 'settings') await pool.execute("UPDATE settings SET knowledge_json=JSON_SET(knowledge_json,'$.brand.voice','Berbeza') WHERE id=1");
+      if (scenario === 'legacy_hash') await pool.execute("UPDATE settings SET settings_json=JSON_SET(JSON_REMOVE(settings_json,'$.schedule.intervalHours'),'$.schedule.intervalMinutes',15) WHERE id=1");
       const result = await repo.startPublishing(id, { now: new Date() });
-      assert.equal(result, scenario === 'valid' ? true : 'stale_facts', scenario);
+      assert.equal(result, ['valid', 'legacy_hash'].includes(scenario) ? true : 'stale_facts', scenario);
       const [[slot]] = await pool.execute('SELECT status FROM slots WHERE id=?', [id]);
-      assert.equal(slot.status, scenario === 'valid' ? 'publishing' : 'ready', scenario);
+      assert.equal(slot.status, ['valid', 'legacy_hash'].includes(scenario) ? 'publishing' : 'ready', scenario);
     }
   } finally {
     await pool.execute('DELETE FROM slots');
@@ -479,5 +481,106 @@ test('MySQL fences a concurrent account switch against publication start', {skip
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);
     await pool.end();
+  }
+});
+
+test('independent MySQL dispatchers serialize one-minute slot claims and preserve the prepared second slot', {skip:!enabled}, async()=>{
+  const {randomUUID}=require('node:crypto');
+  const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');
+  const {createRepository}=require('../src/repository');const {contentSafetyHash}=require('../src/content-safety');
+  const config=loadEnv();let firstPool=createPool(config);let secondPool=createPool(config);
+  const [[priorSettings]]=await firstPool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
+  const [[priorConfig]]=await firstPool.execute('SELECT * FROM integration_config WHERE id=1');
+  const encode=value=>typeof value==='string'?value:JSON.stringify(value);
+  const version=(Number(priorConfig?.version)||0)+10_000_000;const sessionId=randomUUID();const profileId=`interval-profile-${randomUUID()}`;const accountId=`interval-account-${randomUUID()}`;
+  const settings={schedule:{intervalMinutes:1,timezone:'Asia/Kuala_Lumpur'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
+  const knowledge={brand:settings.brand,guardrails:settings.guardrails};const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
+  try{
+    await runMigrations(firstPool);
+    await firstPool.execute('DELETE FROM slots');
+    await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?),(?,?,?,'pending',?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version]);
+    const firstRepository=createRepository(firstPool);const secondRepository=createRepository(secondPool);
+    const claims=await Promise.all([firstRepository.claimDueSlot({now}),secondRepository.claimDueSlot({now})]);
+    assert.equal(claims.filter(Boolean).length,1);
+    const claimed=claims.find(Boolean);const waitingId=claimed.id===firstId?secondId:firstId;
+    assert.equal(claimed.status,'pending');
+    const payload={content:'prepared test content',targets:[{account_id:accountId}]};
+    await firstPool.execute("UPDATE slots SET status='ready',request_payload=?,idempotency_key=?,caption=?,pillar='topup',fact_bearing=FALSE,fact_ids=?,fact_versions=?,content_safety_hash=? WHERE id=?",[JSON.stringify(payload),`interval-${waitingId}`,payload.content,JSON.stringify([]),JSON.stringify([]),contentSafetyHash(settings),waitingId]);
+    assert.equal(await secondRepository.startPublishing(waitingId,{now}),'in_flight');
+    const [[activeSlot]]=await firstPool.execute('SELECT status FROM slots WHERE id=?',[claimed.id]);
+    const [[waitingSlot]]=await firstPool.execute('SELECT status,claimed_at,request_payload,idempotency_key FROM slots WHERE id=?',[waitingId]);
+    assert.equal(activeSlot.status,'generating');
+    assert.equal(waitingSlot.status,'ready');
+    assert.equal(waitingSlot.claimed_at,null);
+    assert.deepEqual(JSON.parse(encode(waitingSlot.request_payload)),payload);
+    assert.equal(waitingSlot.idempotency_key,`interval-${waitingId}`);
+  }finally{
+    await firstPool.execute('DELETE FROM slots');
+    await firstPool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
+    if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
+    else await firstPool.execute('DELETE FROM integration_config WHERE id=1');
+    await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);
+    await firstPool.end();await secondPool.end();
+  }
+});
+
+test('MySQL planner and publication cooldown preserve exact minute intervals', {skip:!enabled}, async()=>{
+  const {randomUUID}=require('node:crypto');
+  const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
+  const pool=createPool(loadEnv());await runMigrations(pool);
+  const [[priorSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`cadence-profile-${randomUUID()}`;const accountId=`cadence-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+20_000_000;
+  const repository=createRepository(pool);const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Kuala_Lumpur'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge={brand:settings.brand,guardrails:settings.guardrails};
+  try{
+    await pool.execute('DELETE FROM slots');await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    const intervals=[1,5,15,30,60,90,135];
+    for(const intervalMinutes of intervals){
+      await pool.execute('DELETE FROM slots');
+      const settingsForInterval={...settings,schedule:{intervalMinutes,timezone:'Asia/Kuala_Lumpur'}};const expected=new Date(base.getTime()+intervalMinutes*60_000);settingsForInterval.nextSlotAt=expected.toISOString();
+      await pool.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settingsForInterval)]);
+      await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,completed_at) VALUES (?,?,?,'published',?)",[randomUUID(),new Date(base.getTime()-30*60*1000),sessionId,base]);
+      const planned=await repository.ensureNextDueSlot({now:expected,schedule:settingsForInterval.schedule});
+      assert.ok(planned.slot,`${intervalMinutes} minutes planned`);
+      assert.equal(Math.abs(new Date(planned.slot.scheduledAt).getTime()-expected.getTime())<2,true,`${intervalMinutes} minute schedule remains exact`);
+      const [[saved]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');assert.equal(JSON.parse(encode(saved.settings_json)).schedule.intervalMinutes,intervalMinutes);
+      const claimed=await repository.claimDueSlot({now:expected});assert.equal(claimed.id,planned.slot.id,`${intervalMinutes} minute cooldown allows due claim`);
+    }
+  }finally{
+    await pool.execute('DELETE FROM slots');await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
+    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
+  }
+});
+
+test('MySQL interval updates preserve the due slot and apply the new cadence afterward', {skip:!enabled}, async()=>{
+  const {randomUUID}=require('node:crypto');
+  const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
+  const pool=createPool(loadEnv());await runMigrations(pool);
+  const [[priorSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');const [[priorConfig]]=await pool.execute('SELECT * FROM integration_config WHERE id=1');
+  const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`edit-profile-${randomUUID()}`;const accountId=`edit-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+30_000_000;
+  const repository=createRepository(pool);const settings={schedule:{intervalMinutes:60,timezone:'UTC'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true,nextSlotAt:new Date(Date.now()+70*60_000).toISOString()};const knowledge={brand:settings.brand,guardrails:settings.guardrails};const slotId=randomUUID();const scheduledAt=new Date(Date.now()+10*60_000);
+  try{
+    await pool.execute('DELETE FROM slots');await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[slotId,scheduledAt,sessionId,profileId,accountId,version]);
+    await repository.saveSettings({schedule:{hours:0,minutes:5,timezone:'UTC'},priceMode:'OFF',brand:settings.brand,guardrails:settings.guardrails,gameWhitelist:[],hashtags:['#KedaiMerzz'],trackedLinks:{}},null);
+    const [[afterSave]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');const afterSaveSettings=JSON.parse(encode(afterSave.settings_json));
+    assert.equal(afterSaveSettings.schedule.intervalMinutes,5);
+    assert.equal(afterSaveSettings.nextSlotAt,undefined,'schedule change clears only the future pointer');
+    const plan=await repository.ensureNextDueSlot({now:new Date(),schedule:afterSaveSettings.schedule});
+    assert.equal(plan.slot.id,slotId);
+    assert.equal(new Date(plan.slot.scheduledAt).getTime(),scheduledAt.getTime(),'the already scheduled slot keeps its original timestamp');
+    const [[afterPlan]]=await pool.execute('SELECT status,scheduled_at FROM slots WHERE id=?',[slotId]);
+    assert.equal(afterPlan.status,'pending');assert.equal(new Date(afterPlan.scheduled_at).getTime(),scheduledAt.getTime());
+    const [[rescheduledSettings]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');
+    const rescheduled=JSON.parse(encode(rescheduledSettings.settings_json));
+    assert.equal(new Date(rescheduled.nextSlotAt).getTime(),scheduledAt.getTime()+5*60_000,'the new interval controls the slot after the preserved one');
+  }finally{
+    await pool.execute('DELETE FROM slots');await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
+    if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
+    await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
   }
 });

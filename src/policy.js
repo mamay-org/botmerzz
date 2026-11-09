@@ -83,6 +83,38 @@ function instant(value) {
   return typeof value === 'string' ? DateTime.fromISO(value, { zone: 'utc' }) : DateTime.invalid('Invalid instant');
 }
 
+function intervalFitsDateTime(intervalMinutes) {
+  if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1) return false;
+  const target = DateTime.utc().plus({ minutes: intervalMinutes });
+  return target.isValid && Number.isFinite(target.toMillis());
+}
+
+function intervalMinutesFromSchedule(schedule = {}) {
+  if (!schedule || typeof schedule !== 'object' || Array.isArray(schedule)) return 60;
+  if (Number.isSafeInteger(schedule.intervalMinutes) && intervalFitsDateTime(schedule.intervalMinutes)) return schedule.intervalMinutes;
+  const requestedHours = typeof schedule.intervalHours === 'string' && schedule.intervalHours.trim()
+    ? Number(schedule.intervalHours) : schedule.intervalHours;
+  if (Number.isSafeInteger(requestedHours) && requestedHours >= 1) {
+    const minutes = requestedHours * 60;
+    if (intervalFitsDateTime(minutes)) return minutes;
+  }
+  if (Number.isSafeInteger(schedule.hours) && schedule.hours >= 0
+    && Number.isSafeInteger(schedule.minutes) && schedule.minutes >= 0 && schedule.minutes <= 59) {
+    const minutes = schedule.hours * 60 + schedule.minutes;
+    if (intervalFitsDateTime(minutes)) return minutes;
+  }
+  return 60;
+}
+
+function normalizeScheduleInterval(schedule = {}) {
+  const normalized = { ...(schedule && typeof schedule === 'object' && !Array.isArray(schedule) ? schedule : {}) };
+  delete normalized.intervalHours;
+  delete normalized.hours;
+  delete normalized.minutes;
+  normalized.intervalMinutes = intervalMinutesFromSchedule(schedule);
+  return normalized;
+}
+
 function validateSettings(input = {}) {
   const errors = {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { valid: false, errors: { settings: 'Use a settings object.' } };
@@ -91,17 +123,39 @@ function validateSettings(input = {}) {
   }
   if (Object.keys(errors).length) return { valid: false, errors };
   const source = input.schedule || {};
-  const requestedIntervalHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
-    ? Number(source.intervalHours) : source.intervalHours;
+  const hasHours = Object.hasOwn(source, 'hours');
+  const hasMinutes = Object.hasOwn(source, 'minutes');
+  const hasLegacyHours = Object.hasOwn(source, 'intervalHours');
+  const hasCanonicalMinutes = Object.hasOwn(source, 'intervalMinutes');
+  let requestedIntervalMinutes = 60;
+  if ([hasHours || hasMinutes, hasLegacyHours, hasCanonicalMinutes].filter(Boolean).length > 1) {
+    errors['schedule.intervalMinutes'] = 'Gunakan satu format interval saja.';
+  } else if (hasHours || hasMinutes) {
+    if (!hasHours || !hasMinutes || !Number.isSafeInteger(source.hours) || source.hours < 0) {
+      errors['schedule.hours'] = 'Masukkan jumlah jam berupa bilangan bulat non-negatif.';
+    }
+    if (!hasHours || !hasMinutes || !Number.isSafeInteger(source.minutes) || source.minutes < 0 || source.minutes > 59) {
+      errors['schedule.minutes'] = 'Masukkan menit berupa bilangan bulat antara 0 dan 59.';
+    }
+    if (!errors['schedule.hours'] && !errors['schedule.minutes']) requestedIntervalMinutes = source.hours * 60 + source.minutes;
+  } else if (hasCanonicalMinutes) {
+    if (!Number.isSafeInteger(source.intervalMinutes)) errors['schedule.intervalMinutes'] = 'Masukkan interval dalam bilangan bulat.';
+    else requestedIntervalMinutes = source.intervalMinutes;
+  } else if (hasLegacyHours) {
+    const legacyHours = typeof source.intervalHours === 'string' && source.intervalHours.trim()
+      ? Number(source.intervalHours) : source.intervalHours;
+    if (!Number.isSafeInteger(legacyHours) || legacyHours < 1) errors['schedule.intervalHours'] = 'Interval lama harus berupa jumlah jam bulat minimal 1.';
+    else requestedIntervalMinutes = legacyHours * 60;
+  }
   const schedule = {
-    intervalHours: 1,
+    intervalMinutes: requestedIntervalMinutes,
     timezone: source.timezone === undefined ? 'Asia/Kuala_Lumpur' : source.timezone,
     activeDays: [1, 2, 3, 4, 5, 6, 7],
     activeStart: '00:00',
     activeEnd: '00:00',
   };
-  if (requestedIntervalHours !== undefined && (typeof requestedIntervalHours !== 'number' || !Number.isFinite(requestedIntervalHours) || requestedIntervalHours < 1)) {
-    errors['schedule.intervalHours'] = 'Minimum interval is one hour.';
+  if (!Number.isSafeInteger(requestedIntervalMinutes) || requestedIntervalMinutes < 1 || !intervalFitsDateTime(requestedIntervalMinutes)) {
+    errors['schedule.intervalMinutes'] = 'Jarak antar posting minimal 1 menit dan harus dapat dijadwalkan.';
   }
   if (typeof schedule.timezone !== 'string' || !IANAZone.isValidZone(schedule.timezone)) errors['schedule.timezone'] = 'Use a valid IANA timezone.';
   const priceMode = input.priceMode === undefined ? 'OFF' : input.priceMode;
@@ -305,4 +359,4 @@ function validateCaption(text, context = {}) {
   return { valid: errors.length === 0, errors: [...new Set(errors)] };
 }
 
-module.exports = { validateSettings, isApprovedCtaUrl, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };
+module.exports = { validateSettings, intervalMinutesFromSchedule, normalizeScheduleInterval, isApprovedCtaUrl, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, appendHashtags, normalizeHashtags, extractRecentHooks, isSafeApprovedField, isSafeApprovedAttribute, MAX_APPROVED_ATTRIBUTE_COUNT };

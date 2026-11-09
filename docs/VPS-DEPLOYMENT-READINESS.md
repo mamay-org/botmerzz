@@ -3,6 +3,8 @@
 **Tanggal audit:** 6 November 2026
 **Cakupan:** codebase, Docker Compose, MySQL, AI guardrails, Tebar, scheduler, Telegram, CI/CD, dan pengujian lokal. Tidak ada koneksi SSH/VPS, permintaan API provider, atau publikasi Threads sungguhan.
 
+**Pembaruan 10 November 2026:** implementasi kini menerima jam dan menit dengan minimum 1 menit serta menyimpan total `intervalMinutes`; pengaturan lama `intervalHours` dikonversi saat dibaca tanpa migrasi. Polling scheduler tetap 60 detik secara default. Seluruh pernyataan satu jam di snapshot audit 6 November berikut merekam kondisi saat audit dan digantikan oleh pembaruan ini untuk kebijakan interval. Pengujian provider staging dan publishing live tetap memerlukan environment staging terisolasi.
+
 ## 1. Ringkasan eksekutif
 
 **Status: READY WITH BLOCKERS.** Codebase dan konfigurasi layak dipasang pada VPS staging dengan scheduler dan automation tetap nonaktif. Docker lokal membuktikan runtime berjalan, health check sukses, migrations diterapkan, dan volume MySQL bertahan setelah seluruh service dihentikan lalu dibuat kembali.
@@ -17,7 +19,7 @@ Sebelum pengujian publikasi live, masih diperlukan kredensial staging Tebar/Open
 | AI dan guardrails | Mock teruji | Prompt Melayu Malaysia, fakta terstruktur, dan validasi klaim tersedia. Belum dijalankan dengan OpenRouter key atau knowledge Kedai Merzz staging. |
 | MySQL dan migrations | Teruji lokal | MySQL 8.4, empat migrations, advisory lock, readiness `200`, dan volume persisten setelah restart Compose. |
 | Docker runtime | Teruji lokal | Build default adalah runtime; container memakai user `node`; port app terikat ke loopback; database tidak punya host port. |
-| Scheduler | Siap dengan opt-in | Poller in-process 60 detik default. `SCHEDULER_ENABLED=false` secara default. Cadence bisnis minimum/default konfigurasi baru 1 jam, publishing 24/7; jadwal live belum diverifikasi. |
+| Scheduler | Siap dengan opt-in | Poller in-process 60 detik default. `SCHEDULER_ENABLED=false` secara default. Cadence bisnis default 60 menit dan minimum 1 menit, publishing 24/7; jadwal live belum diverifikasi. |
 | Tebar | Mock dan kontrak terdokumentasi | Adapter mock menguji Bearer key, profile header, payload, idempotency key, error, dan status. Tidak ada API call atau akun testing yang diverifikasi. |
 | Telegram | Mock dan outbox teruji | Outbox durable, deduplikasi, retry, success/failure, AI failure, account disconnect, dan daily summary tersedia. Pengiriman ke chat nyata belum diuji. |
 | GitHub Actions/GHCR | Konfigurasi siap | CI memuat audit dependency, checks, tests, dan runtime build. Publish memakai SHA tag dan mencatat digest. Workflow GitHub/pull GHCR belum dijalankan. |
@@ -76,14 +78,14 @@ Kontrak diperiksa pada [dokumentasi resmi create/status post Tebar](https://docs
 ## 7. Scheduler dan cron
 
 - Memakai poller JavaScript dalam proses Node, bukan `node-cron` atau system cron. Hanya aktif jika `SCHEDULER_ENABLED=true`.
-- Konfigurasi jadwal baru default ke interval 1 jam, sekaligus minimum. Publishing berjalan 24/7; active days/jam lama yang tersimpan diabaikan. Nilai interval database yang sudah ada dipertahankan saat upgrade; admin harus mengatur interval ke `1` di dashboard untuk memakai cadence per jam.
-- Mengaktifkan automation meminta dispatch pertama segera. Jika publikasi terjadi dalam satu jam terakhir, dispatch menunggu sisa cooldown satu jam.
-- Cadence satu jam menghasilkan 24 slot terjadwal per hari; pantau kuota publishing akun Tebar sebelum automation diaktifkan.
+- Audit pada 6 November mencatat cadence minimum/default 1 jam; implementasi 10 November menggantinya dengan input jam-menit, minimum 1 menit dan default 60 menit. Database JSON menyimpan total `intervalMinutes`; nilai lama `intervalHours` tetap terbaca sebagai jam penuh tanpa migrasi.
+- Mengaktifkan automation meminta dispatch pertama segera. Slot yang sudah terjadwal mempertahankan waktu saat interval diubah; interval baru berlaku sesudah slot tersebut.
+- Cadence pendek dapat terpengaruh polling scheduler, waktu generasi, dan latency provider. Pantau kuota, rate limit, dan biaya OpenRouter/Tebar sebelum automation diaktifkan.
 - Slot, klaim, payload, dan idempotency key tersimpan di MySQL. Unique scheduled instant, transaksi/row lock, dan klaim atomik melindungi run konkuren.
 - Slot lebih dari 15 menit terlambat dilewati tanpa catch-up. Payload yang sudah dipersiapkan dapat dipulihkan setelah restart.
 - Emergency pause menghentikan klaim baru. Outcome tak pasti tanpa provider ID tidak direplay dan menahan slot berikutnya.
 - `/health/ready` menampilkan status poller dan hasil/error code aman.
-- **Belum diuji live:** ketepatan scheduled-to-published di VPS. Setelah approval, atur interval database staging ke `1` di dashboard, lalu siapkan satu slot `pending` terisolasi. Scheduler dengan mekanisme yang sama seperti production mengambil slot; jangan lakukan pada production.
+- **Belum diuji live:** ketepatan scheduled-to-published di VPS. Setelah approval dan dengan akun staging terisolasi, pilih interval uji yang disetujui, siapkan satu slot `pending`, lalu catat `scheduled_at`, `published_at`, status, dan activity log. Jangan lakukan pada production.
 
 ## 8. Telegram notifications
 
@@ -128,7 +130,7 @@ Staging dan production perlu Compose project, environment file, database, volume
 
 1. **A — AI content:** gunakan knowledge Kedai Merzz staging; inspeksi bahasa Melayu Malaysia, approved facts/links, dan label `TEST`. Tolak konten dengan harga, stok, diskon, klaim, atau atribut yang tidak disetujui; admin review sebelum publish.
 2. **B — Tebar:** lakukan GET read-only untuk workspace dan akun. Setelah approval live, kirim satu post `TEST` ke Account ID Threads testing. Catat post ID, status target, permalink, dan `published_at`; buka permalink dan pastikan post muncul pada akun yang benar.
-3. **C — Scheduler:** di database staging saja, atur interval ke `1` melalui dashboard admin dan siapkan satu slot one-time `pending`. Aktifkan poller 60 detik. Catat `scheduled_at`, `published_at`, selisih waktu, status slot, dan activity log. Perhitungkan dispatch awal segera atau sisa cooldown satu jam sejak publikasi terakhir.
+3. **C — Scheduler:** di database staging saja, atur interval uji yang disetujui melalui dashboard admin dan siapkan satu slot one-time `pending`. Aktifkan poller 60 detik. Catat `scheduled_at`, `published_at`, selisih waktu, status slot, dan activity log. Perhitungkan dispatch awal segera serta interval sejak publikasi/hasil provider yang terkonfirmasi.
 4. **D — Failure/recovery:** gunakan mocks untuk AI failure, timeout, Tebar error, invalid account, restart dengan volume, duplicate invocation, pause, dan unknown outcome. Pastikan timeout tanpa ID tidak direplay dan menahan slot baru.
 5. **E — Telegram:** verifikasi success/failure, generation failure, account disconnect, dan summary pada chat staging. Jangan gunakan group production.
 6. Simpan hasil provider dan Threads; pause automation setelah test dan putuskan apakah staging tetap aktif. Production memerlukan review/approval terpisah.

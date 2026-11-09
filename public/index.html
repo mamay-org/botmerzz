@@ -148,10 +148,16 @@
       <section id="tab-schedule" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-schedule" aria-hidden="true" tabindex="0" hidden>
         <form id="schedule-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">PENERBITAN</p><h2>Interval penerbitan</h2><p class="muted">Penerbitan berjalan sepanjang hari, setiap hari. Saat otomasi diaktifkan, sistem langsung memproses utas pertama.</p></div></div>
-          <label>Jarak antarposting (jam)<input name="intervalHours" type="number" min="1" max="1" step="1" value="1" readonly required><span class="field-hint">Interval otomasi tetap 1 jam.</span></label>
+          <div class="schedule-interval-fields full">
+            <label for="schedule-hours">Jam<input id="schedule-hours" name="hours" type="number" inputmode="numeric" min="0" step="1" value="1" required></label>
+            <label for="schedule-minutes">Menit<input id="schedule-minutes" name="minutes" type="number" inputmode="numeric" min="0" max="59" step="1" value="0" required></label>
+          </div>
+          <p class="field-hint full">Atur jeda waktu antara posting otomatis. Minimal 1 menit.</p>
+          <p id="schedule-interval-summary" class="muted full">Interval yang akan disimpan: 1 jam.</p>
           <label>Mode harga / stok<select name="priceMode"><option value="OFF">OFF · tanpa informasi terbaru</option><option value="MIXED">MIXED · sekitar 1 dari 4 posting</option><option value="ON">ON · gunakan informasi terbaru</option></select></label>
           <div class="form-footer full"><span class="muted">Laporan Telegram dikirim sekitar pukul 22:00 waktu Malaysia. Informasi harga dan stok kedaluwarsa setelah 24 jam.</span><button class="button primary" type="submit">Simpan jadwal</button></div>
         </form>
+        <div class="notice info"><strong>Untuk interval pendek</strong><span>Scheduler memeriksa jadwal tiap 60 detik secara default. Proses generasi atau publikasi yang masih berjalan akan diselesaikan lebih dulu; perhatikan batas provider dan biaya API.</span></div>
         <div class="notice info"><strong>Jeda darurat</strong><span>Hentikan tugas berikutnya dan minta Tebar membatalkan posting terjadwal yang masih bisa dibatalkan. Periksa hasilnya di log.</span></div>
       </section>
 

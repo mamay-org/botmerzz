@@ -4,6 +4,17 @@ const fs=require('node:fs');
 const {createRepository}=require('../src/repository');
 
 test('repository requires a parameterized MySQL pool',()=>{assert.throws(()=>createRepository(null),/mysql pool/);});
+test('settings reads expose legacy hours and canonical interval values as total minutes',async()=>{
+  const configFor=async schedule=>{
+    const pool={execute:async()=>[[{settings_json:JSON.stringify({schedule}),knowledge_json:'{}',automation_enabled:0}]]};
+    return createRepository(pool).getSettings();
+  };
+  const legacy=await configFor({intervalHours:2,timezone:'Asia/Kuala_Lumpur'});
+  const current=await configFor({intervalMinutes:135,timezone:'Asia/Kuala_Lumpur'});
+  assert.equal(legacy.schedule.intervalMinutes,120);
+  assert.equal(legacy.schedule.intervalHours,undefined);
+  assert.equal(current.schedule.intervalMinutes,135);
+});
 test('login attempts reserve atomically under MySQL row locks and release success reservations',async()=>{
   const statements=[];const events=[];
   const now=new Date('2026-01-01T00:00:00.000Z');

@@ -360,3 +360,6 @@ body.nav-open{overflow:hidden}
   #login-view .login-form-panel{padding-top:34px;padding-bottom:40px}
 }
 @media(prefers-reduced-motion:reduce){#login-view .login-submit{transition:none}}
+#schedule-form .schedule-interval-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;max-width:420px}
+#schedule-form .schedule-interval-fields label{min-width:0}
+#schedule-form #schedule-interval-summary{margin:0;font-size:12px}
