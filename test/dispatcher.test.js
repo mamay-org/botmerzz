@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { runDispatcher, pauseAutomation, maybeSendDailySummary } = require('../src/dispatcher');
+const { runDispatcher, pauseAutomation, maybeSendDailySummary, reconcileUnsettled } = require('../src/dispatcher');
 const { contentSafetyHash } = require('../src/content-safety');
 
 function harness(overrides = {}) {
@@ -37,6 +37,51 @@ function harness(overrides = {}) {
 
 const content = async () => ({ status: 'ready', text: 'Jom kongsi pilihan anda!', pillar: 'topup', factBearing: false, factIds: [] });
 const fixedClock = () => new Date('2026-11-05T04:00:00Z');
+
+test('dynamic dispatcher binds publication and both AI calls to the slot snapshot', async () => {
+  const { slot, repository, publisher } = harness();
+  Object.assign(slot, { profileId: 'old-profile', accountId: 'acct-1', model: 'vendor/model-old' });
+  const state = await repository.getRuntimeState();
+  state.profileId = 'old-profile';
+  repository.getRuntimeState = async () => state;
+  const models=[]; const profiles=[]; const aiCalls=[]; const logs=[];
+  const result = await runDispatcher({ repository, publisher, clock: fixedClock,
+    publisherForProfile: async profile => { profiles.push(profile); return publisher; },
+    generatorForModel: async model => { models.push(model); return async input => { aiCalls.push(input); return 'ok'; }; },
+    logger: { info: (event, details) => logs.push({ event, details }) }, correlationId: 'correlation-test',
+    content: async (_context, { generate }) => { await generate('generation'); await generate('audit'); return content(); },
+  });
+  assert.equal(result.published,1);
+  assert.deepEqual(models,['vendor/model-old']);
+  assert.deepEqual(profiles,['old-profile']);
+  assert.deepEqual(aiCalls,['generation','audit']);
+  assert.ok(logs.some(entry=>entry.event==='publication.sending' && entry.details.correlationId==='correlation-test' && entry.details.slotId==='slot-1'));
+  assert.doesNotMatch(JSON.stringify(logs),/Jom kongsi|authorization|password/i);
+});
+
+test('reconciliation uses original profile and refuses missing or inconsistent snapshots', async () => {
+  const { repository } = harness(); const selected=[]; const updates=[];
+  repository.listUnsettledSlots=async()=>[
+    { id:'old',profileId:'old-profile',accountId:'old-account',providerPostId:'post-old',requestPayload:{targets:[{account_id:'old-account'}]} },
+    { id:'legacy',providerPostId:'post-legacy',requestPayload:{targets:[{account_id:'old-account'}]} },
+    { id:'mismatch',profileId:'old-profile',accountId:'old-account',providerPostId:'post-mismatch',requestPayload:{targets:[{account_id:'new-account'}]} },
+  ];
+  repository.updateSlot=async(id,patch)=>updates.push({id,patch});
+  const checked=await reconcileUnsettled({repository,clock:fixedClock,publisherForProfile:async profile=>{
+    selected.push(profile); return { getPost:async()=>({id:'post-old',status:'published',targets:[{accountId:'old-account',platform:'threads',status:'published'}]}) };
+  }});
+  assert.equal(checked,1); assert.deepEqual(selected,['old-profile']);
+  assert.deepEqual(updates.map(update=>update.id),['old']);
+});
+
+test('reconciliation does not report success when a concurrent status change rejects its update', async () => {
+  const { repository } = harness(); const notices=[];
+  repository.listUnsettledSlots=async()=>[{id:'slot',profileId:'profile',accountId:'acct',providerPostId:'post',requestPayload:{targets:[{account_id:'acct'}]}}];
+  repository.updateSlot=async()=>false;
+  const counts={published:0,failed:0,unknown:0};
+  const checked=await reconcileUnsettled({repository,counts,notifier:{send:async message=>notices.push(message)},publisherForProfile:async()=>({getPost:async()=>({id:'post',status:'published',targets:[{accountId:'acct',platform:'threads',status:'published'}]})})});
+  assert.equal(checked,0); assert.deepEqual(counts,{published:0,failed:0,unknown:1}); assert.deepEqual(notices,[]);
+});
 
 test('dispatcher persists exact payload and idempotency key before one publish', async () => {
   const { calls, repository, publisher } = harness();

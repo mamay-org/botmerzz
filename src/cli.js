@@ -7,12 +7,17 @@ const { runMigrations } = require('./migrate');
 const { createRepository } = require('./repository');
 const { createAuth } = require('./auth');
 const { createServer } = require('./server');
-const { runDispatcher, pauseAutomation } = require('./dispatcher');
+const { runDispatcher, pauseAutomation, reconcileUnsettled } = require('./dispatcher');
 const { generatePost } = require('./content-service');
 const { createLogger } = require('./logger');
 const { createOutboxNotifier } = require('./notifications');
 const { getClickMetric } = require('./insights');
 const { createScheduler } = require('./scheduler');
+
+function providerConnectionStatus(accounts, effective) {
+  const target = accounts.find((account) => account.id === effective.accountId && account.profileId === effective.profileId);
+  return { connected: Boolean(target && target.platform === 'threads' && target.status === 'active' && target.planSuspended === false), status: target?.planSuspended === true ? 'plan_suspended' : target?.planSuspended == null ? 'status_unknown' : target?.status || 'not_connected', username: target?.username || null };
+}
 
 async function askHidden(prompt) {
   stdout.write(prompt);
@@ -45,7 +50,17 @@ async function main(argv = process.argv.slice(2)) {
     await runMigrations(pool);
     const repository = createRepository(pool);
     const auth = createAuth({ repository });
-    await repository.setProviderTarget({ accountId: config.tebar.accountId, profileId: config.tebar.profileId });
+    const { createConfigurationService } = require('./configuration');
+    const configuration = createConfigurationService({ pool, config });
+    await configuration.bootstrap();
+    const publisherForProfile = async (profileId) => {
+      if (!config.tebar.apiKey || typeof profileId !== 'string' || !profileId) throw Object.assign(new Error('TEBAR_NOT_CONFIGURED'), { code: 'not_configured' });
+      return require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId });
+    };
+    const generatorForModel = async (model) => {
+      if (!config.openRouter.apiKey) throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' });
+      return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model }).generate;
+    };
     if (command === 'admin:create') {
       const rl = readline.createInterface({ input: stdin, output: stdout });
       try {
@@ -60,14 +75,14 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (command === 'dispatch') {
-      const publisher = config.tebar.apiKey && config.tebar.profileId ? require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId: config.tebar.profileId }) : null;
+      const effective = await configuration.getActive();
+      const publisher = config.tebar.apiKey && effective.profileId ? await publisherForProfile(effective.profileId) : null;
       if (!publisher) { stdout.write('{"skipped":"tebar_not_configured"}\n'); await pool.end(); return; }
-      const generator = config.openRouter.apiKey ? require('./providers/openrouter').createOpenRouterClient(config.openRouter) : null;
       const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, notifier, content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }), contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); }, timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: 1 });
+        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }), timezone: state.settings?.schedule?.timezone || config.timezone, minimumIntervalHours: 1 });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Kedai Merzz automation: system_error. Semak status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
@@ -76,27 +91,51 @@ async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (command !== 'server') throw new Error('UNKNOWN_COMMAND');
-    let tebar = null;
-    if (config.tebar.apiKey && config.tebar.profileId) tebar = require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId: config.tebar.profileId });
     const services = {
       pool,
       logger,
+      configuration,
       getProviderStatus: async () => {
-        if (!tebar) return { connected: false, status: 'not_configured' };
         try {
+          const effective = await configuration.getActive();
+          if (!config.tebar.apiKey || effective.status !== 'ACTIVE') return { connected: false, status: 'not_configured' };
+          const tebar = await publisherForProfile(effective.profileId);
           const accounts = await tebar.listAccounts();
-          const target = accounts.find((account) => account.id === config.tebar.accountId);
-          return { connected: Boolean(target && target.platform === 'threads' && target.status === 'active'), status: target?.status || 'not_connected', username: target?.username || null };
+          return providerConnectionStatus(accounts, effective);
         } catch (error) { return { connected: false, status: error.code || 'provider_error' }; }
       },
     };
+    services.configurationValidators = require('./configuration-providers').createConfigurationValidators({ config });
     services.aiConfigured = Boolean(config.openRouter.apiKey);
     const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
     const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
+    services.reconcileSwitch = async () => {
+      const slots = await repository.listUnsettledSlots();
+      for (const slot of slots) {
+        if (!slot.profileId || !slot.accountId || !slot.providerPostId
+          || slot.requestPayload?.targets?.[0]?.account_id !== slot.accountId
+          || !['scheduled', 'draft'].includes(slot.providerStatus)) continue;
+        try {
+          const publisher = await publisherForProfile(slot.profileId);
+          const post = await publisher.getPost(slot.providerPostId);
+          if (!['scheduled', 'draft'].includes(post.status)
+            || !post.targets?.some((target) => target.accountId === slot.accountId && target.platform === 'threads')) continue;
+          const canceled = await publisher.cancelPost(slot.providerPostId);
+          if (canceled.status === 'canceled') {
+            await repository.recordCancellation(slot.providerPostId, { status: 'canceled' });
+            await repository.updateSlot(slot.id, { status: 'canceled', providerStatus: 'canceled', completedAt: new Date().toISOString() });
+          }
+        } catch { /* Preserve uncertain state; operator can retry reconciliation. */ }
+      }
+      await reconcileUnsettled({ repository, publisherForProfile, notifier, logger });
+    };
     let scheduler = null;
     services.getClickMetric = async (state) => {
-      if (!tebar || !config.tebar.accountId) return { available: false, value: null, reason: 'not_configured' };
-      try { return await getClickMetric({ publisher: tebar, accountId: config.tebar.accountId, timezone: state.settings?.schedule?.timezone || config.timezone }); }
+      try {
+        const effective = await configuration.getActive();
+        if (!config.tebar.apiKey || !effective.accountId || !effective.profileId) return { available: false, value: null, reason: 'not_configured' };
+        return await getClickMetric({ publisher: await publisherForProfile(effective.profileId), accountId: effective.accountId, timezone: state.settings?.schedule?.timezone || config.timezone });
+      }
       catch { return { available: false, value: null, reason: 'provider_unavailable' }; }
     };
     if (notifier) {
@@ -107,19 +146,22 @@ async function main(argv = process.argv.slice(2)) {
       services.flushNotifications = () => notifier.flush();
     }
     services.pauseAutomation = async ({ adminId }) => {
-      if (!tebar) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
-      return pauseAutomation({ repository, publisher: tebar, notifier, accountId: config.tebar.accountId, adminId });
+      const effective = await configuration.getActive();
+      if (!config.tebar.apiKey || !effective.profileId) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
+      return pauseAutomation({ repository, publisher: await publisherForProfile(effective.profileId), notifier, accountId: effective.accountId, adminId });
     };
-    const generator = config.openRouter.apiKey ? require('./providers/openrouter').createOpenRouterClient(config.openRouter) : null;
     const dispatchOnce = async () => {
-      if (!tebar) return { skipped: 'tebar_not_configured' };
+      const effective = await configuration.getActive();
+      if (!config.tebar.apiKey || !effective.profileId) return { skipped: 'tebar_not_configured' };
       const state = await repository.getRuntimeState();
       return runDispatcher({
         repository,
-        publisher: tebar,
+        publisher: await publisherForProfile(effective.profileId),
+        publisherForProfile,
+        generatorForModel,
         notifier,
+        logger,
         content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }),
-        contentGenerator: generator ? generator.generate : async () => { throw Object.assign(new Error('AI_NOT_CONFIGURED'), { code: 'not_configured' }); },
         timezone: state.settings?.schedule?.timezone || config.timezone,
         minimumIntervalHours: 1,
       });
@@ -167,4 +209,4 @@ if (require.main === module) main().catch((error) => {
   process.stderr.write(`${code}\n`); process.exitCode = 1;
 });
 
-module.exports = { main };
+module.exports = { main, providerConnectionStatus };

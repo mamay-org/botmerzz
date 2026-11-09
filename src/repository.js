@@ -66,7 +66,7 @@ function createRepository(pool) {
       if (safeSettings.schedule && typeof safeSettings.schedule === 'object' && !Array.isArray(safeSettings.schedule)) safeSettings.schedule = { ...safeSettings.schedule, intervalHours: 1 };
       const [[existingRow]] = await connection.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');
       const existing = json(existingRow?.settings_json);
-      for (const key of ['targetAccountId','profileId','onboardingComplete','nextSlotAt','automationSessionId']) if (safeSettings[key] === undefined && existing[key] !== undefined) safeSettings[key] = existing[key];
+      for (const key of ['targetAccountId','profileId','integrationConfigInitialized','onboardingComplete','nextSlotAt','automationSessionId']) if (safeSettings[key] === undefined && existing[key] !== undefined) safeSettings[key] = existing[key];
       if (JSON.stringify(existing.schedule || {}) !== JSON.stringify(safeSettings.schedule || {})) delete safeSettings.nextSlotAt;
       const knowledge = { brand: safeSettings.brand || {}, guardrails: safeSettings.guardrails || {} };
       await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(safeSettings), JSON.stringify(knowledge)]);
@@ -302,6 +302,15 @@ function createRepository(pool) {
       await c.beginTransaction();
       const [[current]] = await c.query('SELECT settings_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE');
       const settings = json(current?.settings_json);
+      if (enabled) {
+        const [[integration]] = await c.query('SELECT status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE');
+        if (integration?.status !== 'ACTIVE' || !integration.profile_id || !integration.account_id || !integration.model
+          || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
+          throw Object.assign(new Error('INTEGRATION_NOT_READY'), { code: 'INTEGRATION_NOT_READY', status: 409 });
+        }
+        const [[unsettled]] = await c.query("SELECT id FROM slots WHERE status IN ('publishing','unknown') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) LIMIT 1 FOR UPDATE");
+        if (unsettled) throw Object.assign(new Error('RECONCILIATION_REQUIRED'), { code: 'RECONCILIATION_REQUIRED', status: 409 });
+      }
       const changed = Boolean(current?.automation_enabled) !== enabled;
       let firstPostAt = settings.nextSlotAt || null;
       let immediate = false;
@@ -333,23 +342,44 @@ function createRepository(pool) {
     finally { c.release(); }
   }
   async function setProviderTarget({accountId,profileId}) { const c=await pool.getConnection();try{await c.beginTransaction();const [[row]]=await c.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');const settings=json(row?.settings_json);const changed=(settings.targetAccountId||null)!==(accountId||null)||(settings.profileId||null)!==(profileId||null);settings.targetAccountId=accountId||null;settings.profileId=profileId||null;if(changed){settings.onboardingComplete=false;delete settings.nextSlotAt;delete settings.activationFirstPostAt;delete settings.automationSessionId;await c.execute("UPDATE slots SET status='canceled',error_code='account_reconfigured',completed_at=UTC_TIMESTAMP(3) WHERE status IN ('pending','generating','ready')");}await c.execute('UPDATE settings SET settings_json=?,automation_enabled=IF(?,FALSE,automation_enabled) WHERE id=1',[JSON.stringify(settings),changed]);await c.commit();}catch(e){await c.rollback();throw e;}finally{c.release();} }
-  async function ensureDueSlot({scheduledAt,sessionId}) { if(sessionId===undefined){const [[state]]=await pool.execute('SELECT settings_json FROM settings WHERE id=1');sessionId=json(state?.settings_json).automationSessionId||null;}const id=randomUUID();await pool.execute("INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status) VALUES (?,?,?,'pending')",[id,scheduledAt,sessionId]);const [rows]=await pool.execute('SELECT * FROM slots WHERE scheduled_at=? AND automation_session_id <=> ?',[scheduledAt,sessionId]);return rows[0]||null; }
+  async function ensureDueSlot({scheduledAt,sessionId}) {
+    const c=await pool.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[state]]=await c.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');
+      const settings=json(state?.settings_json);
+      const [[integration]]=await c.query('SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE');
+      if(integration?.status!=='ACTIVE'||!integration.profile_id||!integration.account_id||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.rollback();return null;}
+      if(sessionId===undefined)sessionId=settings.automationSessionId||null;
+      const id=randomUUID();
+      await c.execute("INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[id,scheduledAt,sessionId,integration.profile_id,integration.account_id,integration.version]);
+      const [rows]=await c.execute('SELECT * FROM slots WHERE scheduled_at=? AND automation_session_id <=> ?',[scheduledAt,sessionId]);
+      await c.commit();return rows[0]||null;
+    }catch(error){await c.rollback();throw error;}finally{c.release();}
+  }
   async function claimDueSlot({ now }) {
     const c = await pool.getConnection();
     try {
       await c.beginTransaction();
       const [[state]] = await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');
+      const [[integration]] = await c.query('SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE');
       const settings = json(state?.settings_json);
       const knowledge = json(state?.knowledge_json);
       const validated = validateSettings({ ...settings, brand: knowledge.brand || settings.brand, guardrails: knowledge.guardrails || settings.guardrails });
       const sessionId = settings.automationSessionId;
-      if (!state?.automation_enabled || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid) {
+      if (!state?.automation_enabled || !sessionId || settings.onboardingComplete !== true || !settings.targetAccountId || !validated.valid
+        || integration?.status !== 'ACTIVE' || !integration.model || settings.profileId !== integration.profile_id || settings.targetAccountId !== integration.account_id) {
         await c.rollback();
         return null;
       }
-      const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
+      const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
+      if (!slot.tebar_profile_id || !slot.tebar_account_id || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id) {
+        await c.execute("UPDATE slots SET status='canceled',error_code='target_snapshot_missing',completed_at=UTC_TIMESTAMP(3) WHERE id=? AND status IN ('pending','ready')", [slot.id]);
+        await c.commit();
+        return null;
+      }
       const [[last]] = await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId, slot.id]);
       if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < 3600000) {
         // Keep this slot due until the publication-time cooldown elapses.
@@ -361,10 +391,10 @@ function createRepository(pool) {
         delete settings.activationFirstPostAt;
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(settings)]);
       }
-      if (slot.status === 'pending') await c.execute("UPDATE slots SET status='generating',claimed_at=? WHERE id=? AND status='pending'", [now, slot.id]);
+      if (slot.status === 'pending') await c.execute("UPDATE slots SET status='generating',claimed_at=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, integration.model, integration.version, slot.id]);
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
-      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash };
+      return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
     } catch (e) { await c.rollback(); throw e; }
     finally { c.release(); }
   }
@@ -373,11 +403,12 @@ function createRepository(pool) {
     try {
       await c.beginTransaction();
       const [[row]]=await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');
+      const [[integration]]=await c.query('SELECT version,status,profile_id,account_id,model FROM integration_config WHERE id=1 FOR UPDATE');
       const settings=json(row?.settings_json);const knowledge=json(row?.knowledge_json);
       const sessionId=settings.automationSessionId;
       const savedSchedule=settings.schedule||schedule||{};
       const checked=validateSettings({...settings,schedule:savedSchedule,brand:knowledge.brand||settings.brand,guardrails:knowledge.guardrails||settings.guardrails});
-      if(!row?.automation_enabled||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid){await c.commit();return {slot:null,created:false,skippedCount:0};}
+      if(!row?.automation_enabled||!sessionId||settings.onboardingComplete!==true||!settings.targetAccountId||!checked.valid||integration?.status!=='ACTIVE'||!integration.model||settings.profileId!==integration.profile_id||settings.targetAccountId!==integration.account_id){await c.commit();return {slot:null,created:false,skippedCount:0};}
       const scheduleChanged=JSON.stringify(settings.schedule||{})!==JSON.stringify(checked.settings.schedule);
       settings.schedule=checked.settings.schedule;
       if(scheduleChanged)await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
@@ -436,7 +467,7 @@ function createRepository(pool) {
         const stale=lateBy>15*60*1000;
         const activeNow=isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone});
         const status=isActivationFirstDue||active&&(due>current||activeNow)&&!stale?'pending':'skipped';
-        const [insert]=await c.execute('INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status,error_code,completed_at) VALUES (?,?,?,?,?,?)',[randomUUID(),scheduledAt,sessionId,status,status==='skipped'?(active?'missed_slot':'outside_active_window'):null,status==='skipped'?current.toJSDate():null]);
+        const [insert]=await c.execute('INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status,error_code,completed_at,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,?,?,?,?,?,?)',[randomUUID(),scheduledAt,sessionId,status,status==='skipped'?(active?'missed_slot':'outside_active_window'):null,status==='skipped'?current.toJSDate():null,integration.profile_id,integration.account_id,integration.version]);
         skippedCount+=status==='skipped'&&insert.affectedRows===1?1:0;
         const [[existing]]=await c.execute('SELECT id,status,scheduled_at FROM slots WHERE automation_session_id=? AND scheduled_at=?',[sessionId,scheduledAt]);
         due=due.plus({hours:interval});
@@ -469,9 +500,14 @@ function createRepository(pool) {
     try {
       await c.beginTransaction();
       const [[settings]] = await c.query('SELECT automation_enabled,settings_json,knowledge_json FROM settings WHERE id=1 FOR UPDATE');
+      const [[integration]] = await c.query('SELECT status,profile_id,account_id FROM integration_config WHERE id=1 FOR UPDATE');
       const sessionId=json(settings?.settings_json).automationSessionId;
-      const [[slot]] = await c.execute('SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash FROM slots WHERE id=? FOR UPDATE', [id]);
-      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || !sessionId || slot.automation_session_id!==sessionId) { await c.rollback(); return false; }
+      const [[slot]] = await c.execute('SELECT scheduled_at,status,automation_session_id,fact_bearing,fact_ids,fact_versions,content_safety_hash,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE id=? FOR UPDATE', [id]);
+      const payload = json(slot?.request_payload);
+      if (!slot || slot.status !== 'ready' || !settings?.automation_enabled || !sessionId || slot.automation_session_id!==sessionId
+        || integration?.status !== 'ACTIVE' || !slot.tebar_profile_id || !slot.tebar_account_id
+        || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id
+        || payload?.targets?.length !== 1 || payload.targets[0]?.account_id !== slot.tebar_account_id) { await c.rollback(); return false; }
       const config = json(settings.settings_json);
       const knowledge = json(settings.knowledge_json);
       const currentHash = contentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails });
@@ -524,12 +560,28 @@ function createRepository(pool) {
     const keys=Object.keys(patch).filter(k=>allowed[k]);if(!keys.length)return;
     const sql=keys.map(k=>`${allowed[k]}=?`).join(',');
     const values=[...keys.map(k=>k==='completedAt'?normalizeCompletedAt(patch[k]):patch[k]),id];
-    if(!['published','failed','partial','canceled'].includes(patch.status)){await pool.execute(`UPDATE slots SET ${sql} WHERE id=?`,values);return;}
-    const c=await pool.getConnection();try{await c.beginTransaction();await c.execute(`UPDATE slots SET ${sql} WHERE id=?`,values);await suppressPendingNotices(c,id,patch.status);await c.commit();}catch(e){await c.rollback();throw e;}finally{c.release();}
+    const guarded=typeof patch.status==='string';
+    const conflictGuard = guarded && patch.status !== 'published'
+      ? " AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')" : '';
+    const where=guarded?` WHERE id=? AND (status NOT IN ('published','failed','partial','canceled','skipped') OR status=?)${conflictGuard}`:' WHERE id=?';
+    if(guarded)values.push(patch.status);
+    if(!['published','failed','partial','canceled'].includes(patch.status)){const [updated]=await pool.execute(`UPDATE slots SET ${sql}${where}`,values);return updated.affectedRows>0;}
+    const c=await pool.getConnection();try{
+      await c.beginTransaction();
+      const [updated]=await c.execute(`UPDATE slots SET ${sql}${where}`,values);
+      if(updated.affectedRows) await suppressPendingNotices(c,id,patch.status);
+      else if(patch.status==='published') {
+        // A publication conflicting with an earlier terminal result is not safe
+        // to discard: require another provider reconciliation before reporting it.
+        await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=? AND status IN ('failed','partial','canceled','skipped')",[id]);
+      }
+      await c.commit();
+      return updated.affectedRows>0;
+    }catch(e){await c.rollback();throw e;}finally{c.release();}
   }
-  async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key})); }
-  async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status,caption,pillar,scheduled_at,completed_at FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,scheduledAt:r.scheduled_at,completedAt:r.completed_at})); }
-  async function recordCancellation(providerPostId,{status,errorCode}={}) { await pool.execute('UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?=\'canceled\',\'canceled\',status),completed_at=IF(?=\'canceled\',UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=?',[status,errorCode,status,status,providerPostId]);await appendActivity({event:'post_cancellation',details:{status,errorCode:errorCode||null}}); }
+  async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status,tebar_profile_id,tebar_account_id FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,profileId:r.tebar_profile_id,accountId:r.tebar_account_id})); }
+  async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,provider_status,request_payload,idempotency_key,status,caption,pillar,scheduled_at,completed_at,tebar_profile_id,tebar_account_id FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,providerStatus:r.provider_status,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,scheduledAt:r.scheduled_at,completedAt:r.completed_at,profileId:r.tebar_profile_id,accountId:r.tebar_account_id})); }
+  async function recordCancellation(providerPostId,{status,errorCode}={}) { const [updated]=await pool.execute("UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?='canceled','canceled',status),completed_at=IF(?='canceled',UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=? AND status NOT IN ('published','failed','partial','skipped') AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')",[status,errorCode??null,status,status,providerPostId]);await appendActivity({event:'post_cancellation',details:{status:updated.affectedRows?status:'unresolved',errorCode:errorCode||null}});return updated.affectedRows>0; }
   async function getDailySummaryCounts(date,timezone) {
     const start=DateTime.fromISO(`${date}T00:00:00`,{zone:timezone});
     if(!start.isValid) throw new Error('INVALID_SUMMARY_DATE');
@@ -560,8 +612,13 @@ function createRepository(pool) {
       const eventType=String(type||'');
       const dataAccount=data.account_id||data.target?.account_id||data.account?.id;
       const postId=data.post_id||data.id;
+      const [[eventSlot]]=typeof postId==='string'&&eventType.startsWith('post.')
+        ? await c.execute('SELECT id,automation_session_id,status,provider_status,tebar_profile_id,tebar_account_id FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]) : [[]];
+      const postMatches=Boolean(eventSlot?.tebar_profile_id && eventSlot?.tebar_account_id
+        && eventSlot.tebar_profile_id===profileId && eventSlot.tebar_account_id===dataAccount);
+      const expectedAccount=eventSlot?.tebar_account_id;
       const webhookPublishedAt=(()=>{
-        const targetMatches= data.target?.account_id===accountId
+        const targetMatches= data.target?.account_id===expectedAccount
           && (!data.target?.platform||String(data.target.platform).toLowerCase()==='threads');
         const value=data.published_at||(targetMatches?data.target?.published_at:null);
         if(typeof value!=='string'&&!(value instanceof Date))return null;
@@ -570,16 +627,20 @@ function createRepository(pool) {
       })();
       let activeSessionCanceledPost=false;
       let staleTerminalCancellation=false;
-      if(profileId===configured.profileId&&dataAccount===accountId&&accountId===configured.targetAccountId&&typeof postId==='string'&&eventType.startsWith('post.')) {
+      if(postMatches) {
         const status=String(data.status||eventType.split('.').at(-1)).toLowerCase();
         const mapped={published:'published',failed:'failed',partial:'partial',canceled:'canceled',scheduled:'publishing',publishing:'publishing'};
         const providerStatus=mapped[status]||'unknown';
-        const [[slot]]=await c.execute('SELECT id,automation_session_id,status,provider_status FROM slots WHERE provider_post_id=? LIMIT 1 FOR UPDATE',[postId]);
+        const slot=eventSlot;
         const terminalStatuses=['published','failed','partial','canceled','skipped'];
         const slotIsTerminal=terminalStatuses.includes(slot?.status);
-        const delayedNonterminal=slotIsTerminal&&!['published','failed','partial','canceled'].includes(providerStatus);
+        const conflictingPublication=slotIsTerminal&&slot.status!=='published'&&providerStatus==='published';
+        const delayedNonterminal=slotIsTerminal&&(!['published','failed','partial','canceled'].includes(providerStatus) || (slot.provider_status && providerStatus!==slot.provider_status));
         staleTerminalCancellation=slotIsTerminal&&providerStatus==='canceled';
-        if(!delayedNonterminal&&!staleTerminalCancellation) {
+        if(conflictingPublication) {
+          await c.execute("UPDATE slots SET status='unknown',provider_status='unknown',error_code='provider_status_conflict',completed_at=NULL WHERE id=?",[slot.id]);
+          await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'provider_status_conflict',?)",[slot.id,JSON.stringify({code:'unknown_outcome'})]);
+        } else if(!delayedNonterminal&&!staleTerminalCancellation) {
           const activeSession=Boolean(settingsRow?.automation_enabled)&&slot?.automation_session_id===configured.automationSessionId;
           activeSessionCanceledPost=providerStatus==='canceled'&&activeSession;
           const slotStatus=activeSessionCanceledPost?'failed':providerStatus;
@@ -589,7 +650,7 @@ function createRepository(pool) {
           if(slot && final) await suppressPendingNotices(c,slot.id,slotStatus);
         }
       }
-      if(notificationCode&&profileId===configured.profileId&&accountId===configured.targetAccountId&&dataAccount===accountId) {
+      if(notificationCode&&(eventType.startsWith('post.') ? postMatches : profileId===configured.profileId&&dataAccount===configured.targetAccountId)) {
         let dedupeId=`tebar:${eventId}`;
         let message=`Kedai Merzz automation: ${notificationCode}. Semak status akaun dan log dashboard.`;
         if(notificationCode==='provider_error'&&String(data.status||eventType.split('.').at(-1)).toLowerCase()==='canceled'&&(!activeSessionCanceledPost||staleTerminalCancellation)) message=null;

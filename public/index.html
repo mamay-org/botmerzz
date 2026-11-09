@@ -61,6 +61,7 @@
         <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1">Jadwal</button>
         <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1">Produk & informasi</button>
         <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1">Riwayat & catatan</button>
+        <button class="tab" id="tab-button-integrations" data-tab="integrations" role="tab" aria-controls="tab-integrations" aria-selected="false" tabindex="-1">Integrasi</button>
         <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1">Admin</button>
       </nav>
 
@@ -140,6 +141,29 @@
       <section id="tab-activity" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-activity" aria-hidden="true" tabindex="0" hidden>
         <div class="panel"><div class="panel-heading"><div><p class="eyebrow">PENERBITAN</p><h2>Posting terbaru</h2></div><button id="refresh-button" class="button quiet">Muat ulang</button></div><div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Tema</th><th>Status</th><th>Konten</th></tr></thead><tbody id="posts-table"></tbody></table></div></div>
         <div class="panel log-panel"><div class="panel-heading"><div><p class="eyebrow">SISTEM</p><h2>Aktivitas terbaru</h2></div></div><div id="activity-list" class="activity-list"></div></div>
+      </section>
+      <section id="tab-integrations" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-integrations" aria-hidden="true" tabindex="0" hidden>
+        <section class="panel stack" aria-labelledby="integrations-title">
+          <div><p class="eyebrow">KONFIGURASI AKTIF</p><h2 id="integrations-title">Pengaturan integrasi</h2><p class="muted">Kelola akun Threads dan model AI. Kunci API tetap disimpan di server.</p></div>
+          <div id="integration-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
+          <dl class="integration-summary"><div><dt>Profile Tebar</dt><dd id="integration-active-profile">Belum tersedia</dd></div><div><dt>Akun Threads</dt><dd id="integration-active-account">Belum tersedia</dd></div><div><dt>Verifikasi akun</dt><dd id="integration-provider-status">Belum tersedia</dd></div><div><dt>Model OpenRouter</dt><dd id="integration-active-model">Belum tersedia</dd></div><div><dt>Status pergantian</dt><dd id="integration-switch-status">Belum tersedia</dd></div><div><dt>Status otomasi</dt><dd id="integration-automation-status">Belum tersedia</dd></div></dl>
+          <div class="form-actions"><button id="integration-refresh" type="button" class="button quiet">Muat ulang konfigurasi</button><button id="integration-check-active" type="button" class="button quiet">Periksa akun aktif</button><button id="integration-reconcile" type="button" class="button quiet" hidden>Lanjutkan pemeriksaan</button></div>
+        </section>
+        <form id="integration-account-form" class="panel form-grid">
+          <div class="panel-heading full"><div><p class="eyebrow">AKUN THREADS</p><h2>Ganti akun Tebar</h2><p class="muted">Profile dan akun divalidasi sebagai satu pasangan. Post lama tetap terkait akun asal; pergantian dapat tertahan jika status post belum pasti. Otomasi tetap dijeda setelah pergantian.</p></div></div>
+          <label>Profile ID<input name="profileId" maxlength="128" required autocomplete="off"></label>
+          <label>Account ID<input name="accountId" maxlength="128" required autocomplete="off"></label>
+          <div id="integration-account-preview" class="notice info full" role="status" hidden></div>
+          <div id="integration-account-error" class="notice error full" role="alert" hidden></div>
+          <div class="form-footer full"><span class="muted">Periksa identitas akun sebelum mengonfirmasi pergantian.</span><button class="button primary" type="submit">Validasi akun</button></div>
+        </form>
+        <form id="integration-model-form" class="panel form-grid">
+          <div class="panel-heading full"><div><p class="eyebrow">MODEL AI</p><h2>Ganti model OpenRouter</h2><p class="muted">Model baru digunakan untuk generasi berikutnya. Konten yang sudah siap tidak diubah.</p></div></div>
+          <label class="full">Cari atau masukkan model ID<input name="model" list="integration-model-list" maxlength="200" required autocomplete="off" placeholder="contoh: penyedia/nama-model"><datalist id="integration-model-list"></datalist><span class="field-hint" id="integration-model-catalog-status">Daftar model belum dimuat; ID dapat dimasukkan manual.</span></label>
+          <div id="integration-model-error" class="notice error full" role="alert" hidden></div>
+          <div class="form-footer full"><button class="button quiet" id="integration-model-catalog" type="button">Muat daftar model</button><button class="button primary" type="submit">Validasi dan simpan model</button></div>
+        </form>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT KONFIGURASI</p><h2>Versi sebelumnya</h2><p class="muted">Pilih untuk memulihkan akun atau model secara terpisah. Setiap perubahan divalidasi dan menghasilkan versi baru.</p></div></div><div id="integration-history" class="integration-history"></div></section>
       </section>
       <section id="tab-admins" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-admins" aria-hidden="true" tabindex="0" hidden>
         <form id="admin-create-form" class="panel form-grid">
