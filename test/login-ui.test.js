@@ -23,7 +23,7 @@ function contrastRatio(foreground, background) {
 test('login shows BotMerzz split-screen content while preserving authentication controls', () => {
   assert.match(html, /<section id="login-view" class="login-layout" aria-labelledby="login-title">/);
   assert.match(html, /class="login-brand-panel"[\s\S]*?BotMerzz[\s\S]*?AI-Powered Threads Automation/);
-  assert.match(html, /WELCOME TO BOTMERZZ/);
+  assert.doesNotMatch(html, /WELCOME TO BOTMERZZ/);
   assert.match(html, /Otomasi konten Threads, lebih mudah dari satu dashboard\./);
   assert.match(html, /Kelola konten, jadwal publikasi, dan performa Threads secara praktis dengan bantuan AI\./);
   assert.match(html, /class="login-form-panel"[\s\S]*?Masuk ke akun[\s\S]*?Selamat datang kembali/);
