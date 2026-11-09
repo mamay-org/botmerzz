@@ -14,7 +14,7 @@ function createConfigurationValidators({ config, http = axios, tebarFactory = cr
     catch (e) { throw failure(e.code === 'unauthorized' ? 'TEBAR_UNAUTHORIZED' : e.code === 'rate_limited' ? 'TEBAR_RATE_LIMITED' : 'TEBAR_UNAVAILABLE', 503); }
     const target = accounts.find(a => a.id === accountId && a.profileId === profileId);
     if (!target || target.platform !== 'threads' || target.status !== 'active' || target.planSuspended !== false) throw failure('ACCOUNT_NOT_AVAILABLE', 422);
-    return { id: target.id, profileId: target.profileId, username: target.username, status: target.status };
+    return { id: target.id, profileId: target.profileId, username: target.username, platform: target.platform, status: target.status };
   }
   function requireOpenRouter() {
     if (!config.openRouter?.apiKey) throw failure('OPENROUTER_NOT_CONFIGURED', 503);

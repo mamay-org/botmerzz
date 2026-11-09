@@ -581,7 +581,18 @@ function createRepository(pool) {
   }
   async function getUncertainSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,request_payload,idempotency_key,status,tebar_profile_id,tebar_account_id FROM slots WHERE status IN ('unknown','publishing') ORDER BY scheduled_at");return rows.map(r=>({...r,id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,profileId:r.tebar_profile_id,accountId:r.tebar_account_id})); }
   async function listUnsettledSlots() { const [rows]=await pool.execute("SELECT id,automation_session_id,provider_post_id,provider_status,request_payload,idempotency_key,status,caption,pillar,scheduled_at,completed_at,tebar_profile_id,tebar_account_id FROM slots WHERE status IN ('unknown','publishing') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')) ORDER BY scheduled_at");return rows.map(r=>({id:r.id,automationSessionId:r.automation_session_id,providerPostId:r.provider_post_id,providerStatus:r.provider_status,requestPayload:json(r.request_payload),idempotencyKey:r.idempotency_key,status:r.status,caption:r.caption,pillar:r.pillar,scheduledAt:r.scheduled_at,completedAt:r.completed_at,profileId:r.tebar_profile_id,accountId:r.tebar_account_id})); }
-  async function recordCancellation(providerPostId,{status,errorCode}={}) { const [updated]=await pool.execute("UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?='canceled','canceled',status),completed_at=IF(?='canceled',UTC_TIMESTAMP(3),completed_at) WHERE provider_post_id=? AND status NOT IN ('published','failed','partial','skipped') AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')",[status,errorCode??null,status,status,providerPostId]);await appendActivity({event:'post_cancellation',details:{status:updated.affectedRows?status:'unresolved',errorCode:errorCode||null}});return updated.affectedRows>0; }
+  async function recordCancellation(providerPostId,{status,errorCode}={}) {
+    const c=await pool.getConnection();let updated;
+    try {
+      await c.beginTransaction();
+      const where="provider_post_id=? AND status NOT IN ('published','failed','partial','skipped') AND NOT (status='unknown' AND COALESCE(error_code,'')='provider_status_conflict')";
+      const [slots]=await c.execute(`SELECT id FROM slots WHERE ${where} FOR UPDATE`,[providerPostId]);
+      [updated]=await c.execute(`UPDATE slots SET cancellation_status=?,error_code=COALESCE(?,error_code),status=IF(?='canceled','canceled',status),provider_status=IF(?='canceled','canceled',provider_status),completed_at=IF(?='canceled',UTC_TIMESTAMP(3),completed_at) WHERE ${where}`,[status,errorCode??null,status,status,status,providerPostId]);
+      if(status==='canceled') for(const slot of slots) await suppressPendingNotices(c,slot.id,status);
+      await c.commit();
+    } catch(e) { await c.rollback();throw e; } finally { c.release(); }
+    await appendActivity({event:'post_cancellation',details:{status:updated.affectedRows?status:'unresolved',errorCode:errorCode||null}});return updated.affectedRows>0;
+  }
   async function getDailySummaryCounts(date,timezone) {
     const start=DateTime.fromISO(`${date}T00:00:00`,{zone:timezone});
     if(!start.isValid) throw new Error('INVALID_SUMMARY_DATE');

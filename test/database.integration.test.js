@@ -2,6 +2,23 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
 
+test('confirmed cancellation atomically settles provider state across repository restart', {skip:!enabled}, async()=>{
+  const {randomUUID,createHash}=require('node:crypto');
+  const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
+  const pool=createPool(loadEnv());const id=randomUUID();const postId=`cancel-${randomUUID()}`;
+  try {
+    await runMigrations(pool);
+    await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_status,provider_post_id) VALUES (?,?,'publishing','scheduled',?)",[id,new Date(),postId]);
+    const noticeKey=createHash('sha256').update(`unknown_outcome:slot:${id}`).digest('hex');
+    await createRepository(pool).enqueueNotification({dedupeKey:noticeKey,message:'Pending verification'});
+    assert.equal(await createRepository(pool).recordCancellation(postId,{status:'canceled'}),true);
+    const [[slot]]=await pool.execute('SELECT status,provider_status,cancellation_status,completed_at FROM slots WHERE id=?',[id]);
+    assert.equal(slot.status,'canceled');assert.equal(slot.provider_status,'canceled');assert.equal(slot.cancellation_status,'canceled');assert.ok(slot.completed_at);
+    assert.equal((await createRepository(pool).listUnsettledSlots()).some(item=>item.id===id),false);
+    assert.equal(await createRepository(pool).getNotificationStatus(noticeKey),'failed');
+  } finally { await pool.execute('DELETE FROM slots WHERE id=?',[id]);await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key=?',[createHash('sha256').update(`unknown_outcome:slot:${id}`).digest('hex')]);await pool.end(); }
+});
+
 test('MySQL login throttles are shared and bound concurrent attempts across auth instances', {skip:!enabled}, async()=>{
   const {createHash,randomUUID}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');const {createAuth}=require('../src/auth');

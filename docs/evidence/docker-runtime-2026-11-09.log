@@ -1,0 +1,9 @@
+Applied 10 migration(s).
+INITIAL CONFIG: 1	profile_initial	account_initial	vendor/initial	ACTIVE
+AFTER UPDATE: 2	profile_initial	account_initial	vendor/updated	ACTIVE
+AFTER APP RESTART: 2	profile_initial	account_initial	vendor/updated	ACTIVE
+AFTER RECREATE WITH DIFFERENT ENV: 2	profile_initial	account_initial	vendor/updated	ACTIVE
+READINESS BEFORE OUTAGE: 200
+READINESS DURING OUTAGE: 503
+READINESS AFTER RECOVERY: 200
+AFTER RECOVERY CONFIG: 2	profile_initial	account_initial	vendor/updated	ACTIVE

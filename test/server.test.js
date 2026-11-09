@@ -28,7 +28,23 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   const knowledge=await request(server,'/api/knowledge',{method:'PUT',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:JSON.stringify({guardrails:{approved:true,hookVocabulary:vocabulary}})});
   assert.equal(knowledge.status,200,knowledge.body);assert.deepEqual(JSON.parse(knowledge.body).guardrails.hookVocabulary,['Cerita pengalaman','Sembang santai']);
   const badCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'wrong'},body:'{}'});assert.equal(badCsrf.status,403);
+  const nonAsciiCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'é'+'b'.repeat(42)},body:'{}'});assert.equal(nonAsciiCsrf.status,403);assert.deepEqual(JSON.parse(nonAsciiCsrf.body),{error:'CSRF_REJECTED'});
   const goodCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:'{}'});assert.equal(goodCsrf.status,200);
+});
+
+test('unexpected server error codes are hidden while integration availability errors remain actionable',async t=>{
+  const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
+  let failure=Object.assign(new Error('database details'),{code:'ER_ACCESS_DENIED_ERROR'});
+  const services={configuration:{getActive:async()=>{throw failure;},history:async()=>[]},configurationValidators:{}};
+  const auth={authenticate:async()=>({admin:{id:1},csrfToken:'c'.repeat(43)})};
+  const server=http.createServer(createServer({config,repository:{},auth,services}));
+  server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));
+  const headers={cookie:'merzz_admin=token'};
+  let response=await request(server,'/api/integrations',{headers});
+  assert.equal(response.status,500);assert.deepEqual(JSON.parse(response.body),{error:'INTERNAL_ERROR'});
+  failure=Object.assign(new Error('unavailable'),{code:'CONFIG_UNAVAILABLE',status:503});
+  response=await request(server,'/api/integrations',{headers});
+  assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{error:'CONFIG_UNAVAILABLE'});
 });
 
 test('login rate limiting returns the shared throttle Retry-After delay',async t=>{
