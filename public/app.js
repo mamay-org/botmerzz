@@ -22,6 +22,18 @@
     if (seconds || !duration.length) duration.push(seconds + ' detik');
     return 'Terlalu banyak percobaan masuk. Coba lagi dalam ' + duration.join(' ') + '.';
   }
+  function searchOpenRouterModels(models, query, limit = 50) {
+    const term = String(query || '').trim().toLocaleLowerCase();
+    if (!Array.isArray(models)) return [];
+    const matches = models.filter((model) => [model?.name, model?.provider, model?.id]
+      .some((value) => String(value || '').toLocaleLowerCase().includes(term)));
+    return matches.slice(0, Math.max(1, Math.min(100, Number.isInteger(limit) ? limit : 50)));
+  }
+  function modelValidationStatusFromError(error) {
+    if (error?.code === 'MODEL_NOT_FOUND') return 'NOT_FOUND';
+    if (['INVALID_MODEL', 'MODEL_INCOMPATIBLE'].includes(error?.code)) return 'INCOMPATIBLE';
+    return 'UNVERIFIED';
+  }
   async function withPending(control, action, progressText, form = control?.closest?.('form')) {
     if (!control || control.disabled || control.dataset.pending === 'true' || form?.dataset.pending === 'true') return false;
     const originalText = control.textContent;
@@ -55,13 +67,13 @@
     }
   }
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { withPending, parseRetryAfterSeconds, formatLoginWait };
+    module.exports = { withPending, parseRetryAfterSeconds, formatLoginWait, searchOpenRouterModels, modelValidationStatusFromError };
     return;
   }
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
+  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
     { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
@@ -138,6 +150,7 @@
     INVALID_ACCOUNT: 'Profile ID atau Account ID tidak valid. Periksa kedua isian.',
     INVALID_MODEL: 'Model ID tidak valid. Periksa kembali format dan nama model.',
     MODEL_INCOMPATIBLE: 'Model tidak mendukung kebutuhan teks atau parameter aplikasi.',
+    MODEL_METADATA_UNVERIFIED: 'Metadata model belum cukup untuk memastikan kompatibilitas. Model aktif tidak berubah.',
     PROVIDER_UNAVAILABLE: 'Penyedia belum dapat dihubungi. Coba lagi setelah koneksi pulih.',
     SWITCH_BLOCKED: 'Pergantian tertahan karena status posting lama belum pasti. Periksa dan lanjutkan rekonsiliasi.',
     ACCOUNT_NOT_AVAILABLE: 'Akun tidak tersedia pada profile ini, bukan Threads, tidak aktif, atau sedang ditangguhkan.',
@@ -161,7 +174,7 @@
     'summary.game': 'game', 'summary.denomination': 'nominal top-up', 'summary.price': 'harga',
     'summary.availability': 'ketersediaan', 'summary.attributes': 'atribut akun',
     email: 'email', password: 'kata sandi', game: 'game', price: 'harga',
-    profileId: 'Profile ID', accountId: 'Account ID', model: 'model ID',
+    profileId: 'Profile ID', accountId: 'Account ID', model: 'model ID', modelSearch: 'model AI',
   };
   const fieldNames = {
     'brand.name': 'brandName', 'brand.voice': 'voice', 'brand.contentDirection': 'contentDirection',
@@ -750,6 +763,144 @@
     if (error?.code === 'CONFIG_NOT_LOADED') return 'Muat ulang konfigurasi sebelum melanjutkan.';
     return errorText(error);
   }
+  function modelReasonText(reason) {
+    return ({
+      TEXT_MODALITY_UNSUPPORTED: 'Model tidak menerima dan menghasilkan teks.',
+      COMPLETION_LIMIT_UNSUPPORTED: 'Model tidak mendukung batas token keluaran yang dipakai BotMerzz.',
+      TEMPERATURE_UNSUPPORTED: 'Model tidak mendukung pengaturan temperature BotMerzz.',
+      TOP_P_UNSUPPORTED: 'Model tidak mendukung pengaturan top-p BotMerzz.',
+      METADATA_INCOMPLETE: 'Metadata OpenRouter belum cukup untuk memeriksa kompatibilitas.',
+      MANUAL_ID: 'ID manual perlu diverifikasi langsung melalui OpenRouter.',
+    })[reason] || '';
+  }
+  function modelStatusText(status) {
+    return ({ AVAILABLE: 'Tersedia · kompatibel berdasarkan metadata', INCOMPATIBLE: 'Tidak kompatibel', NOT_FOUND: 'Tidak ditemukan', UNVERIFIED: 'Belum dapat diverifikasi' })[status] || 'Belum diverifikasi';
+  }
+  function closeModelOptions() {
+    $('#integration-model-options').hidden = true;
+    $('#integration-model-search').setAttribute('aria-expanded', 'false');
+    $('#integration-model-search').removeAttribute('aria-activedescendant');
+    state.modelActiveOption = -1;
+  }
+  function renderModelOptions(query) {
+    const input = $('#integration-model-search');
+    const list = $('#integration-model-options');
+    const empty = $('#integration-model-empty');
+    list.replaceChildren();
+    const matches = searchOpenRouterModels(state.modelCatalog, query, 50);
+    state.modelOptionMatches = matches;
+    state.modelActiveOption = -1;
+    if (!state.modelCatalog) {
+      list.hidden = true; empty.hidden = true; input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant'); return;
+    }
+    if (!matches.length) {
+      list.hidden = true; empty.hidden = false;
+      empty.textContent = query ? 'Tidak ada model yang cocok. Coba nama, provider, atau Model ID lain.' : 'Katalog OpenRouter belum berisi model.';
+      input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); return;
+    }
+    empty.hidden = true; list.hidden = false; input.setAttribute('aria-expanded', 'true');
+    matches.forEach((model, index) => {
+      const option = document.createElement('div');
+      option.id = `integration-model-option-${index}`; option.className = 'model-option';
+      option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(model.id === state.modelSelection?.id));
+      option.dataset.modelIndex = String(index);
+      const heading = document.createElement('span'); heading.className = 'model-option-heading';
+      const name = document.createElement('strong'); name.textContent = model.name || model.id;
+      const status = document.createElement('span'); status.className = `model-status model-status-${String(model.status || 'UNVERIFIED').toLowerCase()}`;
+      status.textContent = modelStatusText(model.status);
+      const id = document.createElement('span'); id.className = 'model-option-id'; id.textContent = model.id;
+      const provider = document.createElement('span'); provider.className = 'model-option-provider'; provider.textContent = `Provider / namespace: ${model.provider || model.id.split('/')[0]}`;
+      heading.append(name, status); option.append(heading, id, provider);
+      const reason = modelReasonText(model.reason);
+      if (reason) { const detail = document.createElement('span'); detail.className = 'model-option-reason'; detail.textContent = reason; option.append(detail); }
+      option.addEventListener('mousedown', (event) => event.preventDefault());
+      option.addEventListener('click', () => setModelSelection(model));
+      list.append(option);
+    });
+  }
+  function setActiveModelOption(index) {
+    const matches = state.modelOptionMatches || [];
+    if (!matches.length) return;
+    state.modelActiveOption = Math.max(0, Math.min(index, matches.length - 1));
+    const activeId = `integration-model-option-${state.modelActiveOption}`;
+    $('#integration-model-search').setAttribute('aria-activedescendant', activeId);
+    $$('.model-option', $('#integration-model-options')).forEach((option, optionIndex) => option.classList.toggle('is-active', optionIndex === state.modelActiveOption));
+  }
+  function renderModelValidation(status, message, kind = 'info') {
+    const feedback = $('#integration-model-validation');
+    feedback.className = `notice ${kind} full`;
+    feedback.textContent = `${status ? `${status} · ` : ''}${message}`;
+    feedback.dataset.validationStatus = status || 'UNVERIFIED';
+  }
+  function updateOpenRouterActions() {
+    const form = $('#integration-model-form');
+    if (!form) return;
+    const model = form.elements.model.value;
+    const pending = form.dataset.pending === 'true';
+    const loaded = Boolean(state.integrations);
+    $('#integration-model-verify').disabled = !loaded || !model || pending;
+    const validation = state.modelValidation;
+    const current = state.integrations?.configuration || {};
+    $('#integration-model-form button[type="submit"]').disabled = !loaded || pending || !model
+      || validation?.model !== model || validation?.version !== current.version || validation?.status !== 'AVAILABLE' || model === current.model;
+  }
+  function setModelSelection(model) {
+    const selected = { id: model.id, name: model.name || model.id, provider: model.provider || model.id.split('/')[0], status: model.status || 'UNVERIFIED', reason: model.reason || null };
+    state.modelSelection = selected; state.modelDraftDirty = true; state.modelValidation = null;
+    $('#integration-model-id').value = selected.id;
+    $('#integration-model-search').value = selected.name;
+    $('#integration-model-manual').value = '';
+    $('#integration-model-selection').textContent = `Dipilih: ${selected.name} · ${selected.id} · Provider / namespace ${selected.provider}.`;
+    const reason = modelReasonText(selected.reason);
+    renderModelValidation(selected.status, reason || 'Verifikasi ulang melalui backend sebelum model dapat diaktifkan.', selected.status === 'INCOMPATIBLE' ? 'warning' : 'info');
+    closeModelOptions(); updateOpenRouterActions();
+  }
+  function clearModelSelection() {
+    state.modelSelection = null; state.modelValidation = null; state.modelDraftDirty = true;
+    $('#integration-model-id').value = '';
+    $('#integration-model-selection').textContent = 'Belum ada model dipilih. Pilih hasil katalog atau gunakan opsi manual.';
+    renderModelValidation('UNVERIFIED', 'Pilih model, lalu verifikasi sebelum menyimpan.');
+    updateOpenRouterActions();
+  }
+  function updateModelVerificationFailure(error) {
+    const status = modelValidationStatusFromError(error);
+    state.modelValidation = null;
+    const message = status === 'NOT_FOUND' ? 'Model tidak ditemukan di OpenRouter. Operasi verifikasi ini tidak mengubah konfigurasi aktif.'
+      : status === 'INCOMPATIBLE' ? 'Model tersedia, tetapi tidak mendukung kebutuhan AI Content Generator dan Semantic Auditor.'
+        : 'Status model belum dapat diverifikasi. Operasi verifikasi ini tidak mengubah konfigurasi aktif.';
+    renderModelValidation(status, message, status === 'UNVERIFIED' ? 'warning' : 'error');
+    updateOpenRouterActions();
+  }
+  async function handleModelSaveFailure(form, error) {
+    state.modelValidation = null;
+    if (error?.code === 'CONFIG_CONFLICT') {
+      try { await loadIntegrations(); } catch { /* Keep the draft and report the version conflict. */ }
+      renderModelValidation('UNVERIFIED', 'Konfigurasi berubah. Muat ulang dan verifikasi model kembali sebelum menyimpan.', 'warning');
+      showFormError(form, error, '#integration-model-error');
+      return;
+    }
+    const validationCodes = ['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'];
+    const providerValidationCodes = ['MODEL_METADATA_UNVERIFIED', 'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE'];
+    if ((Number.isInteger(error?.status) && error.status < 500) || providerValidationCodes.includes(error?.code)) {
+      updateModelVerificationFailure(error);
+      if (validationCodes.includes(error?.code)) error.fields = { modelSearch: error.code };
+      showFormError(form, error, '#integration-model-error');
+      return;
+    }
+    let activeModel;
+    try {
+      const refreshed = await loadIntegrations();
+      if (refreshed) activeModel = state.integrations?.configuration?.model || 'belum ada model aktif';
+    } catch { /* A failed read leaves the mutation outcome unknown. */ }
+    const message = activeModel
+      ? `Respons penyimpanan tidak dapat dipastikan. Server saat ini menunjukkan model aktif ${activeModel}. Periksa riwayat konfigurasi sebelum mencoba lagi.`
+      : 'Respons penyimpanan tidak dapat dipastikan dan status model aktif belum dapat dimuat. Muat ulang konfigurasi sebelum mencoba lagi.';
+    renderModelValidation('UNVERIFIED', message, 'warning');
+    const notice = $('#integration-model-error'); notice.textContent = message; notice.hidden = false;
+    notify('warning', message);
+    updateOpenRouterActions();
+  }
   function showIntegrationOutcome(configuration, successMessage) {
     hide('#global-error'); hide('#global-success');
     const status = String(configuration?.status || '').toUpperCase();
@@ -825,10 +976,9 @@
     });
   }
   function syncIntegrationControls() {
-    for (const selector of ['#integration-account-form', '#integration-model-form']) {
-      const form = $(selector);
-      $('button[type="submit"]', form).disabled = !state.integrations || form.dataset.pending === 'true';
-    }
+    const accountForm = $('#integration-account-form');
+    $('button[type="submit"]', accountForm).disabled = !state.integrations || accountForm.dataset.pending === 'true';
+    updateOpenRouterActions();
   }
   async function loadIntegrations({ verification = null } = {}) {
     const request = state.integrationLoad = (state.integrationLoad || 0) + 1;
@@ -855,6 +1005,10 @@
     if (request !== state.integrationLoad) return false;
     const configuration = result.configuration || {};
     state.integrations = result;
+    if (state.modelValidation && state.modelValidation.version !== configuration.version) {
+      state.modelValidation = null;
+      renderModelValidation('UNVERIFIED', 'Konfigurasi berubah. Verifikasi model kembali sebelum menyimpan.');
+    }
     syncIntegrationControls();
     state.integrationVerification = verification;
     $('#integration-active-profile').textContent = configuration.profileId || 'Belum dikonfigurasi';
@@ -864,6 +1018,9 @@
     $('#integration-check-active').disabled = !configuration.profileId || !configuration.accountId;
     $('#ai-active-model').textContent = configuration.model || 'Belum dikonfigurasi';
     $('#ai-notice').textContent = configuration.model ? 'Model aktif dibaca dari konfigurasi server.' : 'Belum ada model yang dikonfigurasi.';
+    $('#ai-active-model-status').textContent = configuration.model
+      ? 'Tersimpan aktif di MySQL. Ketersediaan provider tidak diuji saat halaman dimuat.'
+      : 'Belum ada model aktif.';
     const status = String(configuration.status || 'NOT_CONFIGURED').toUpperCase();
     const labels = { ACTIVE: 'Aktif', PAUSED: 'Dijeda', SWITCHING: 'Pergantian berlangsung', BLOCKED_RECONCILIATION: 'Tertahan: post lama perlu diperiksa', NOT_CONFIGURED: 'Belum dikonfigurasi' };
     $('#integration-switch-status').textContent = labels[status] || status;
@@ -878,8 +1035,19 @@
     }
     accountForm.dataset.baseline = JSON.stringify({ profileId: configuration.profileId || '', accountId: configuration.accountId || '' });
     const modelForm = $('#integration-model-form');
-    if ((modelForm.dataset.baseline === undefined && !modelForm.elements.model.value) || modelForm.elements.model.value === modelForm.dataset.baseline) modelForm.elements.model.value = configuration.model || '';
-    modelForm.dataset.baseline = configuration.model || '';
+    const activeModel = configuration.model || '';
+    if (!state.modelDraftDirty) {
+      state.modelValidation = null;
+      state.modelSelection = activeModel ? { id: activeModel, name: activeModel, provider: activeModel.split('/')[0], status: 'UNVERIFIED', reason: null } : null;
+      modelForm.elements.model.value = activeModel;
+      $('#integration-model-search').value = activeModel;
+      $('#integration-model-selection').textContent = activeModel
+        ? `Model aktif ${activeModel} dipilih sebagai draft. Verifikasi kembali sebelum mengaktifkannya.`
+        : 'Pilih model dari katalog, lalu verifikasi sebelum menyimpan.';
+      renderModelValidation('UNVERIFIED', activeModel ? 'Verifikasi ulang model aktif jika ingin menyimpannya sebagai perubahan.' : 'Pilih model, lalu verifikasi sebelum menyimpan.');
+    }
+    modelForm.dataset.baseline = activeModel;
+    updateOpenRouterActions();
     const history = Array.isArray(result.history) ? result.history : [];
     renderIntegrationHistory(history, 'account');
     renderIntegrationHistory(history, 'model');
@@ -909,34 +1077,110 @@
   });
   $('#integration-model-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget; hide('#global-error'); hide('#global-success'); hide('#integration-model-error'); clearFormErrors(form);
-    const model = value(form, 'model').trim();
+    const model = form.elements.model.value.trim();
+    const currentVersion = state.integrations?.configuration?.version;
+    if (!model || state.modelValidation?.model !== model || state.modelValidation?.version !== currentVersion) {
+      renderModelValidation('UNVERIFIED', 'Verifikasi model kembali sebelum menyimpan perubahan.', 'warning');
+      updateOpenRouterActions(); return;
+    }
+    let activationAttempted = false;
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
         const expectedVersion = integrationVersion();
         const checked = await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model }) });
         const identity = checked.model?.name || checked.model?.id || model;
+        state.modelValidation = { model, version: expectedVersion, status: 'AVAILABLE' };
+        renderModelValidation('AVAILABLE', 'Model kembali ditemukan dan kompatibel berdasarkan metadata. Keberhasilan generasi berikutnya tetap bergantung pada provider.', 'success');
         if (!confirmAction(`Gunakan model ${identity} (${model}) untuk generasi berikutnya?`)) return;
+        activationAttempted = true;
         const result = await api('/api/integrations/model', { method: 'PUT', body: JSON.stringify({ model, expectedVersion }) });
-        form.dataset.baseline = model;
+        form.dataset.baseline = model; state.modelDraftDirty = false; state.modelValidation = null;
         await finishIntegrationMutation(result.configuration, 'Model AI berhasil diperbarui untuk generasi berikutnya.', true);
       }, 'Memeriksa…', form);
     } catch (error) {
-      if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { model: error.code };
+      if (activationAttempted) { await handleModelSaveFailure(form, error); return; }
+      updateModelVerificationFailure(error);
+      if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { modelSearch: error.code };
+      showFormError(form, error, '#integration-model-error');
+    }
+  });
+  $('#integration-model-verify').addEventListener('click', async (event) => {
+    const form = $('#integration-model-form'); const model = form.elements.model.value.trim();
+    if (!model) { renderModelValidation('UNVERIFIED', 'Pilih model dari katalog atau masukkan ID manual terlebih dahulu.', 'warning'); return; }
+    hide('#integration-model-error');
+    try {
+      await withPending(event.currentTarget, async () => {
+        const version = integrationVersion();
+        renderModelValidation('UNVERIFIED', 'Memeriksa metadata model melalui backend…');
+        const result = await api('/api/integrations/validate-model', { method: 'POST', body: JSON.stringify({ model }) });
+        state.modelSelection = { id: result.model?.id || model, name: result.model?.name || model, provider: result.model?.provider || model.split('/')[0], status: 'AVAILABLE', reason: null };
+        state.modelValidation = { model, version, status: 'AVAILABLE' };
+        renderModelValidation('AVAILABLE', 'Model tersedia dan kompatibel berdasarkan metadata OpenRouter. Ini bukan jaminan setiap request generasi akan berhasil.', 'success');
+        notify('success', 'Metadata model tersedia dan kompatibel. Ketersediaan request generasi berikutnya tetap bergantung pada provider.');
+      }, 'Memverifikasi…', form);
+    } catch (error) {
+      updateModelVerificationFailure(error);
+      if (['INVALID_MODEL', 'MODEL_NOT_FOUND', 'MODEL_INCOMPATIBLE'].includes(error.code)) error.fields = { modelSearch: error.code };
       showFormError(form, error, '#integration-model-error');
     }
   });
   $('#integration-model-catalog').addEventListener('click', async (event) => {
     try {
       await withPending(event.currentTarget, async () => {
+        const request = state.modelCatalogRequest = (state.modelCatalogRequest || 0) + 1;
+        state.modelCatalog = null;
+        $('#integration-model-catalog-status').textContent = 'Memuat katalog model dari OpenRouter…';
+        $('#integration-model-empty').hidden = true;
         const result = await api('/api/integrations/models');
-        const list = $('#integration-model-list'); list.replaceChildren();
-        (Array.isArray(result.models) ? result.models : []).forEach((model) => {
-          if (typeof model.id !== 'string') return;
-          const option = document.createElement('option'); option.value = model.id; option.label = model.name || model.id; list.append(option);
-        });
-        $('#integration-model-catalog-status').textContent = list.children.length ? `${list.children.length} model tersedia. Anda juga dapat memasukkan ID secara manual.` : 'Daftar kosong; masukkan model ID secara manual.';
+        if (request !== state.modelCatalogRequest) return;
+        state.modelCatalog = Array.isArray(result.models) ? result.models.filter((model) => typeof model?.id === 'string') : [];
+        const available = state.modelCatalog.filter((model) => model.status === 'AVAILABLE').length;
+        $('#integration-model-catalog-status').textContent = state.modelCatalog.length
+          ? `Katalog dimuat: ${state.modelCatalog.length} model. ${available} kompatibel berdasarkan metadata; status bukan jaminan request generasi.`
+          : 'Katalog OpenRouter tidak berisi model. Coba muat ulang nanti.';
+        renderModelOptions($('#integration-model-search').value);
       }, 'Memuat…', null);
-    } catch (error) { $('#integration-model-catalog-status').textContent = 'Daftar model tidak tersedia; masukkan model ID secara manual.'; show('#integration-model-error', integrationError(error)); }
+    } catch (error) {
+      state.modelCatalog = null; closeModelOptions();
+      $('#integration-model-catalog-status').textContent = 'UNVERIFIED · katalog tidak dapat dimuat. Coba muat ulang; model manual tetap harus diverifikasi.';
+      show('#integration-model-error', integrationError(error));
+    }
+  });
+  $('#integration-model-search').addEventListener('focus', (event) => {
+    if (!state.modelCatalog) return;
+    const selected = state.modelSelection?.name === event.currentTarget.value;
+    renderModelOptions(selected ? '' : event.currentTarget.value);
+  });
+  $('#integration-model-search').addEventListener('input', (event) => {
+    clearModelSelection(); renderModelOptions(event.currentTarget.value);
+  });
+  $('#integration-model-search').addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      const wasHidden = $('#integration-model-options').hidden;
+      if (wasHidden) renderModelOptions(event.currentTarget.value);
+      if (state.modelOptionMatches.length) setActiveModelOption(state.modelActiveOption < 0 ? 0 : state.modelActiveOption + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      const wasHidden = $('#integration-model-options').hidden;
+      if (wasHidden) renderModelOptions(event.currentTarget.value);
+      if (state.modelOptionMatches.length) setActiveModelOption(state.modelActiveOption < 0 ? state.modelOptionMatches.length - 1 : state.modelActiveOption - 1);
+    } else if (event.key === 'Enter' && !$('#integration-model-options').hidden && state.modelActiveOption >= 0) {
+      event.preventDefault(); setModelSelection(state.modelOptionMatches[state.modelActiveOption]);
+    } else if (event.key === 'Escape') closeModelOptions();
+    else if (event.key === 'Tab') closeModelOptions();
+  });
+  $('#integration-model-use-manual').addEventListener('click', () => {
+    const model = $('#integration-model-manual').value.trim();
+    hide('#integration-model-error');
+    if (!model) { renderModelValidation('UNVERIFIED', 'Masukkan Model ID tanpa perubahan otomatis, lalu pilih Gunakan ID.', 'warning'); $('#integration-model-manual').focus(); return; }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,98}$/.test(model)) {
+      const error = Object.assign(new Error('INVALID_MODEL'), { code: 'INVALID_MODEL' });
+      renderModelValidation('INCOMPATIBLE', 'Format Model ID tidak valid. Gunakan namespace/model-id yang persis dari OpenRouter.', 'error');
+      error.fields = { modelSearch: 'INVALID_MODEL' };
+      showFormError($('#integration-model-form'), error, '#integration-model-error'); return;
+    }
+    setModelSelection({ id: model, name: model, provider: model.split('/')[0], status: 'UNVERIFIED', reason: 'MANUAL_ID' });
   });
   $('#integration-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));
   $('#ai-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadIntegrations(), 'Memuat…').catch((error) => show('#global-error', integrationError(error))));

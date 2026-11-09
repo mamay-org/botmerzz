@@ -201,14 +201,29 @@
         <section class="panel stack" aria-labelledby="ai-title">
           <div><p class="eyebrow">KONFIGURASI AI</p><h2 id="ai-title">Model OpenRouter</h2><p class="muted">Model aktif dipakai pada generasi berikutnya. Kunci API tetap disimpan di server.</p></div>
           <div id="ai-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
-          <dl class="integration-summary"><div><dt>Model aktif</dt><dd id="ai-active-model">Belum tersedia</dd></div></dl>
+          <dl class="integration-summary"><div><dt>Model aktif</dt><dd id="ai-active-model">Belum tersedia</dd><p id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</p></div></dl>
           <div class="form-actions"><button id="ai-refresh" type="button" class="button quiet">Muat ulang model</button></div>
         </section>
         <form id="integration-model-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">MODEL AI</p><h2>Ganti model OpenRouter</h2><p class="muted">Isian berikut adalah draft perubahan. Model baru digunakan untuk generasi berikutnya. Konten yang sudah siap tidak diubah.</p></div></div>
-          <label class="full">Cari atau masukkan model ID<input name="model" list="integration-model-list" aria-describedby="integration-model-catalog-status" maxlength="200" required autocomplete="off" placeholder="contoh: penyedia/nama-model"><datalist id="integration-model-list"></datalist><span class="field-hint" id="integration-model-catalog-status">Daftar model belum dimuat; ID dapat dimasukkan manual.</span></label>
+          <div class="model-picker full">
+            <label for="integration-model-search">Pilih Model AI</label>
+            <input id="integration-model-search" name="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="integration-model-options" aria-describedby="integration-model-catalog-status integration-model-selection" autocomplete="off" placeholder="Cari nama model, provider, atau Model ID…">
+            <div id="integration-model-options" class="model-options" role="listbox" aria-label="Model OpenRouter" hidden></div>
+            <p id="integration-model-empty" class="field-hint" role="status" aria-live="polite" hidden></p>
+            <p id="integration-model-catalog-status" class="field-hint" role="status" aria-live="polite">Katalog belum dimuat. Muat katalog untuk mencari model.</p>
+            <p id="integration-model-selection" class="field-hint" role="status" aria-live="polite">Pilih model dari katalog, lalu verifikasi sebelum menyimpan.</p>
+            <input id="integration-model-id" type="hidden" name="model">
+            <details class="model-manual-option">
+              <summary>Opsi lanjutan: masukkan Model ID manual</summary>
+              <label for="integration-model-manual">Model ID dari OpenRouter</label>
+              <div class="model-manual-row"><input id="integration-model-manual" type="text" maxlength="200" autocomplete="off" aria-describedby="integration-model-manual-hint" placeholder="namespace/model-id"><button id="integration-model-use-manual" class="button quiet" type="button">Gunakan ID</button></div>
+              <span id="integration-model-manual-hint" class="field-hint">ID manual tetap harus diverifikasi melalui OpenRouter sebelum dapat disimpan.</span>
+            </details>
+          </div>
           <div id="integration-model-error" class="notice error full" role="alert" hidden></div>
-          <div class="form-footer full"><button class="button quiet" id="integration-model-catalog" type="button">Muat daftar model</button><button class="button primary" type="submit" disabled>Validasi dan simpan model</button></div>
+          <div id="integration-model-validation" class="notice info full" role="status" aria-live="polite">Model belum diverifikasi.</div>
+          <div class="form-footer full"><button class="button quiet" id="integration-model-catalog" type="button">Muat katalog</button><button class="button quiet" id="integration-model-verify" type="button" disabled>Verifikasi Model</button><button class="button primary" type="submit" disabled>Simpan Perubahan</button></div>
         </form>
         <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT MODEL</p><h2>Perubahan model AI</h2><p class="muted">Pulihkan model dari versi sebelumnya setelah model divalidasi kembali.</p></div></div><div id="integration-model-history" class="integration-history"></div></section>
       </section>

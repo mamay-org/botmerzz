@@ -33,17 +33,43 @@ test('Tebar adapter preserves unknown suspension state instead of treating it as
   ]}})}});
   assert.deepEqual((await api.listAccounts()).map(account=>account.planSuspended),[null,false,null]);
 });
-test('model validation checks metadata, sampling parameters and provider errors',async()=>{
+test('model validation checks metadata, application token and sampling parameters, and provider errors',async()=>{
   let metadata={id:'vendor/model:free',name:'Test',architecture:{input_modalities:['text'],output_modalities:['text']},supported_parameters:['max_tokens','temperature']};
   const client={request:async()=>({data:{data:metadata}})};
   const validator=createConfigurationValidators({config,http:client});
-  assert.equal((await validator.validateModel('vendor/model:free')).id,'vendor/model:free');
-  metadata={...metadata,supported_parameters:['max_tokens']};
+  assert.deepEqual(await validator.validateModel('vendor/model:free'),{id:'vendor/model:free',name:'Test',provider:'vendor',status:'AVAILABLE',reason:null});
+  metadata={...metadata,supported_parameters:['temperature']};
   await assert.rejects(validator.validateModel('vendor/model:free'),e=>e.code==='MODEL_INCOMPATIBLE');
   metadata={...metadata,architecture:{input_modalities:['image'],output_modalities:['text']}};
   await assert.rejects(validator.validateModel('vendor/model:free'),e=>e.code==='MODEL_INCOMPATIBLE');
   const down=createConfigurationValidators({config,http:{request:async()=>{throw Object.assign(new Error('secret'),{response:{status:429}});}}});
   await assert.rejects(down.validateModel('vendor/model:free'),e=>e.code==='OPENROUTER_RATE_LIMITED'&&!e.message.includes('secret'));
+});
+test('model catalog returns searchable safe metadata with compatibility and a short cache',async()=>{
+  let now=1000,calls=0,request;
+  const models=[
+    {id:'google/good-model',name:'Good Text Model',architecture:{input_modalities:['text'],output_modalities:['text']},supported_parameters:['max_completion_tokens','temperature']},
+    {id:'anthropic/no-temperature',name:'No Sampling Model',architecture:{input_modalities:['text'],output_modalities:['text']},supported_parameters:['max_tokens']},
+    {id:'vendor/vision-only',name:'Vision Only',architecture:{input_modalities:['image'],output_modalities:['text']},supported_parameters:['max_tokens']},
+    {id:'vendor/metadata-pending',name:'Metadata Pending'},
+    {id:'invalid-id',name:'Invalid identifier'},
+  ];
+  const validator=createConfigurationValidators({config,clock:()=>now,http:{request:async options=>{calls++;request=options;return {data:{data:models}};}}});
+  const first=await validator.listModels();
+  assert.deepEqual(first.map(({id,status,provider})=>({id,status,provider})),[
+    {id:'google/good-model',status:'AVAILABLE',provider:'google'},
+    {id:'anthropic/no-temperature',status:'INCOMPATIBLE',provider:'anthropic'},
+    {id:'vendor/vision-only',status:'INCOMPATIBLE',provider:'vendor'},
+    {id:'vendor/metadata-pending',status:'UNVERIFIED',provider:'vendor'},
+  ]);
+  assert.ok(first[1].reason);
+  assert.equal(request.headers.Authorization,'Bearer test-only');
+  assert.equal(calls,1);
+  await validator.listModels();
+  assert.equal(calls,1);
+  now+=5*60_000+1;
+  await validator.listModels();
+  assert.equal(calls,2);
 });
 test('provider timeouts and rate limits fail closed without exposing upstream details',async()=>{
   const secret='sensitive-provider-response';
@@ -82,4 +108,56 @@ test('integration API enforces auth, CSRF, strict fields, confirmation, validati
   assert.equal(writes,1);assert.equal(checks,2);
   assert.ok(logs.some(entry=>entry.event==='integration.http'&&entry.details.status===200&&entry.details.correlationId));
   assert.doesNotMatch(JSON.stringify(logs),/cccccccccc|acct|profile|Bearer|password/i);
+});
+test('OpenRouter catalog and model activation stay authenticated, CSRF-protected, validated and versioned',async t=>{
+  let authenticated=false,modelVersion=1,writes=0,validations=0,catalogReads=0;
+  const store={
+    recordValidation:async()=>{},
+    setModel:async({model,expectedVersion})=>{
+      if(expectedVersion!==modelVersion)throw Object.assign(new Error('conflict'),{code:'CONFIG_CONFLICT',status:409});
+      writes++;modelVersion++;
+      return {version:modelVersion,profileId:'profile',accountId:'account',model,status:'ACTIVE'};
+    },
+  };
+  const validator={
+    listModels:async()=>{catalogReads++;return [{id:'vendor/good',name:'Good Model',provider:'vendor',status:'AVAILABLE',reason:null}];},
+    validateModel:async(model)=>{
+      validations++;
+      if(model==='vendor/bad')throw Object.assign(new Error('MODEL_INCOMPATIBLE'),{code:'MODEL_INCOMPATIBLE',status:422});
+      if(model==='vendor/unverified')throw Object.assign(new Error('MODEL_METADATA_UNVERIFIED'),{code:'MODEL_METADATA_UNVERIFIED',status:503});
+      return {id:model,name:'Good Model',provider:'vendor',status:'AVAILABLE',reason:null};
+    },
+  };
+  const serverConfig={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
+  const server=http.createServer(createServer({config:serverConfig,repository:{},auth:{authenticate:async()=>authenticated?{admin:{id:7},csrfToken:'c'.repeat(43)}:null},services:{configuration:store,configurationValidators:validator}}));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections?.();}));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  serverConfig.baseUrl=base;
+  const cookie=`merzz_admin=${'a'.repeat(43)}`;
+  const request=(path,method='GET',body,csrf='c'.repeat(43))=>fetch(base+path,{method,headers:{origin:base,cookie,'content-type':'application/json','x-csrf-token':csrf},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  assert.equal((await fetch(base+'/api/integrations/models')).status,401);
+  authenticated=true;
+  const catalog=await request('/api/integrations/models');
+  assert.equal(catalog.status,200);
+  assert.deepEqual((await catalog.json()).models[0],{id:'vendor/good',name:'Good Model',provider:'vendor',status:'AVAILABLE',reason:null});
+  assert.equal(catalogReads,1);
+  assert.equal((await request('/api/integrations/validate-model','POST',{model:'vendor/good'},'bad')).status,403);
+  assert.equal((await request('/api/integrations/validate-model','POST',{model:'bad format'})).status,400);
+  const validated=await request('/api/integrations/validate-model','POST',{model:'vendor/good'});
+  assert.equal(validated.status,200);
+  assert.equal((await validated.json()).model.status,'AVAILABLE');
+  const unverified=await request('/api/integrations/validate-model','POST',{model:'vendor/unverified'});
+  assert.equal(unverified.status,503);
+  assert.deepEqual(await unverified.json(),{error:'MODEL_METADATA_UNVERIFIED'});
+  assert.equal((await request('/api/integrations/model','PUT',{model:'vendor/bad',expectedVersion:1})).status,422);
+  assert.equal(writes,0);
+  assert.equal((await request('/api/integrations/model','PUT',{model:'vendor/good',expectedVersion:2})).status,409);
+  assert.equal(writes,0);
+  const saved=await request('/api/integrations/model','PUT',{model:'vendor/good',expectedVersion:1});
+  assert.equal(saved.status,200);
+  assert.equal((await saved.json()).configuration.model,'vendor/good');
+  assert.equal(writes,1);
+  assert.equal(modelVersion,2);
+  assert.doesNotMatch(JSON.stringify({catalogReads,validations,writes}),/Bearer|test-only|password/i);
 });

@@ -15,7 +15,7 @@ const { registerIntegrationRoutes } = require('./http/routes/integrations');
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
   'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
-  'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE',
+  'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
 ]);
 
 function createServer({ config, repository, auth, services = {} }) {
