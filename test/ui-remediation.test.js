@@ -192,8 +192,8 @@ test('authentication view changes move focus to the newly visible view', () => {
   contains(html, /id="dashboard-title"[^>]*tabindex="-1"/, 'the dashboard heading should accept programmatic focus');
 });
 
-test('dashboard navigation exposes active state and uses the dark native color scheme', () => {
-  contains(html, /<meta name="color-scheme" content="dark">/, 'native controls should use the dashboard dark theme');
+test('dashboard navigation exposes active state and uses the light native color scheme', () => {
+  contains(html, /<meta name="color-scheme" content="light">/, 'native controls should use the dashboard light theme');
   contains(app, /aria-selected/, 'active tab state should be announced');
   contains(app, /aria-hidden/, 'inactive tab panels should be hidden from assistive technology');
   contains(html, /aria-controls="tab-content"/, 'tab controls should be associated with their panels');
