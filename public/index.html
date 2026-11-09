@@ -33,11 +33,13 @@
           </div>
           <h2 id="sidebar-title" class="visually-hidden">Navigasi dashboard</h2>
           <nav class="sidebar-nav" role="tablist" aria-orientation="vertical" aria-labelledby="sidebar-title">
-            <button class="tab active" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="true" tabindex="0"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>Konten &amp; brand</span></button>
+            <button class="tab active" id="tab-button-dashboard" data-tab="dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM13 3h8v6h-8zM3 17h8v4H3z"/></svg><span>Dashboard</span></button>
+            <button class="tab" id="tab-button-content" data-tab="content" role="tab" aria-controls="tab-content" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5"/></svg><span>Konten &amp; brand</span></button>
             <button class="tab" id="tab-button-templates" data-tab="templates" role="tab" aria-controls="tab-templates" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h5M9 12h7M9 16h7"/></svg><span>Template</span></button>
             <button class="tab" id="tab-button-schedule" data-tab="schedule" role="tab" aria-controls="tab-schedule" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Jadwal</span></button>
             <button class="tab" id="tab-button-facts" data-tab="facts" role="tab" aria-controls="tab-facts" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg><span>Produk &amp; informasi</span></button>
             <button class="tab" id="tab-button-activity" data-tab="activity" role="tab" aria-controls="tab-activity" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="7" cy="5" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="19" r="1"/></svg><span>Riwayat &amp; catatan</span></button>
+            <button class="tab" id="tab-button-ai" data-tab="ai" role="tab" aria-controls="tab-ai" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v3M5.6 5.6l2.1 2.1M3 12h3M5.6 18.4l2.1-2.1M12 18v3M18.4 18.4l-2.1-2.1M18 12h3M18.4 5.6l-2.1 2.1"/><circle cx="12" cy="12" r="5"/></svg><span>AI</span></button>
             <button class="tab" id="tab-button-integrations" data-tab="integrations" role="tab" aria-controls="tab-integrations" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M8 4v5M16 4v5M6 9h12v4a6 6 0 0 1-6 6v2M6 13a6 6 0 0 0 6 6"/></svg><span>Integrasi</span></button>
             <button class="tab" id="tab-button-admins" data-tab="admins" role="tab" aria-controls="tab-admins" aria-selected="false" tabindex="-1"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span>Admin</span></button>
           </nav>
@@ -50,15 +52,15 @@
             <div class="top-actions"><button id="logout-button" class="button quiet">Keluar</button></div>
           </header>
           <div class="dashboard-content">
-
-      <div class="page-heading">
-        <div><p class="eyebrow">DASHBOARD</p><h1 id="dashboard-title" tabindex="-1">Otomasi konten</h1><p class="muted">Pantau koneksi dan kelola penerbitan dari satu tempat.</p></div>
-        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Otomasi nonaktif</strong><small id="automation-reason" tabindex="-1">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan otomasi</button></div>
-      </div>
-
       <div id="global-error" class="notice error" role="alert" hidden></div>
       <div id="global-success" class="notice success" role="status" hidden></div>
       <div id="toast-region" class="toast-region" aria-label="Notifikasi dashboard" aria-live="polite" aria-relevant="additions text"></div>
+
+      <section id="tab-dashboard" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-dashboard" aria-hidden="false" tabindex="0">
+        <div class="page-heading">
+          <div><p class="eyebrow">OVERVIEW</p><h1 id="dashboard-title" tabindex="-1">Dashboard</h1><p class="muted">Pantau status operasional, performa, dan persiapan workspace.</p></div>
+        </div>
+        <div class="automation-control"><div><span id="automation-state" class="state-dot off"></span><strong id="automation-label">Otomasi nonaktif</strong><small id="automation-reason" tabindex="-1">Selesaikan onboarding sebelum mengaktifkan.</small></div><button id="automation-button" class="button primary">Aktifkan otomasi</button></div>
 
       <section class="metrics" aria-label="Ringkasan operasional">
         <article class="metric"><span>Threads</span><strong id="provider-status" tabindex="-1">Belum terhubung</strong><small id="provider-account">Hubungkan melalui Tebar</small></article>
@@ -69,11 +71,21 @@
       </section>
 
       <section class="panel onboarding-panel">
-        <div class="panel-heading"><div><p class="eyebrow">SEBELUM MULAI</p><h2>Daftar onboarding</h2><p class="muted">Nama dan gaya brand, hashtag, tautan top-up dan jual akun, akun Threads di Tebar, serta penyedia AI wajib disiapkan. Item lainnya bersifat opsional.</p></div><span id="onboarding-count" class="pill warning">Belum lengkap</span></div>
-        <ul id="onboarding-list" class="checklist"></ul>
+        <div class="panel-heading"><div><p class="eyebrow">SEBELUM MULAI</p><h2>Persiapan workspace</h2><p class="muted">Konfigurasi wajib dan opsional membantu menyiapkan workspace. Status di bawah mengikuti data terbaru dari server.</p></div><span id="onboarding-count" class="pill neutral">Memuat status</span></div>
+        <div id="onboarding-loading" class="notice info" role="status" tabindex="-1">Memuat status konfigurasi…</div>
+        <div id="onboarding-error" class="notice error" role="alert" hidden><span>Status konfigurasi belum dapat dimuat. Coba lagi untuk memeriksa data terbaru.</span><button id="onboarding-retry" class="button quiet" type="button">Coba lagi</button></div>
+        <p id="onboarding-announcement" class="visually-hidden" aria-live="polite" aria-atomic="true"></p>
+        <section id="onboarding-summary" class="onboarding-summary" aria-labelledby="onboarding-summary-title" hidden>
+          <span class="onboarding-success-icon" aria-hidden="true">✓</span>
+          <div class="onboarding-summary-copy"><h3 id="onboarding-summary-title">Konfigurasi lengkap</h3><p>Seluruh pengaturan wajib telah disiapkan. Status ini tidak menunjukkan apakah otomasi aktif, provider online, atau publikasi berhasil.</p><p id="onboarding-progress" class="onboarding-progress"></p></div>
+          <div class="form-actions onboarding-summary-actions"><button id="onboarding-details-toggle" class="button quiet" type="button" aria-expanded="false" aria-controls="onboarding-details">Lihat detail</button><button id="onboarding-settings" class="button primary" type="button">Buka pengaturan</button></div>
+        </section>
+        <p id="onboarding-incomplete" class="muted onboarding-incomplete" hidden>Lengkapi item wajib yang belum selesai. Item opsional tidak menghalangi penyelesaian onboarding.</p>
+        <div id="onboarding-details" hidden><ul id="onboarding-list" class="checklist"></ul></div>
+      </section>
       </section>
 
-      <section id="tab-content" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-content" aria-hidden="false" tabindex="0">
+      <section id="tab-content" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-content" aria-hidden="true" tabindex="0" hidden>
         <form id="content-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">PANDUAN TERSTRUKTUR</p><h2>Karakter brand dan batasan AI</h2><p class="muted">AI hanya menggunakan panduan dan daftar yang disimpan di sini.</p></div></div>
           <label>Nama merek<input name="brandName" maxlength="120" placeholder="Kedai Merzz"></label>
@@ -152,9 +164,9 @@
       </section>
       <section id="tab-integrations" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-integrations" aria-hidden="true" tabindex="0" hidden>
         <section class="panel stack" aria-labelledby="integrations-title">
-          <div><p class="eyebrow">KONFIGURASI AKTIF</p><h2 id="integrations-title">Pengaturan integrasi</h2><p class="muted">Kelola akun Threads dan model AI. Kunci API tetap disimpan di server.</p></div>
+          <div><p class="eyebrow">KONFIGURASI AKTIF</p><h2 id="integrations-title">Integrasi Tebar</h2><p class="muted">Kelola koneksi akun Threads. Kredensial provider tetap disimpan di server.</p></div>
           <div id="integration-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
-          <dl class="integration-summary"><div><dt>Profile Tebar</dt><dd id="integration-active-profile">Belum tersedia</dd></div><div><dt>Akun Threads</dt><dd id="integration-active-account">Belum tersedia</dd></div><div><dt>Verifikasi akun</dt><dd id="integration-provider-status">Belum tersedia</dd></div><div><dt>Model OpenRouter</dt><dd id="integration-active-model">Belum tersedia</dd></div><div><dt>Status pergantian</dt><dd id="integration-switch-status">Belum tersedia</dd></div><div><dt>Status otomasi</dt><dd id="integration-automation-status">Belum tersedia</dd></div></dl>
+          <dl class="integration-summary"><div><dt>Profile Tebar</dt><dd id="integration-active-profile">Belum tersedia</dd></div><div><dt>Akun Threads</dt><dd id="integration-active-account">Belum tersedia</dd></div><div><dt>Verifikasi akun</dt><dd id="integration-provider-status">Belum tersedia</dd></div><div><dt>Status pergantian</dt><dd id="integration-switch-status">Belum tersedia</dd></div></dl>
           <div class="form-actions"><button id="integration-refresh" type="button" class="button quiet">Muat ulang konfigurasi</button><button id="integration-check-active" type="button" class="button quiet" disabled>Periksa akun aktif</button><button id="integration-reconcile" type="button" class="button quiet" hidden>Lanjutkan pemeriksaan</button></div>
         </section>
         <form id="integration-account-form" class="panel form-grid">
@@ -165,13 +177,22 @@
           <div id="integration-account-error" class="notice error full" role="alert" hidden></div>
           <div class="form-footer full"><span class="muted">Periksa identitas akun sebelum mengonfirmasi pergantian.</span><button class="button primary" type="submit" disabled>Validasi akun</button></div>
         </form>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT AKUN</p><h2>Perubahan akun Threads</h2><p class="muted">Pulihkan akun dari versi sebelumnya setelah identitasnya diverifikasi kembali.</p></div></div><div id="integration-account-history" class="integration-history"></div></section>
+      </section>
+      <section id="tab-ai" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-ai" aria-hidden="true" tabindex="0" hidden>
+        <section class="panel stack" aria-labelledby="ai-title">
+          <div><p class="eyebrow">KONFIGURASI AI</p><h2 id="ai-title">Model OpenRouter</h2><p class="muted">Model aktif dipakai pada generasi berikutnya. Kunci API tetap disimpan di server.</p></div>
+          <div id="ai-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
+          <dl class="integration-summary"><div><dt>Model aktif</dt><dd id="ai-active-model">Belum tersedia</dd></div></dl>
+          <div class="form-actions"><button id="ai-refresh" type="button" class="button quiet">Muat ulang model</button></div>
+        </section>
         <form id="integration-model-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">MODEL AI</p><h2>Ganti model OpenRouter</h2><p class="muted">Isian berikut adalah draft perubahan. Model baru digunakan untuk generasi berikutnya. Konten yang sudah siap tidak diubah.</p></div></div>
           <label class="full">Cari atau masukkan model ID<input name="model" list="integration-model-list" aria-describedby="integration-model-catalog-status" maxlength="200" required autocomplete="off" placeholder="contoh: penyedia/nama-model"><datalist id="integration-model-list"></datalist><span class="field-hint" id="integration-model-catalog-status">Daftar model belum dimuat; ID dapat dimasukkan manual.</span></label>
           <div id="integration-model-error" class="notice error full" role="alert" hidden></div>
           <div class="form-footer full"><button class="button quiet" id="integration-model-catalog" type="button">Muat daftar model</button><button class="button primary" type="submit" disabled>Validasi dan simpan model</button></div>
         </form>
-        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT KONFIGURASI</p><h2>Versi sebelumnya</h2><p class="muted">Pilih untuk memulihkan akun atau model secara terpisah. Setiap perubahan divalidasi dan menghasilkan versi baru.</p></div></div><div id="integration-history" class="integration-history"></div></section>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">RIWAYAT MODEL</p><h2>Perubahan model AI</h2><p class="muted">Pulihkan model dari versi sebelumnya setelah model divalidasi kembali.</p></div></div><div id="integration-model-history" class="integration-history"></div></section>
       </section>
       <section id="tab-admins" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-admins" aria-hidden="true" tabindex="0" hidden>
         <form id="admin-create-form" class="panel form-grid">
