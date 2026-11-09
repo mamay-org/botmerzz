@@ -228,14 +228,14 @@
     }
   }
   const onboardingLabels = {
-    brand: 'Nama dan gaya komunikasi brand sudah diisi',
-    games: 'Daftar game top-up sudah diisi',
-    guardrails: 'Batasan AI sudah disetujui klien',
-    links: 'Tautan top-up dan jual akun sudah diisi',
-    hashtags: 'Hashtag otomatis sudah diisi',
-    facts: 'Informasi top-up dan akun sudah diperbarui',
-    thread: 'Akun Threads testing aktif di Tebar',
-    ai: 'Penyedia AI sudah dikonfigurasi',
+    brand: 'Nama dan gaya komunikasi brand',
+    games: 'Daftar game yang disetujui',
+    guardrails: 'Batasan konten AI',
+    links: 'Tautan top-up dan jual akun',
+    hashtags: 'Hashtag otomatis',
+    facts: 'Informasi harga dan stok produk',
+    thread: 'Akun Threads testing',
+    ai: 'Penyedia AI',
   };
   const onboardingTargets = {
     brand: { tab: 'content', field: 'brandName' },
@@ -579,14 +579,22 @@
       if (!item.complete) li.classList.add('incomplete');
       if (item.required === false) li.classList.add('optional');
       else li.classList.add('required');
+      const heading = document.createElement('div');
+      heading.className = 'onboarding-item-heading';
+      const icon = document.createElement('span');
+      icon.className = `onboarding-item-icon ${item.complete ? 'complete' : 'incomplete'}`;
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = item.complete ? '✓' : '!';
       const text = document.createElement('span');
       text.className = 'onboarding-label';
       text.textContent = onboardingLabels[item.key] || item.label || item.key || 'Persiapan awal';
-      li.append(text);
+      heading.append(icon, text);
+      const footer = document.createElement('div');
+      footer.className = 'onboarding-item-footer';
       const status = document.createElement('span');
       status.className = `onboarding-item-status ${item.complete ? 'complete' : 'incomplete'}`;
-      status.textContent = `${item.required ? 'Wajib' : 'Opsional'} · ${item.complete ? 'Selesai' : 'Perlu diisi'}`;
-      li.append(status);
+      status.textContent = `${item.required ? 'Wajib' : 'Opsional'} · ${item.complete ? 'Selesai' : item.required ? 'Belum selesai' : 'Perlu diisi'}`;
+      footer.append(status);
       const target = onboardingTargets[item.key];
       if (!item.complete && target) {
         const action = document.createElement('button');
@@ -602,8 +610,9 @@
           focusTarget?.focus({ preventScroll: true });
           focusTarget?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
         });
-        li.append(action);
+        footer.append(action);
       }
+      li.append(heading, footer);
       return li;
     }));
     const loading = $('#onboarding-loading'); loading.hidden = true;
