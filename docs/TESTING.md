@@ -18,9 +18,9 @@ The test service runs syntax checks, the full unit suite, and `npm run test:inte
 
 ## Required coverage
 
-- Policy: Malay text constraints, approved game/fact rendering, stale facts, all price modes, one-hour minimum interval, and 24/7 scheduling regardless of legacy active-hour settings.
+- Policy: Malay text constraints, approved game/fact rendering, stale facts, all price modes, hour/minute validation (minimum one minute), legacy-hour conversion, and 24/7 scheduling regardless of legacy active-hour settings.
 - Auth/API: password hashing, login throttling, session rotation/expiry, CSRF and same-origin enforcement, validation and safe errors.
-- Dispatcher: concurrent claims, unique slot/idempotency key, immediate first dispatch on activation, cooldown after a recent post, recurring intervals, no catch-up, pause races, generation retry, unknown provider outcome reconciliation, cancellation and a 22:00 Asia/Kuala_Lumpur summary. Unknown outcomes without provider IDs must not be replayed and must block later posts.
+- Dispatcher: concurrent claims across independent MySQL pools, one active generation/publish per session, unique slot/idempotency key, immediate first dispatch on activation, configured-minute cooldown after a recent post, exact 1/5/15/30/60/90/135 minute planning, no catch-up, pause races, generation retry, unknown provider outcome reconciliation, cancellation and a 22:00 Asia/Kuala_Lumpur summary. Unknown outcomes without provider IDs must not be replayed and must block later posts.
 - Adapters: mock Tebar/OpenRouter/Telegram responses, redaction, malformed success responses, rate limits and network failures.
 - Database: migrations against the supported MySQL version, simultaneous MySQL claims with one winner, durable prepared payload/idempotency-key recovery after a fresh pool connection, and persistence after app restart.
 - Container: non-root runtime, health checks, configurable port, graceful termination, image build and restart with durable database volume.

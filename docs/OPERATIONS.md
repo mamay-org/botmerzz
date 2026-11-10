@@ -8,7 +8,7 @@ For changing accounts or models, blocked switches, and uncertain or legacy slots
 
 ## Schedule policy and quota
 
-New schedule settings default to a one-hour interval, which is the minimum. Publishing is 24/7; legacy active-day and active-hour settings are ignored. Existing database interval values are retained on upgrade, so an admin must set the schedule interval to `1` in the dashboard for hourly publishing. Enabling automation requests an immediate first dispatch, unless a recent post means the one-hour cooldown has not elapsed. Hourly cadence creates 24 scheduled posts per day; monitor the connected Tebar account quota before enabling automation. Missed slots remain skipped without catch-up. The daily Telegram summary is fixed at 22:00 Asia/Kuala_Lumpur.
+The dashboard accepts whole hours and minutes, with a one-minute minimum and a 60-minute default. Legacy `intervalHours` values are converted to minutes on read; no schema migration is required. Publishing is 24/7; legacy active-day and active-hour settings are ignored. Enabling automation requests the first dispatch immediately; subsequent attempts follow the configured interval after a confirmed post or failure. The scheduler polls every 60 seconds by default (minimum 15 seconds), so very short intervals may execute late. MySQL allows one generation/publishing cycle per automation session at a time. Pending slots wait while a cycle is active, and an unknown provider outcome blocks later posts until reconciliation. Before enabling short intervals, evaluate Tebar/OpenRouter quotas, rate limits, generation latency, and API cost. Missed slots remain skipped without catch-up. The daily Telegram summary is fixed at 22:00 Asia/Kuala_Lumpur.
 
 ## Recovery
 

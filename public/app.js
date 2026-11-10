@@ -170,7 +170,7 @@
     'guardrails.forbiddenClaims': 'klaim yang dilarang', 'guardrails.approvedClaims': 'klaim yang disetujui',
     'guardrails.hookVocabulary': 'kosakata hook', gameWhitelist: 'whitelist game', hashtags: 'hashtag',
     'trackedLinks.topup': 'tautan top-up', 'trackedLinks.account': 'tautan jual akun',
-    'schedule.intervalHours': 'interval posting', 'schedule.timezone': 'zona waktu', priceMode: 'mode harga/stok',
+    'schedule.hours': 'jam interval posting', 'schedule.minutes': 'menit interval posting', 'schedule.intervalMinutes': 'interval posting', 'schedule.intervalHours': 'interval posting', 'schedule.timezone': 'zona waktu', priceMode: 'mode harga/stok',
     'summary.game': 'game', 'summary.denomination': 'nominal top-up', 'summary.price': 'harga',
     'summary.availability': 'ketersediaan', 'summary.attributes': 'atribut akun',
     email: 'email', password: 'kata sandi', game: 'game', price: 'harga',
@@ -181,7 +181,7 @@
     'brand.audienceNotes': 'audienceNotes', 'guardrails.approved': 'guardrailsApproved',
     'guardrails.forbiddenClaims': 'forbiddenClaims', 'guardrails.approvedClaims': 'approvedClaims',
     'guardrails.hookVocabulary': 'hookVocabulary', 'trackedLinks.topup': 'trackedTopup',
-    'trackedLinks.account': 'trackedAccount', 'schedule.intervalHours': 'intervalHours',
+    'trackedLinks.account': 'trackedAccount', 'schedule.hours': 'hours', 'schedule.minutes': 'minutes', 'schedule.intervalMinutes': 'minutes', 'schedule.intervalHours': 'hours',
     'schedule.timezone': 'timezone', priceMode: 'priceMode', 'summary.game': 'game',
     'summary.denomination': 'denomination', 'summary.price': 'price',
     'summary.availability': 'availability', 'summary.attributes': 'attributes',
@@ -341,6 +341,27 @@
     }
   }
 
+  function updateScheduleIntervalSummary() {
+    const form = $('#schedule-form');
+    const summary = $('#schedule-interval-summary');
+    if (!form || !summary) return;
+    const rawHours = value(form, 'hours').trim();
+    const rawMinutes = value(form, 'minutes').trim();
+    if (!/^\d+$/u.test(rawHours) || !/^\d+$/u.test(rawMinutes)) {
+      summary.textContent = 'Masukkan jam dan menit sebagai bilangan bulat non-negatif.';
+      return;
+    }
+    const hours = Number(rawHours); const minutes = Number(rawMinutes); const total = hours * 60 + minutes;
+    if (!Number.isSafeInteger(hours) || !Number.isSafeInteger(minutes) || minutes > 59 || !Number.isSafeInteger(total) || total < 1) {
+      summary.textContent = 'Interval minimal 1 menit; nilai menit harus antara 0 dan 59.';
+      return;
+    }
+    const parts = [];
+    if (hours) parts.push(`${hours} jam`);
+    if (minutes) parts.push(`${minutes} menit`);
+    summary.textContent = `Interval yang akan disimpan: ${parts.join(' ')}.`;
+  }
+
   function readSettings() {
     const settings = state.data?.settings || {};
     const schedule = settings.schedule || {};
@@ -356,10 +377,17 @@
       hookVocabulary: (guardrails.hookVocabulary || []).join('\n'),
       guardrailsApproved: guardrails.approved,
     });
+    const legacyHours = typeof schedule.intervalHours === 'string' && /^\d+$/u.test(schedule.intervalHours)
+      ? Number(schedule.intervalHours) : schedule.intervalHours;
+    const savedIntervalMinutes = Number.isSafeInteger(schedule.intervalMinutes) && schedule.intervalMinutes > 0
+      ? schedule.intervalMinutes
+      : Number.isSafeInteger(legacyHours) && legacyHours >= 1 && Number.isSafeInteger(legacyHours * 60) ? legacyHours * 60 : 60;
     setFormValues($('#schedule-form'), {
-      intervalHours: schedule.intervalHours ?? 1,
+      hours: Math.floor(savedIntervalMinutes / 60),
+      minutes: savedIntervalMinutes % 60,
       priceMode: settings.priceMode || 'OFF',
     });
+    updateScheduleIntervalSummary();
     for (const service of ['topup', 'account']) {
       const fact = state.data?.facts?.[service]?.summary || {};
       const form = $(`#fact-${service}-form`);
@@ -1313,7 +1341,10 @@
 
   $('#schedule-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const form = event.currentTarget; clearFormErrors(form); const settings = state.data.settings || {};
-    settings.schedule = { intervalHours: Number(value(form, 'intervalHours')) };
+    const rawHours = value(form, 'hours').trim(); const rawMinutes = value(form, 'minutes').trim();
+    const currentSchedule = { ...(settings.schedule || {}) };
+    delete currentSchedule.intervalMinutes; delete currentSchedule.intervalHours; delete currentSchedule.hours; delete currentSchedule.minutes;
+    settings.schedule = { ...currentSchedule, hours: rawHours === '' ? null : Number(rawHours), minutes: rawMinutes === '' ? null : Number(rawMinutes) };
     settings.priceMode = value(form, 'priceMode');
     try {
       await withPending(event.submitter || $('button[type="submit"]', form), async () => {
@@ -1322,6 +1353,7 @@
       }, 'Menyimpan…', form);
     } catch (error) { showFormError(form, error); }
   });
+  ['hours', 'minutes'].forEach((name) => $('#schedule-form').elements.namedItem(name).addEventListener('input', updateScheduleIntervalSummary));
 
   $$('.fact-form').forEach((form) => form.addEventListener('submit', async (event) => {
     event.preventDefault(); clearFormErrors(form); const service = form.dataset.service;

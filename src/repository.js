@@ -1,8 +1,8 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { formatSlotNotice } = require('./telegram-format');
-const { contentSafetyHash } = require('./content-safety');
+const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
 const { DateTime } = require('luxon');
-const { isInActiveWindow, validateSettings, isFactFresh } = require('./policy');
+const { isInActiveWindow, validateSettings, isFactFresh, normalizeScheduleInterval } = require('./policy');
 
 const json = (value, fallback = {}) => {
   if (value && typeof value === 'object' && !Buffer.isBuffer(value)) return value;
@@ -46,7 +46,7 @@ function createRepository(pool) {
     const row = rows[0]; if (!row) return { automationEnabled: false };
     const settings = json(row.settings_json);
     const knowledge = json(row.knowledge_json);
-    return { ...settings, schedule: { ...(settings.schedule || {}), intervalHours: 1 }, brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {}, automationEnabled: Boolean(row.automation_enabled) };
+    return { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {}, automationEnabled: Boolean(row.automation_enabled) };
   }
   async function getRuntimeState() {
     const [rows] = await pool.execute('SELECT settings_json, knowledge_json, automation_enabled FROM settings WHERE id=1');
@@ -56,18 +56,22 @@ function createRepository(pool) {
     const facts = await listFacts();
     const history = await listSlots(1000);
     const factRows = Object.entries(facts).map(([service, fact]) => ({ ...fact.summary, id: service, pillar: service === 'account' ? 'account' : 'topup', active: fact.active, updatedAt: fact.updatedAt }));
-    return { settings: { ...settings, schedule: { ...(settings.schedule || {}), intervalHours: 1 }, brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {} }, knowledge, facts: factRows, history, automationEnabled: Boolean(row.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
+    return { settings: { ...settings, schedule: normalizeScheduleInterval(settings.schedule || {}), brand: knowledge.brand || settings.brand || {}, guardrails: knowledge.guardrails || settings.guardrails || {} }, knowledge, facts: factRows, history, automationEnabled: Boolean(row.automation_enabled), accountId: settings.targetAccountId || null, profileId: settings.profileId || null, onboardingComplete: settings.onboardingComplete === true };
   }
   async function saveSettings(settings, adminId) {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
       const safeSettings = { ...settings }; delete safeSettings.automationEnabled;
-      if (safeSettings.schedule && typeof safeSettings.schedule === 'object' && !Array.isArray(safeSettings.schedule)) safeSettings.schedule = { ...safeSettings.schedule, intervalHours: 1 };
+      if (safeSettings.schedule && typeof safeSettings.schedule === 'object' && !Array.isArray(safeSettings.schedule)) safeSettings.schedule = normalizeScheduleInterval(safeSettings.schedule);
       const [[existingRow]] = await connection.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');
       const existing = json(existingRow?.settings_json);
       for (const key of ['targetAccountId','profileId','integrationConfigInitialized','onboardingComplete','nextSlotAt','automationSessionId']) if (safeSettings[key] === undefined && existing[key] !== undefined) safeSettings[key] = existing[key];
-      if (JSON.stringify(existing.schedule || {}) !== JSON.stringify(safeSettings.schedule || {})) delete safeSettings.nextSlotAt;
+      const scheduleKey = (schedule) => {
+        const checked = validateSettings({ schedule: schedule || {} });
+        return JSON.stringify(checked.valid ? checked.settings.schedule : normalizeScheduleInterval(schedule || {}));
+      };
+      if (scheduleKey(existing.schedule) !== scheduleKey(safeSettings.schedule)) delete safeSettings.nextSlotAt;
       const knowledge = { brand: safeSettings.brand || {}, guardrails: safeSettings.guardrails || {} };
       await connection.execute('UPDATE settings SET settings_json=?, knowledge_json=? WHERE id=1', [JSON.stringify(safeSettings), JSON.stringify(knowledge)]);
       await audit(connection, adminId, 'settings.updated', {});
@@ -372,6 +376,8 @@ function createRepository(pool) {
         await c.rollback();
         return null;
       }
+      const [[inFlight]] = await c.execute("SELECT id FROM slots WHERE automation_session_id=? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, now]);
+      if (inFlight) { await c.commit(); return null; }
       const [rows] = await c.execute("SELECT id,scheduled_at,status,request_payload,idempotency_key,caption,pillar,fact_bearing,fact_ids,fact_versions,content_safety_hash,automation_session_id,tebar_profile_id,tebar_account_id,tebar_config_version,model_config_version,openrouter_model FROM slots WHERE automation_session_id=? AND ((status='pending' AND scheduled_at<=?) OR (status='ready' AND scheduled_at<=? AND (claimed_at IS NULL OR claimed_at<DATE_SUB(?,INTERVAL 10 MINUTE)))) ORDER BY scheduled_at LIMIT 1 FOR UPDATE", [sessionId, now, now, now]);
       if (!rows.length) { await c.commit(); return null; }
       const slot = rows[0];
@@ -381,7 +387,8 @@ function createRepository(pool) {
         return null;
       }
       const [[last]] = await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId, slot.id]);
-      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < 3600000) {
+      const cadenceMs = validated.settings.schedule.intervalMinutes * 60_000;
+      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < cadenceMs) {
         // Keep this slot due until the publication-time cooldown elapses.
         await c.commit();
         return null;
@@ -413,7 +420,12 @@ function createRepository(pool) {
       settings.schedule=checked.settings.schedule;
       if(scheduleChanged)await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
       const zone=savedSchedule.timezone||timezone;
-      const interval=1;
+      const intervalMinutes=checked.settings.schedule.intervalMinutes;
+      const addInterval=(value)=>{
+        const result=value.plus({minutes:intervalMinutes});
+        if(!result.isValid)throw Object.assign(new Error('INVALID_SCHEDULE_TIMESTAMP'),{code:'invalid_schedule_timestamp'});
+        return result;
+      };
       let activationFirstPostAt=typeof settings.activationFirstPostAt==='string'?DateTime.fromISO(settings.activationFirstPostAt,{zone:'utc'}):null;
       const current=DateTime.fromJSDate(now instanceof Date?now:new Date(now),{zone:'utc'});
       if(!current.isValid){await c.rollback();return {slot:null,created:false,skippedCount:0};}
@@ -432,32 +444,36 @@ function createRepository(pool) {
         const isActivationFirstSlot=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===pendingAt.toMillis();
         if(lastPost?.last_post_at){
           const lastAt=DateTime.fromJSDate(new Date(lastPost.last_post_at),{zone:'utc'});
-          const earliest=lastAt.plus({hours:interval});
-          if(lastAt.isValid&&earliest>pendingAt){
-            pendingAt=earliest;
-            for(let i=0;i<100;i++){
-              const scheduledAt=pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
-              const [[conflict]]=await c.execute('SELECT id FROM slots WHERE automation_session_id=? AND scheduled_at=? AND id<>? LIMIT 1 FOR UPDATE',[sessionId,scheduledAt,pendingSlot.id]);
-              if(!conflict)break;
-              pendingAt=pendingAt.plus({hours:interval});
-              if(i===99)throw Object.assign(new Error('SCHEDULE_SLOT_CONFLICT'),{code:'schedule_slot_conflict'});
+          if(lastAt.isValid){
+            const earliest=addInterval(lastAt);
+            if(earliest>pendingAt){
+              pendingAt=earliest;
+              for(let i=0;i<100;i++){
+                const scheduledAt=pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS');
+                const [[conflict]]=await c.execute('SELECT id FROM slots WHERE automation_session_id=? AND scheduled_at=? AND id<>? LIMIT 1 FOR UPDATE',[sessionId,scheduledAt,pendingSlot.id]);
+                if(!conflict)break;
+                pendingAt=addInterval(pendingAt);
+                if(i===99)throw Object.assign(new Error('SCHEDULE_SLOT_CONFLICT'),{code:'schedule_slot_conflict'});
+              }
+              await c.execute('UPDATE slots SET scheduled_at=? WHERE id=? AND automation_session_id=?',[pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS'),pendingSlot.id,sessionId]);
             }
-            await c.execute('UPDATE slots SET scheduled_at=? WHERE id=? AND automation_session_id=?',[pendingAt.toUTC().toFormat('yyyy-LL-dd HH:mm:ss.SSS'),pendingSlot.id,sessionId]);
           }
         }
-        if(pendingAt>current){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};}
+        if(!settings.nextSlotAt){settings.nextSlotAt=addInterval(pendingAt).toUTC().toISO();await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);}
+        if(pendingAt>current){
+          await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};
+        }
         const active=isInActiveWindow(pendingAt.toJSDate(),{...checked.settings.schedule,timezone:zone});
         if(isActivationFirstSlot||(active&&isInActiveWindow(current.toJSDate(),{...checked.settings.schedule,timezone:zone})&&current.toMillis()-pendingAt.toMillis()<=15*60*1000)){await c.commit();return {slot:{id:pendingSlot.id,automationSessionId:sessionId,scheduledAt:pendingAt.toJSDate(),status:'pending'},created:false,skippedCount:0,failedSlotIds,failedSlotDetails,failedCount:failedSlotIds.length};}
         await c.execute("UPDATE slots SET status='skipped',error_code=?,completed_at=? WHERE id=? AND automation_session_id=?",[active?'missed_slot':'outside_active_window',current.toJSDate(),pendingSlot.id,sessionId]);skippedCount++;
         if(isActivationFirstSlot){delete settings.activationFirstPostAt;activationFirstPostAt=null;await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);}
       }
-      let due=settings.nextSlotAt?DateTime.fromISO(settings.nextSlotAt,{zone:'utc'}):current.plus({hours:interval});
-      if(!due.isValid)due=current.plus({hours:interval});
+      let due=settings.nextSlotAt?DateTime.fromISO(settings.nextSlotAt,{zone:'utc'}):addInterval(current);
+      if(!due.isValid)due=addInterval(current);
       let isActivationFirstDue=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===due.toMillis();
       if(lastPost?.last_post_at){
         const lastAt=DateTime.fromJSDate(new Date(lastPost.last_post_at),{zone:'utc'});
-        const earliest=lastAt.plus({hours:interval});
-        if(lastAt.isValid&&earliest>due){due=earliest;isActivationFirstDue=false;}
+        if(lastAt.isValid){const earliest=addInterval(lastAt);if(earliest>due){due=earliest;isActivationFirstDue=false;}}
       }
       for(let i=0;i<100;i++){
         isActivationFirstDue=activationFirstPostAt?.isValid&&activationFirstPostAt.toMillis()===due.toMillis();
@@ -470,7 +486,7 @@ function createRepository(pool) {
         const [insert]=await c.execute('INSERT IGNORE INTO slots (id,scheduled_at,automation_session_id,status,error_code,completed_at,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,?,?,?,?,?,?)',[randomUUID(),scheduledAt,sessionId,status,status==='skipped'?(active?'missed_slot':'outside_active_window'):null,status==='skipped'?current.toJSDate():null,integration.profile_id,integration.account_id,integration.version]);
         skippedCount+=status==='skipped'&&insert.affectedRows===1?1:0;
         const [[existing]]=await c.execute('SELECT id,status,scheduled_at FROM slots WHERE automation_session_id=? AND scheduled_at=?',[sessionId,scheduledAt]);
-        due=due.plus({hours:interval});
+        due=addInterval(due);
         settings.nextSlotAt=due.toUTC().toISO();
         if(isActivationFirstDue&&status!=='pending')delete settings.activationFirstPostAt;
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settings)]);
@@ -508,10 +524,17 @@ function createRepository(pool) {
         || integration?.status !== 'ACTIVE' || !slot.tebar_profile_id || !slot.tebar_account_id
         || slot.tebar_profile_id !== integration.profile_id || slot.tebar_account_id !== integration.account_id
         || payload?.targets?.length !== 1 || payload.targets[0]?.account_id !== slot.tebar_account_id) { await c.rollback(); return false; }
+      const [[otherInFlight]] = await c.execute("SELECT id FROM slots WHERE automation_session_id=? AND id<>? AND (status IN ('generating','publishing','unknown') OR (status='ready' AND claimed_at>=DATE_SUB(?,INTERVAL 10 MINUTE))) LIMIT 1 FOR UPDATE", [sessionId, id, now]);
+      if (otherInFlight) {
+        await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
+        await c.commit();
+        return 'in_flight';
+      }
       const config = json(settings.settings_json);
       const knowledge = json(settings.knowledge_json);
       const currentHash = contentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails });
-      if (!slot.content_safety_hash || !currentHash || slot.content_safety_hash !== currentHash) {
+      const previousHash = legacyContentSafetyHash({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails });
+      if (!slot.content_safety_hash || !currentHash || ![currentHash, previousHash].includes(slot.content_safety_hash)) {
         await c.rollback(); return 'stale_facts';
       }
       const ids = json(slot.fact_ids, []);
@@ -534,7 +557,10 @@ function createRepository(pool) {
         }
       }
       const [[last]] = await c.execute("SELECT completed_at AS last_post_at FROM slots WHERE automation_session_id=? AND status IN ('published','failed','partial') AND completed_at IS NOT NULL AND id<>? ORDER BY completed_at DESC LIMIT 1", [sessionId,id]);
-      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < 3600000) {
+      const checkedSettings = validateSettings({ ...config, brand: knowledge.brand || config.brand, guardrails: knowledge.guardrails || config.guardrails });
+      if (!checkedSettings.valid) { await c.rollback(); return 'stale_facts'; }
+      const cadenceMs = checkedSettings.settings.schedule.intervalMinutes * 60_000;
+      if (last && new Date(now).getTime() - new Date(last.last_post_at).getTime() < cadenceMs) {
         await c.execute("UPDATE slots SET claimed_at=NULL WHERE id=? AND status='ready'", [id]);
         await c.commit();
         return 'minimum_cadence';

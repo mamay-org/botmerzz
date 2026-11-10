@@ -7,7 +7,20 @@ const { validateSettings } = require('./policy');
 function contentSafetyHash(settings) {
   const checked = validateSettings(settings);
   if (!checked.valid) return null;
-  return createHash('sha256').update(JSON.stringify(checked.settings)).digest('hex');
+  const contentSettings = { ...checked.settings };
+  delete contentSettings.schedule;
+  return createHash('sha256').update(JSON.stringify(contentSettings)).digest('hex');
 }
 
-module.exports = { contentSafetyHash };
+function legacyContentSafetyHash(settings) {
+  const checked = validateSettings(settings);
+  if (!checked.valid) return null;
+  const { timezone, activeDays, activeStart, activeEnd } = checked.settings.schedule;
+  const legacySettings = {
+    ...checked.settings,
+    schedule: { intervalHours: 1, timezone, activeDays, activeStart, activeEnd },
+  };
+  return createHash('sha256').update(JSON.stringify(legacySettings)).digest('hex');
+}
+
+module.exports = { contentSafetyHash, legacyContentSafetyHash };

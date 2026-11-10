@@ -1,31 +1,54 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateSettings, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, extractRecentHooks } = require('../src/policy');
+const { validateSettings, normalizeScheduleInterval, isInActiveWindow, isFactFresh, validateCaption, composeApprovedContent, extractRecentHooks } = require('../src/policy');
 
 const now = '2026-11-05T04:00:00Z';
 const schedule = { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [4], activeStart: '09:00', activeEnd: '22:00' };
 const fact = { id: 1, pillar: 'topup', game: 'Mobile Legends', active: true, updatedAt: now, price: 30, denomination: '400 Diamond' };
 const context = { now, pillar: 'topup', facts: [fact], gameWhitelist: ['Mobile Legends'], forbiddenClaims: ['termurah', '100% selamat'], approvedClaims: [], trackedLink: 'https://example.test/topup' };
 
-test('settings normalize 24-hour scheduling to the one-hour cadence', () => {
+test('settings normalize legacy and hour-minute schedules to total minutes', () => {
   const defaults = validateSettings({});
-  assert.equal(defaults.settings.schedule.intervalHours, 1);
+  assert.equal(defaults.settings.schedule.intervalMinutes, 60);
   assert.equal(defaults.settings.schedule.activeStart, '00:00');
   assert.equal(defaults.settings.schedule.activeEnd, '00:00');
   const valid = validateSettings({ schedule: { ...schedule, intervalHours: '1', timezone: undefined }, priceMode: 'MIXED' });
   assert.equal(valid.valid, true);
-  assert.equal(valid.settings.schedule.intervalHours, 1);
-  assert.equal(validateSettings({ schedule: { ...schedule, intervalHours: 6 } }).settings.schedule.intervalHours, 1);
+  assert.equal(valid.settings.schedule.intervalMinutes, 60);
+  assert.equal(validateSettings({ schedule: { intervalHours: 6 } }).settings.schedule.intervalMinutes, 360);
+  assert.equal(validateSettings({ schedule: { intervalMinutes: 135 } }).settings.schedule.intervalMinutes, 135);
   assert.equal(valid.settings.schedule.timezone, 'Asia/Kuala_Lumpur');
   assert.deepEqual(valid.settings.schedule.activeDays, [1, 2, 3, 4, 5, 6, 7]);
   assert.equal(valid.settings.schedule.activeStart, '00:00');
   assert.equal(valid.settings.schedule.activeEnd, '00:00');
-  for (const intervalHours of [0, 0.99, '1abc', Infinity, null, true]) {
-    assert.equal(validateSettings({ schedule: { ...schedule, intervalHours } }).valid, false);
+  for (const [hours, minutes, expected] of [[0, 1, 1], [0, 5, 5], [0, 15, 15], [0, 30, 30], [0, 59, 59], [1, 0, 60], [1, 30, 90], [2, 15, 135], [24, 0, 1440]]) {
+    const checked = validateSettings({ schedule: { hours, minutes } });
+    assert.equal(checked.valid, true, `${hours}h ${minutes}m`);
+    assert.equal(checked.settings.schedule.intervalMinutes, expected);
+  }
+  for (const scheduleInput of [
+    { hours: 0, minutes: 0 }, { hours: -1, minutes: 1 }, { hours: 0, minutes: -1 },
+    { hours: 0.5, minutes: 1 }, { hours: 0, minutes: 1.5 }, { hours: '0', minutes: 1 },
+    { hours: 0, minutes: '1' }, { hours: 0, minutes: '' }, { hours: '', minutes: 1 },
+    { hours: null, minutes: 1 }, { hours: 0, minutes: null }, { hours: 0, minutes: 60 }, { hours: 1 },
+    { hours: Number.MAX_SAFE_INTEGER, minutes: 0 }, { hours: 1e12, minutes: 0 },
+    { intervalHours: 1, hours: 0, minutes: 1 }, { intervalMinutes: 15, hours: 0, minutes: 15 },
+    { intervalMinutes: 0 }, { intervalMinutes: 1.5 },
+  ]) {
+    assert.equal(validateSettings({ schedule: scheduleInput }).valid, false, JSON.stringify(scheduleInput));
   }
   assert.equal(validateSettings({ schedule: { ...schedule, timezone: 'Mars/Olympus' } }).valid, false);
   assert.equal(validateSettings({ schedule: { ...schedule, activeDays: [], activeStart: '25:00', activeEnd: 'bad' } }).valid, true);
   assert.equal(validateSettings({ schedule, priceMode: 'ALWAYS' }).valid, false);
+});
+
+test('legacy schedule reads convert hours while canonical schedules remain in minutes', () => {
+  assert.deepEqual(normalizeScheduleInterval({ intervalHours: 2, timezone: 'Asia/Kuala_Lumpur' }), {
+    timezone: 'Asia/Kuala_Lumpur', intervalMinutes: 120,
+  });
+  assert.deepEqual(normalizeScheduleInterval({ intervalMinutes: 90, timezone: 'UTC' }), {
+    intervalMinutes: 90, timezone: 'UTC',
+  });
 });
 
 test('settings normalize hashtag prefixes, spacing, and case-insensitive duplicates', () => {

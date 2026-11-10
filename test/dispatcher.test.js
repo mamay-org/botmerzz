@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runDispatcher, pauseAutomation, maybeSendDailySummary, reconcileUnsettled } = require('../src/dispatcher');
-const { contentSafetyHash } = require('../src/content-safety');
+const { contentSafetyHash, legacyContentSafetyHash } = require('../src/content-safety');
 
 function harness(overrides = {}) {
   const calls = [];
@@ -195,6 +195,16 @@ test('minimum cadence race waits with the prepared slot instead of canceling or 
   assert.equal(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled'), false);
 });
 
+test('an overlapping dispatcher leaves its prepared slot ready without publishing', async () => {
+  const { calls, repository, publisher } = harness({ repository: { startPublishing: async () => 'in_flight' } });
+  publisher.publishNow = async () => assert.fail('an overlapping slot must wait');
+  const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
+  assert.equal(result.published, 0);
+  assert.equal(result.skipped, 1);
+  assert.ok(calls.some((call) => call[0] === 'activity' && call[1].event === 'dispatch_overlap_wait'));
+  assert.equal(calls.some((call) => call[0] === 'update' && call[2].status === 'canceled'), false);
+});
+
 test('known retryable provider error replays exactly the same request and idempotency key once', async () => {
   const { repository, publisher } = harness();
   const sent = [];
@@ -251,7 +261,7 @@ test('first active run atomically plans the first slot using persisted schedule 
   const result = await runDispatcher({ repository, publisher, content, clock: fixedClock });
   assert.equal(result.claimed, 1);
   assert.equal(plan.timezone, 'Asia/Kuala_Lumpur');
-  assert.deepEqual(plan.schedule, { intervalHours: 1, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
+  assert.deepEqual(plan.schedule, { intervalHours: 6, timezone: 'Asia/Kuala_Lumpur', activeDays: [1,2,3,4,5,6,7], activeStart: '00:00', activeEnd: '23:59' });
 });
 
 test('missed slots are recorded as skipped by the atomic planner and are not caught up', async () => {
@@ -331,6 +341,31 @@ test('prepared ready slot reuses persisted payload and idempotency key without g
   const result = await runDispatcher({ repository, publisher, content: generatedContent, clock: fixedClock });
   assert.equal(result.published, 1);
   assert.equal(calls.some((call) => call[0] === 'prepared'), false);
+});
+
+test('prepared legacy slot remains publishable after an interval configuration update', async () => {
+  const { repository, publisher } = harness();
+  const savedSettings = (await repository.getRuntimeState()).settings;
+  const payload = { content: 'Prepared before the interval change.', targets: [{ account_id: 'acct-1' }] };
+  repository.claimDueSlot = async () => ({
+    id: 'legacy-ready', automationSessionId: 'session-1', status: 'ready', requestPayload: payload,
+    idempotencyKey: 'legacy-key', caption: payload.content, pillar: 'topup', factBearing: false,
+    factIds: [], factVersions: [], contentSafetyHash: legacyContentSafetyHash(savedSettings),
+  });
+  const updatedSchedule = { ...savedSettings.schedule, intervalMinutes: 15 };
+  delete updatedSchedule.intervalHours;
+  repository.getRuntimeState = async () => ({
+    automationEnabled: true, onboardingComplete: true, accountId: 'acct-1',
+    settings: { ...savedSettings, schedule: updatedSchedule }, facts: [], history: [],
+  });
+  let sent;
+  publisher.publishNow = async (body, key) => {
+    sent = { body, key };
+    return { id: 'legacy-post', status: 'published', targets: [{ accountId: 'acct-1', platform: 'threads', status: 'published' }] };
+  };
+  const result = await runDispatcher({ repository, publisher, content: async () => assert.fail('legacy payload must not regenerate'), clock: fixedClock });
+  assert.equal(result.published, 1);
+  assert.deepEqual(sent, { body: payload, key: 'legacy-key' });
 });
 
 test('legacy ready caption without safety snapshot is failed without publishing', async () => {

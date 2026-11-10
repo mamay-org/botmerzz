@@ -3,7 +3,7 @@
 const { DateTime } = require('luxon');
 const { randomUUID } = require('node:crypto');
 const { isInActiveWindow } = require('./policy');
-const { contentSafetyHash } = require('./content-safety');
+const { contentSafetyHash, legacyContentSafetyHash } = require('./content-safety');
 const { formatSlotNotice, formatDailyReport } = require('./telegram-format');
 const DAILY_SUMMARY_TIMEZONE = 'Asia/Kuala_Lumpur';
 
@@ -169,7 +169,6 @@ async function runDispatcher({
   if (!repository || !publisher || typeof content !== 'function') {
     throw new TypeError('repository, publisher, and content dependencies are required');
   }
-  const minimumIntervalHours = 1;
   const now = clock();
   const result = { claimed: 0, published: 0, skipped: 0, failed: 0, unknown: 0, reconciled: 0, summarySent: false };
 
@@ -188,7 +187,7 @@ async function runDispatcher({
     return result;
   }
 
-  let schedule = { ...(state.settings?.schedule || {}), intervalHours: 1 };
+  let schedule = { ...(state.settings?.schedule || {}) };
   if (typeof repository.ensureNextDueSlot === 'function') {
     const planned = await repository.ensureNextDueSlot({
       now,
@@ -211,7 +210,7 @@ async function runDispatcher({
     throw new TypeError('repository.ensureNextDueSlot is required for atomic slot planning');
   }
 
-  const slot = await repository.claimDueSlot({ now, minimumIntervalHours });
+  const slot = await repository.claimDueSlot({ now });
   if (!slot) return result;
   result.claimed = 1;
   try { logger?.info('publication.claimed', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId }); } catch { /* Observability must not change publishing. */ }
@@ -242,7 +241,7 @@ async function runDispatcher({
     }
     contentGenerator = await generatorForModel(slot.model);
   }
-  schedule = { ...(state.settings?.schedule || {}), intervalHours: 1 };
+  schedule = { ...(state.settings?.schedule || {}) };
 
   if (schedule && !isInActiveWindow(slot.scheduledAt || now, schedule)) {
     await repository.updateSlot(slot.id, { status: 'skipped', errorCode: 'outside_active_window', completedAt: now.toISOString() });
@@ -298,7 +297,9 @@ async function runDispatcher({
     return result;
   }
 
-  if ((isPrepared && (!slot.contentSafetyHash || slot.contentSafetyHash !== contentSafetyHash(state.settings)))
+  const currentSafetyHash = contentSafetyHash(state.settings);
+  const previousSafetyHash = legacyContentSafetyHash(state.settings);
+  if ((isPrepared && (!slot.contentSafetyHash || ![currentSafetyHash, previousSafetyHash].includes(slot.contentSafetyHash)))
       || (generated.factBearing === true && (!Array.isArray(generated.factIds) || !generated.factIds.length
       || !Array.isArray(generated.factVersions) || generated.factIds.some((id) => !generated.factVersions.some((version) => version?.id === id))))) {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
@@ -328,7 +329,7 @@ async function runDispatcher({
     }
   }
 
-  const started = await repository.startPublishing(slot.id, { now: clock(), minimumIntervalHours });
+  const started = await repository.startPublishing(slot.id, { now: clock() });
   if (started === 'stale_facts') {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
@@ -338,6 +339,11 @@ async function runDispatcher({
   }
   if (started === 'minimum_cadence') {
     await repository.appendActivity({ event: 'cadence_cooldown_wait', slotId: slot.id, details: { code: 'minimum_cadence' } });
+    result.skipped++;
+    return result;
+  }
+  if (started === 'in_flight') {
+    await repository.appendActivity({ event: 'dispatch_overlap_wait', slotId: slot.id, details: { code: 'dispatch_overlap_wait' } });
     result.skipped++;
     return result;
   }
