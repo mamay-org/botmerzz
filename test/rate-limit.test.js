@@ -39,4 +39,27 @@ test('IP limiter accepts a socket address fallback and validates its limits', ()
   assert.equal(blocked.statusCode, 429);
   assert.equal(passed, 1);
   assert.throws(() => createIpRateLimiter({ limit: 0 }), /positive integers/);
+  assert.throws(() => createIpRateLimiter({ maxEntries: 0 }), /positive integers/);
+});
+
+test('IP limiter fails closed at capacity without evicting an active quota bucket', () => {
+  let now = 1000;
+  const limit = createIpRateLimiter({ limit: 1, windowMs: 5000, clock: () => now, maxEntries: 1 });
+  let passed = 0;
+  limit({ ip: '192.0.2.20' }, response(), () => passed++);
+
+  const overflow = response();
+  limit({ ip: '192.0.2.21' }, overflow, () => passed++);
+  assert.equal(overflow.statusCode, 503);
+  assert.deepEqual(overflow.body, { error: 'RATE_LIMIT_CAPACITY' });
+  assert.equal(overflow.headers['Retry-After'], '5');
+
+  const stillLimited = response();
+  limit({ ip: '192.0.2.20' }, stillLimited, () => passed++);
+  assert.equal(stillLimited.statusCode, 429);
+  assert.equal(passed, 1);
+
+  now += 5000;
+  limit({ ip: '192.0.2.21' }, response(), () => passed++);
+  assert.equal(passed, 2);
 });

@@ -55,6 +55,21 @@ jobs:
         run: npm test
       - name: Database integration tests
         run: npm run test:integration
+      - name: Prepare isolated migration test schemas
+        run: |
+          docker exec '${{ job.services.mysql.id }}' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE DATABASE merzz_test_018; CREATE DATABASE merzz_test_upgrade;"'
+      - name: Verify migration 018 recovery
+        env:
+          DB_NAME: merzz_test_018
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/migration-018.mysql.integration.test.js
+      - name: Verify Learning schema upgrade
+        env:
+          DB_NAME: merzz_test_upgrade
+          DB_USER: root
+          DB_PASSWORD: root-test-password-only
+        run: node --test test/learning-upgrade.mysql.integration.test.js
       - name: Validate staging deployment script syntax
         run: bash -n scripts/deploy-staging.sh && bash -n scripts/retry-command.sh
       - name: Validate Docker image build

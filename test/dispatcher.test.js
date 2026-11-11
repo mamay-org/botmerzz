@@ -97,6 +97,20 @@ test('dispatcher persists exact payload and idempotency key before one publish',
   assert.match(calls[0][2].idempotencyKey, /^km_slot-1$/);
 });
 
+test('authoritative attempt persistence failure fails the slot before ready payload or publishing', async () => {
+  const { calls, repository, publisher } = harness();
+  publisher.publishNow = async () => assert.fail('must not publish after attempt persistence failure');
+  const result = await runDispatcher({
+    repository,
+    publisher,
+    content: async () => { throw Object.assign(new Error('attempt database unavailable'), { code: 'ER_CON_COUNT_ERROR' }); },
+    clock: fixedClock,
+  });
+  assert.equal(result.failed, 1);
+  assert.equal(calls.some(([kind]) => kind === 'prepared'), false);
+  assert.ok(calls.some(([kind, , patch]) => kind === 'update' && patch.status === 'failed'));
+});
+
 test('dispatcher persists and publishes the exact final caption including hashtags', async () => {
   const finalText = 'Jom kongsi pilihan anda!\nhttps://example.test/topup\n#KedaiMerzz';
   const { calls, repository, publisher } = harness();

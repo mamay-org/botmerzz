@@ -279,6 +279,18 @@ body.nav-open{overflow:hidden}
 #login-view .login-brand-wordmark{color:#fff!important;font:800 24px/1.1 Manrope,'DM Sans',sans-serif;letter-spacing:-.8px}
 #login-view .login-brand-subtitle{color:#c8d0e5!important;font-size:12px;letter-spacing:.1px}
 #login-view .login-welcome{max-width:570px;margin-block:auto;padding-block:56px}
+
+.learning-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr));align-items:end;gap:10px;margin:0 0 14px}
+.learning-filters>*{min-width:0}
+.learning-filters .button{width:100%}
+.learning-dialog{width:min(640px,calc(100vw - 24px));max-height:min(80vh,720px);overflow:auto}
+.learning-dialog[open]{display:block}
+.learning-detail-field{min-width:0;padding:10px 0;border-bottom:1px solid var(--color-border,#dce4ef)}
+.learning-detail-field p{margin:5px 0 0;overflow-wrap:anywhere;white-space:pre-wrap}
+.metric-details{min-width:0;padding-top:8px;border-top:1px solid var(--color-border,#dce4ef)}
+.metric-details summary{min-height:36px;padding:8px 0;cursor:pointer;font-size:11px;font-weight:700}
+.metric-detail-lines{display:grid;gap:6px;padding-bottom:6px}
+.metric-detail-lines small{line-height:1.45;overflow-wrap:anywhere}
 #login-view .login-kicker,#login-view .login-form-kicker{
   margin:0 0 16px;
   color:var(--login-yellow)!important;
@@ -363,3 +375,8 @@ body.nav-open{overflow:hidden}
 #schedule-form .schedule-interval-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;max-width:420px}
 #schedule-form .schedule-interval-fields label{min-width:0}
 #schedule-form #schedule-interval-summary{margin:0;font-size:12px}
+
+/* Learning review content is untrusted text and can wrap without widening the page. */
+.learning-list{display:grid;gap:16px}.learning-item{border-top:1px solid var(--line);padding:16px 0;min-width:0;overflow-wrap:anywhere}.learning-item p{margin:0}.learning-evidence{white-space:pre-wrap}.learning-item .form-actions{display:flex;flex-wrap:wrap;gap:8px}.learning-item>button{justify-self:start}
+.learning-rule-header{display:flex;align-items:center;justify-content:space-between;gap:12px}.learning-revision-form{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--white)}.learning-supersede-form input{min-width:130px;max-width:220px;flex:1}.shadow-variant{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--white)}.shadow-rating-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr));gap:10px;padding-top:12px;border-top:1px solid var(--line)}.shadow-rating-field{min-width:0}.shadow-rating-form button{align-self:end}
+.learning-metric-range{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin-bottom:12px}.learning-metric-range label{min-width:min(100%,210px)}

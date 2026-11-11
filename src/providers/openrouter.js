@@ -12,11 +12,12 @@ function createOpenRouterClient({ apiKey, model, http = axios }) {
     throw providerError("not_configured");
   }
 
-  async function generate({ system, user, maxTokens = 400, temperature, topP }) {
+  async function generate({ system, user, maxTokens = 400, temperature, topP, signal }) {
     if (typeof system !== "string" || typeof user !== "string" || !user.trim()
       || !Number.isInteger(maxTokens) || maxTokens < 1
       || (temperature !== undefined && (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2))
-      || (topP !== undefined && (typeof topP !== 'number' || !Number.isFinite(topP) || topP < 0 || topP > 1))) throw providerError("invalid_request");
+      || (topP !== undefined && (typeof topP !== 'number' || !Number.isFinite(topP) || topP < 0 || topP > 1))
+      || (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'))) throw providerError("invalid_request");
     let response;
     try {
       response = await http.request({
@@ -28,6 +29,7 @@ function createOpenRouterClient({ apiKey, model, http = axios }) {
           ...(temperature === undefined ? {} : { temperature }),
           ...(topP === undefined ? {} : { top_p: topP }),
         },
+        ...(signal ? { signal } : {}),
         // Up to two generations and two reviews must fit the shutdown grace period.
         timeout: 40000, maxRedirects: 0,
       });

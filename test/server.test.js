@@ -6,10 +6,10 @@ const {createServer}=require('../src/server');
 function request(server,path,{method='GET',headers={},body}={}){return new Promise((resolve,reject)=>{const address=server.address();const req=http.request({host:'127.0.0.1',port:address.port,path,method,headers:{...(body?{'content-type':'application/json'}:{}),...headers}},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:data}));});req.setTimeout(3000,()=>req.destroy(new Error(`HTTP timeout ${method} ${path}`)));req.on('error',reject);if(body)req.write(body);req.end();});}
 function closeServer(server){return new Promise(resolve=>{server.close(resolve);server.closeAllConnections?.();});}
 
-test('health, dashboard auth, static UI, same-origin login and CSRF are enforced',async t=>{
-  let token='';const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
+test('health, dashboard auth, static UI, same-origin login, CSRF and logout are enforced',async t=>{
+  let token='';let logoutCalls=0;const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
   const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},brand:{},guardrails:{}},facts:[],history:[],automationEnabled:false}),listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>x,saveFact:async()=>({}),setAutomationEnabled:async()=>{},};
-  const auth={login:async()=>({token:'a'.repeat(43),csrfToken:'b'.repeat(43),expiresAt:new Date(Date.now()+3600000),admin:{id:1,email:'x@example.test'}}),authenticate:async value=>value===token?{admin:{id:1,email:'x@example.test'},csrfToken:'b'.repeat(43)}:null,logout:async()=>{token='';}};
+  const auth={login:async()=>({token:'a'.repeat(43),csrfToken:'b'.repeat(43),expiresAt:new Date(Date.now()+3600000),admin:{id:1,email:'x@example.test'}}),authenticate:async value=>value===token?{admin:{id:1,email:'x@example.test'},csrfToken:'b'.repeat(43)}:null,logout:async value=>{assert.equal(value,'a'.repeat(43));logoutCalls++;token='';}};
   const app=createServer({config,repository,auth,services:{getProviderStatus:async()=>({connected:false}),getClickMetric:async()=>({available:true,value:12,reason:null}),schedulerStatus:()=>({enabled:true,lastErrorCode:'INTERNAL_DETAIL'})}});
   const server=require('node:http').createServer(app);const listening=new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});server.listen(0,'127.0.0.1');await listening;t.after(()=>closeServer(server));
   config.baseUrl=`http://127.0.0.1:${server.address().port}`;
@@ -30,6 +30,11 @@ test('health, dashboard auth, static UI, same-origin login and CSRF are enforced
   const badCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'wrong'},body:'{}'});assert.equal(badCsrf.status,403);
   const nonAsciiCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'é'+'b'.repeat(42)},body:'{}'});assert.equal(nonAsciiCsrf.status,403);assert.deepEqual(JSON.parse(nonAsciiCsrf.body),{error:'CSRF_REJECTED'});
   const goodCsrf=await request(server,'/api/automation/pause',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)},body:'{}'});assert.equal(goodCsrf.status,200);
+  const logoutWithoutCsrf=await request(server,'/api/session/logout',{method:'POST',headers:{origin:config.baseUrl,cookie}});assert.equal(logoutWithoutCsrf.status,403);assert.equal(logoutCalls,0);
+  const logout=await request(server,'/api/session/logout',{method:'POST',headers:{origin:config.baseUrl,cookie,'x-csrf-token':'b'.repeat(43)}});assert.equal(logout.status,200);assert.deepEqual(JSON.parse(logout.body),{ok:true});assert.equal(logoutCalls,1);
+  assert.match(logout.headers['set-cookie'][0],/merzz_admin=; Path=\/; HttpOnly; SameSite=Strict; Max-Age=0/);
+  assert.deepEqual(JSON.parse((await request(server,'/api/session',{headers:{cookie}})).body),{authenticated:false});
+  assert.equal((await request(server,'/api/learning/candidates',{headers:{cookie}})).status,401);
 });
 
 test('unexpected server error codes are hidden while integration availability errors remain actionable',async t=>{
@@ -223,4 +228,26 @@ test('readiness failure response remains minimal when dependencies are unavailab
   const server=http.createServer(app);server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));config.baseUrl=`http://127.0.0.1:${server.address().port}`;
   const response=await request(server,'/health/ready');
   assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{status:'not_ready'});
+});
+
+test('readiness requires the scheduler when configured without exposing scheduler details',async t=>{
+  const config={nodeEnv:'test',baseUrl:'http://127.0.0.1',tebar:{},schedulerEnabled:true};
+  const repository={healthCheck:async()=>{}};
+  const services={schedulerStatus:()=>({enabled:false,lastErrorCode:'sensitive-detail'})};
+  const server=http.createServer(createServer({config,repository,auth:{},services}));
+  server.listen(0,'127.0.0.1');await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});t.after(()=>closeServer(server));
+  let response=await request(server,'/health/ready');
+  assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{status:'not_ready'});
+  services.schedulerStatus=()=>({enabled:true,lastErrorCode:'sensitive-detail'});
+  response=await request(server,'/health/ready');
+  assert.equal(response.status,200);assert.deepEqual(JSON.parse(response.body),{status:'ready'});
+  services.schedulerStatus=()=>{throw new Error('sensitive-detail');};
+  response=await request(server,'/health/ready');
+  assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{status:'not_ready'});
+  delete services.schedulerStatus;
+  response=await request(server,'/health/ready');
+  assert.equal(response.status,503);assert.deepEqual(JSON.parse(response.body),{status:'not_ready'});
+  config.schedulerEnabled=false;
+  response=await request(server,'/health/ready');
+  assert.equal(response.status,200);assert.deepEqual(JSON.parse(response.body),{status:'ready'});
 });

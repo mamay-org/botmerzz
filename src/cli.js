@@ -2,7 +2,7 @@
 const readline = require('node:readline/promises');
 const { stdin, stdout } = require('node:process');
 const { loadEnv } = require('./config');
-const { createPool } = require('./db');
+const { createPool, endOptionalPoolBounded } = require('./db');
 const { runMigrations } = require('./migrate');
 const { createRepository } = require('./repository');
 const { createAuth } = require('./auth');
@@ -49,10 +49,72 @@ async function main(argv = process.argv.slice(2)) {
     }
     await runMigrations(pool);
     const repository = createRepository(pool);
+    const attemptLifecycle = require('./generation-attempts').createGenerationAttemptStore(pool);
+    const learning = require('./learning').createLearningStore(pool);
+    const learningFlags = {
+      captureEnabled: config.learningCaptureEnabled,
+      activationEnabled: config.learningActivationEnabled,
+      retrievalEnabled: config.learningRetrievalEnabled,
+      promptIntegrationEnabled: config.learningPromptIntegrationEnabled,
+      shadowEnabled: config.learningShadowEnabled,
+    };
+    let learningExecutionPool; let learningExecutionStore; let attributionStore;
+    const contentWithLearning = (context, deps) => {
+      const learningEnabled = config.learningRetrievalEnabled || config.learningPromptIntegrationEnabled;
+      if (learningEnabled && !learningExecutionPool) {
+        learningExecutionPool = createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
+        learningExecutionStore = require('./learning').createLearningStore(learningExecutionPool);
+        attributionStore = require('./learning-attribution').createLearningAttributionStore(learningExecutionPool);
+      }
+      return generatePost(context, { ...deps, attemptLifecycle, captureFailure, recordOutcome,
+        generatorSampling: config.openRouter.generatorSampling,
+        ...(learningEnabled ? { learningStore: learningExecutionStore, attributionStore } : {}),
+        learningFlags,
+        onLearningError: (code) => logger.info('learning.execution_degraded', { code }),
+      });
+    };
+    let capturePool;
+    const captureFailure = config.learningCaptureEnabled ? require('./learning-capture').createCapture({ logger, store: async (finding) => {
+        capturePool ||= createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
+        return require('./learning').createLearningStore(capturePool).captureFailure(finding);
+    } }) : undefined;
+    let outcomePool;
+    const recordOutcome = config.learningCaptureEnabled ? require('./learning-capture').createCapture({ logger, store: async (outcome) => {
+      outcomePool ||= createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
+      const result = await require('./validation-outcomes').createOutcomeStore(outcomePool).record(outcome);
+      return { deduplicated: result.status === 'duplicate' };
+    } }) : undefined;
     const auth = createAuth({ repository });
     const { createConfigurationService } = require('./configuration');
     const configuration = createConfigurationService({ pool, config });
     await configuration.bootstrap();
+    let learningAnalyticsPool; let learningAnalyticsStore;
+    const getLearningAnalytics = () => {
+      learningAnalyticsPool ||= createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
+      learningAnalyticsStore ||= require('./learning-analytics').createLearningAnalytics(learningAnalyticsPool);
+      return learningAnalyticsStore;
+    };
+    let learningShadowPool; let learningShadowStore; let learningShadowExecution;
+    const getLearningShadowServices = () => {
+      if (!learningShadowPool) {
+        learningShadowPool = createPool({ ...config, db: { ...config.db, connectionLimit: 2 } });
+        learningShadowStore = require('./learning-shadow').createLearningShadowStore(learningShadowPool);
+        const shadowRepository = createRepository(learningShadowPool);
+        const shadowConfiguration = createConfigurationService({ pool: learningShadowPool, config });
+        const shadowLearningStore = require('./learning').createLearningStore(learningShadowPool);
+        learningShadowExecution = require('./learning-shadow-execution').createLearningShadowExecutionService({
+          store: learningShadowStore, repository: shadowRepository, configuration: shadowConfiguration,
+          learningStore: shadowLearningStore,
+          providerForModel: async (model) => {
+            if (!config.openRouter.apiKey) throw Object.assign(new Error('OPENROUTER_NOT_CONFIGURED'), { code: 'OPENROUTER_NOT_CONFIGURED', status: 503 });
+            return require('./providers/openrouter').createOpenRouterClient({ apiKey: config.openRouter.apiKey, model }).generate;
+          },
+          generatorSampling: config.openRouter.generatorSampling,
+        });
+      }
+      return { store: learningShadowStore, execution: learningShadowExecution };
+    };
+    const lazyShadowStore = Object.fromEntries(['start','finish','get','list','recordReview','listReviews','consumeStartQuota','acquireAdmission'].map((method) => [method,(...args) => getLearningShadowServices().store[method](...args)]));
     const publisherForProfile = async (profileId) => {
       if (!config.tebar.apiKey || typeof profileId !== 'string' || !profileId) throw Object.assign(new Error('TEBAR_NOT_CONFIGURED'), { code: 'not_configured' });
       return require('./providers/tebar').createTebarClient({ apiKey: config.tebar.apiKey, profileId });
@@ -82,17 +144,32 @@ async function main(argv = process.argv.slice(2)) {
       const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
       const state = await repository.getRuntimeState();
       try {
-        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }), timezone: state.settings?.schedule?.timezone || config.timezone });
+        const result = await runDispatcher({ repository, publisher, publisherForProfile, generatorForModel, notifier, logger, content: contentWithLearning, timezone: state.settings?.schedule?.timezone || config.timezone });
         stdout.write(`${JSON.stringify(result)}\n`);
       } catch (error) {
         try { await notifier?.send('Kedai Merzz automation: system_error. Semak status sistem dan log dashboard.'); } catch { /* Keep the original dispatcher error for process monitoring. */ }
         throw error;
-      } finally { await pool.end(); }
+      } finally {
+        captureFailure?.stop?.(); recordOutcome?.stop?.();
+        await pool.end();
+        if (capturePool) await endOptionalPoolBounded(capturePool);
+        if (outcomePool) await endOptionalPoolBounded(outcomePool);
+        if (learningExecutionPool) await endOptionalPoolBounded(learningExecutionPool);
+      }
       return;
     }
     if (command !== 'server') throw new Error('UNKNOWN_COMMAND');
     const services = {
       pool,
+      learning,
+      learningFlags,
+      learningAnalytics: {
+        compliance: (...args) => getLearningAnalytics().compliance(...args),
+        quality: (...args) => getLearningAnalytics().quality(...args),
+        effectiveness: (...args) => getLearningAnalytics().effectiveness(...args),
+      },
+      learningShadowStore: lazyShadowStore,
+      evaluateLearningShadow: async (request) => getLearningShadowServices().execution.evaluate(request),
       logger,
       configuration,
       getProviderStatus: async () => {
@@ -130,6 +207,21 @@ async function main(argv = process.argv.slice(2)) {
       await reconcileUnsettled({ repository, publisherForProfile, notifier, logger });
     };
     let scheduler = null;
+    let retentionPool;
+    let retentionConsecutiveFailures = 0;
+    const retentionScheduler = config.learningRetentionEnabled ? createScheduler({ intervalMs: 3600000, logger, run: async () => {
+      try {
+        retentionPool ||= createPool({ ...config, db: { ...config.db, connectionLimit: 1 } });
+        const result = await require('./learning-retention').purgeExpiredEvidence({ pool: retentionPool, retentionDays: config.learningRetentionDays });
+        retentionConsecutiveFailures = 0;
+        logger.info('learning.retention', result);
+        return result;
+      } catch (error) {
+        retentionConsecutiveFailures++;
+        logger.error('learning.retention_failed', { code: /^[A-Z0-9_]{1,64}$/.test(error?.code || '') ? error.code : 'retention_failed', consecutiveFailures: retentionConsecutiveFailures });
+        throw error;
+      }
+    } }) : null;
     services.getClickMetric = async (state) => {
       try {
         const effective = await configuration.getActive();
@@ -161,7 +253,7 @@ async function main(argv = process.argv.slice(2)) {
         generatorForModel,
         notifier,
         logger,
-        content: (context, deps) => generatePost(context, { ...deps, generatorSampling: config.openRouter.generatorSampling }),
+        content: contentWithLearning,
         timezone: state.settings?.schedule?.timezone || config.timezone,
       });
     };
@@ -181,17 +273,37 @@ async function main(argv = process.argv.slice(2)) {
     const server = app.listen(config.port, () => {
       logger.info('server.started', { port: config.port, environment: config.nodeEnv, schedulerEnabled: config.schedulerEnabled });
       if (scheduler) scheduler.start();
+      retentionScheduler?.start();
     });
     let closing = false;
+    let learningOptionalShutdown;
+    const closeLearningOptionalPools = () => {
+      if (!learningOptionalShutdown) {
+        learningShadowExecution?.stop?.();
+        learningOptionalShutdown = Promise.all([
+          learningAnalyticsPool ? endOptionalPoolBounded(learningAnalyticsPool) : Promise.resolve(),
+          learningShadowPool ? endOptionalPoolBounded(learningShadowPool) : Promise.resolve(),
+        ]);
+      }
+      return learningOptionalShutdown;
+    };
     const close = () => {
       if (closing) return;
       closing = true;
       const hardStop = setTimeout(() => process.exit(1), 200000).unref();
+      captureFailure?.stop?.(); recordOutcome?.stop?.();
+      retentionScheduler?.halt?.();
       void scheduler?.stop();
+      const learningPoolsClosed = closeLearningOptionalPools();
       server.close(async () => {
         try {
           await scheduler?.stop();
           await pool.end();
+          if (capturePool) await endOptionalPoolBounded(capturePool);
+          if (outcomePool) await endOptionalPoolBounded(outcomePool);
+          if (retentionPool) await endOptionalPoolBounded(retentionPool);
+          if (learningExecutionPool) await endOptionalPoolBounded(learningExecutionPool);
+          await learningPoolsClosed;
           clearTimeout(hardStop);
           process.exit(0);
         } catch {
