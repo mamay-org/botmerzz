@@ -73,7 +73,7 @@
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
+  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false, learningCapabilities: null };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
     { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
@@ -190,6 +190,14 @@
     const code = error?.code || error?.message;
     if (code === 'LOGIN_RATE_LIMITED') return formatLoginWait(error.retryAfterSeconds);
     if (errors[code]) return errors[code];
+    if (code === 'ACTIVATION_UNAVAILABLE') return 'Aktivasi belum tersedia karena pemeriksaan konflik belum siap.';
+    if (code === 'RULE_CONFLICT' && Array.isArray(error.conflicts) && error.conflicts.length) {
+      return `Aktivasi disekat: ${error.conflicts.map((item) => `${activationConflictLabel(item.code)}${item.ruleId ? ` (aturan ${item.ruleId})` : ''}`).join(', ')}.`;
+    }
+    if (code === 'FEEDBACK_ALREADY_EXISTS') return 'Anda sudah menilai versi konten ini.';
+    if (code === 'CAPTION_NOT_FOUND') return 'Konten untuk ID slot ini tidak ditemukan.';
+    if (code === 'DUPLICATE_RULE') return 'Instruksi dan lingkup tersebut sudah ada.';
+    if (code === 'REVIEW_CONFLICT') return 'Data telah berubah. Muat ulang sebelum melanjutkan.';
     if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code)) return 'Permintaan belum berhasil. Periksa kembali data atau coba lagi.';
     return code || 'Permintaan gagal. Silakan coba lagi.';
   };
@@ -300,6 +308,7 @@
       error.code = payload.error;
       error.fields = payload.fields || {};
       error.status = response.status;
+      error.conflicts = Array.isArray(payload.conflicts) ? payload.conflicts : [];
       error.retryAfterSeconds = parseRetryAfterSeconds(payload.retryAfterSeconds, response.headers?.get?.('Retry-After'));
       throw error;
     }
@@ -579,6 +588,7 @@
     }
   }
   function loadTabData(name) {
+    if (name === 'learning') loadLearning().catch((error) => show('#learning-error', errorText(error)));
     if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (name === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
     if (name === 'integrations' || name === 'ai') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
@@ -703,9 +713,22 @@
       const pillar = document.createElement('td'); pillar.textContent = post.pillar === 'account' ? 'Akun ML' : post.pillar === 'topup' ? 'Top-up' : '—';
       const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = statusLabels[post.status] || 'Belum diketahui'; statusCell.append(badge);
       const caption = document.createElement('td'); caption.textContent = post.caption || post.errorCode || '—';
-      tr.append(time, pillar, statusCell, caption); return tr;
+      const feedback = document.createElement('td');
+      if (post.status === 'published' && (post.id || post.slotId)) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet'; button.textContent = 'Beri rating';
+        button.setAttribute('aria-label', `Beri rating untuk posting ${post.id || post.slotId}`);
+        button.addEventListener('click', () => {
+          const slotInput = $('#learning-feedback-form').elements.slotId;
+          slotInput.value = String(post.id || post.slotId);
+          activateTab('learning');
+          loadTabData('learning');
+          requestAnimationFrame(() => { $('#learning-feedback-form').scrollIntoView({behavior:'smooth',block:'center'}); slotInput.focus({preventScroll:true}); });
+        });
+        feedback.append(button);
+      } else feedback.textContent = '—';
+      tr.append(time, pillar, statusCell, caption, feedback); return tr;
     });
-    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
+    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 5; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
     body.replaceChildren(...rows);
   }
 
@@ -1388,6 +1411,434 @@
         await refreshAfterMutation(refresh);
       } catch (error) { show('#global-error', errorText(error)); }
     }, 'Memproses…');
+  });
+
+  function learningNode(tag, text, className) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = text == null || text === '' ? '—' : String(text);
+    return element;
+  }
+  function learningDate(value) {
+    const date = new Date(value);
+    return value && !Number.isNaN(date.getTime()) ? date.toLocaleString('id-ID') : '—';
+  }
+  function learningEmpty(target, message) {
+    target.replaceChildren(learningNode('p', message, 'muted'));
+  }
+  function showLearningCandidateDetails(candidate) {
+    const target = $('#learning-candidate-dialog-content');
+    const fields = [
+      ['Status', candidate.status], ['Sumber dan kategori', `${candidate.source || '—'} · ${candidate.category || '—'}`],
+      ['Slot', candidate.slotId], ['Attempt', candidate.attemptId || 'Tidak diketahui'],
+      ['Evidence', candidate.evidenceStatus === 'available' ? 'Tersedia dan disaring' : `Tidak tersedia (${candidate.evidenceReason || 'alasan tidak diketahui'})`],
+      ['Konten asal', candidate.caption || 'Bukti caption asal tidak tersedia. Caption lain tidak digunakan sebagai pengganti.'],
+      ['Penjelasan', candidate.feedbackExplanation || candidate.explanation || 'Tidak tersedia'],
+      ['Rating manusia', Object.entries(candidate.ratings || {}).map(([key, value]) => `${key}: ${value}/5`).join(' · ') || 'Tidak ada dimensi yang dinilai'],
+      ['Usulan instruksi', candidate.instructionStatus === 'withheld'
+        ? 'Arahan kandidat disembunyikan untuk melindungi maklumat sensitif.'
+        : (candidate.instruction || 'Belum ada usulan instruksi')],
+    ];
+    target.replaceChildren(...fields.map(([label, value]) => {
+      const item = document.createElement('section'); item.className = 'learning-detail-field';
+      item.append(learningNode('strong', label), learningNode('p', value)); return item;
+    }));
+    const dialog = $('#learning-candidate-dialog');
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    $('#learning-candidate-dialog-close').focus();
+  }
+  function renderLearningCandidates(candidates, { append = false } = {}) {
+    const target = $('#learning-candidates');
+    if (!candidates.length) { if (!append) learningEmpty(target, 'Tidak ada kandidat untuk penapis ini.'); return; }
+    const existing = append ? [...target.children] : [];
+    const items = candidates.map((candidate) => {
+      const form = document.createElement('form'); form.className = 'learning-item stack';
+      form.append(learningNode('strong', `${candidate.category || 'Umpan balik'} · ${candidate.source || 'Sumber tidak diketahui'}`));
+      form.append(learningNode('p', `Slot: ${candidate.slotId || '—'} · ${learningDate(candidate.createdAt)} · ${candidate.status || 'pending'}`, 'muted'));
+      if (candidate.source === 'validation') form.append(learningNode('p', `Percobaan: ${candidate.attemptId || 'tidak diketahui'} · Bukti: ${candidate.evidenceStatus === 'available' ? 'tersedia (telah disaring)' : 'tidak tersedia'}${candidate.evidenceReason ? ` · ${candidate.evidenceReason}` : ''}`, 'muted'));
+      form.append(learningNode('p', `Konten: ${candidate.caption || 'Tidak tersedia'}`, 'learning-evidence'));
+      form.append(learningNode('p', `Penjelasan: ${candidate.explanation || 'Tidak tersedia'}`));
+      if (candidate.source === 'feedback') {
+        form.append(learningNode('p', `Rating ${candidate.feedbackType || candidate.category || 'feedback'}: ${Object.entries(candidate.ratings || {}).map(([key,value]) => `${key} ${value}/5`).join(' · ') || 'tiada rating dimensi'}`, 'muted'));
+      }
+      const detailsButton = learningButton('Lihat butiran', 'quiet', () => showLearningCandidateDetails(candidate));
+      detailsButton.setAttribute('aria-haspopup', 'dialog');
+      form.append(detailsButton);
+      if (candidate.status !== 'pending') return form;
+      const instructionLabel = learningNode('label', 'Usulan instruksi');
+      const instruction = document.createElement('textarea'); instruction.name = 'instruction'; instruction.rows = 3; instruction.maxLength = 500; instruction.value = candidate.instruction || ''; instruction.setAttribute('aria-describedby','learning-text-data-guidance'); instructionLabel.append(instruction);
+      if (candidate.instructionStatus === 'withheld') form.append(learningNode('p','Arahan lama disembunyikan. Sahkan kandungan baharu sebelum meluluskan.','field-hint'));
+      const scopeLabel = learningNode('label', 'Lingkup'); const scope = document.createElement('select'); scope.name = 'scope';
+      for (const [value, label] of [['', 'Pilih lingkup'], ['global', 'Global'], ['account', 'Akun ML'], ['topup', 'Top-up']]) { const option = learningNode('option', label); option.value = value; scope.append(option); }
+      scope.value = ''; scopeLabel.append(scope);
+      scopeLabel.append(learningNode('span', `Lingkup sumber: ${candidate.scope || 'tidak tersedia'}`, 'field-hint'));
+      const topicLabel = learningNode('label', 'Topik konten'); const topic = document.createElement('select'); topic.name = 'contentTopic';
+      for (const [value, label] of [['all','Semua topik'],['education','Edukasi'],['community','Komuniti'],['gamer_observation','Pemerhatian gamer'],['relatable_situation','Situasi relatable'],['brand_awareness','Kesedaran jenama'],['trust','Kepercayaan']]) { const option = learningNode('option',label); option.value = value; topic.append(option); }
+      topicLabel.append(topic);
+      const reasonLabel = learningNode('label', 'Alasan keputusan'); const reason = document.createElement('input'); reason.name = 'reason'; reason.maxLength = 300; reason.setAttribute('aria-describedby','learning-text-data-guidance'); reasonLabel.append(reason);
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      for (const [decision, label] of [['approved', 'Setujui'], ['rejected', 'Tolak'], ['false_positive', 'Tandai false positive']]) {
+        const button = learningNode('button', label, decision === 'approved' ? 'button primary' : 'button quiet'); button.type = 'button';
+        button.addEventListener('click', () => withPending(button, async () => {
+          if (decision === 'approved' && (!instruction.value.trim() || !scope.value)) { show('#learning-error', 'Isi instruksi dan pilih lingkup sebelum menyetujui.'); (!instruction.value.trim() ? instruction : scope).focus(); return; }
+          const actionLabel = decision === 'approved' ? 'Setujui kandidat ini' : decision === 'rejected' ? 'Tolak kandidat ini' : 'Tandai kandidat ini sebagai false positive';
+          if (!confirmAction(`${actionLabel}? Keputusan akan disimpan dalam riwayat review.`)) return;
+          try {
+            await api(`/api/learning/candidates/${encodeURIComponent(candidate.id)}/decision`, { method: 'POST', body: JSON.stringify({ version: candidate.version, decision, instruction: instruction.value.trim(), scope: scope.value, productCategory: scope.value === 'global' ? 'all' : scope.value, contentTopic: topic.value, reason: reason.value.trim() }) });
+            hide('#learning-error'); show('#global-success', 'Keputusan review tersimpan.'); await loadLearning();
+          } catch (error) { show('#learning-error', errorText(error)); }
+        }, 'Menyimpan…'));
+        actions.append(button);
+      }
+      form.append(instructionLabel, scopeLabel, topicLabel, reasonLabel, actions); return form;
+    });
+    target.replaceChildren(...existing, ...items);
+  }
+  function learningButton(label, className, handler, disabled = false) {
+    const button = learningNode('button', label, `button ${className}`); button.type = 'button'; button.disabled = disabled;
+    button.addEventListener('click', (event) => handler(event.currentTarget)); return button;
+  }
+  function learningSelect(labelText, name, options, selected) {
+    const label = learningNode('label', labelText); const select = document.createElement('select'); select.name = name;
+    for (const [value, labelValue] of options) { const option = learningNode('option', labelValue); option.value = value; select.append(option); }
+    select.value = selected; label.append(select); return {label,select};
+  }
+  function learningAction(button, action, progress = 'Memproses…') {
+    return withPending(button, async () => {
+      try { await action(); }
+      catch (error) { show('#learning-error', errorText(error)); }
+    }, progress);
+  }
+  function lifecycleReason() { return ''; }
+  const learningTopics = [['all','Semua topik'],['education','Edukasi'],['community','Komuniti'],['gamer_observation','Pemerhatian gamer'],['relatable_situation','Situasi relatable'],['brand_awareness','Kesedaran jenama'],['trust','Kepercayaan']];
+  function activationConflictLabel(code) {
+    if (code === 'active_rule_limit_reached') return 'batas maksimum 500 aturan aktif telah tercapai';
+    if (code === 'active_rule_population_exceeds_limit') return 'jumlah aturan aktif melebihi batas 500; pengambilan aturan dinonaktifkan';
+    return code;
+  }
+  function showActivationResult(target, preview) {
+    const details = preview.conflicts?.length
+      ? `Aktivasi disekat: ${preview.conflicts.map((item) => `${activationConflictLabel(item.code)}${item.ruleId ? ` (aturan ${item.ruleId})` : ''}`).join(', ')}.`
+      : `Tiada konflik deterministik ditemukan. Anggaran prompt: ${preview.estimatedPromptTokens || 0} token.`;
+    target.replaceChildren(learningNode('p', details, preview.conflicts?.length ? 'notice error' : 'notice info'));
+  }
+  async function renderRuleVersions(rule, panel) {
+    panel.replaceChildren(learningNode('p', 'Memuat versi dan audit…', 'muted'));
+    try {
+      const [{versions = []}, {actions = []}] = await Promise.all([
+        api(`/api/learning/rules/${encodeURIComponent(rule.id)}/versions`),
+        api(`/api/learning/rules/${encodeURIComponent(rule.id)}/history`),
+      ]);
+      const content = [];
+      for (const version of versions) {
+        const row = document.createElement('article'); row.className = 'learning-item stack';
+        row.append(learningNode('strong', `Versi ${version.version} · ${version.decision || 'pending'}${Number(rule.activeVersion) === Number(version.version) ? ' · digunakan' : ''}`));
+        row.append(learningNode('p', `Skop ${version.scope} · kategori ${version.productCategory} · topik ${version.contentTopic} · sumber kandidat ${version.source?.candidateId || 'legacy'}`, 'muted'));
+        const instructionText = version.instructionStatus === 'withheld'
+          ? 'Arahan versi disembunyikan untuk melindungi maklumat sensitif.'
+          : (version.instruction || 'Arahan versi tidak tersedia.');
+        row.append(learningNode('p', instructionText, 'learning-evidence'));
+        const controls = document.createElement('div'); controls.className = 'form-actions';
+        if (version.decision === 'pending') {
+          for (const decision of ['approved','rejected']) controls.append(learningButton(decision === 'approved' ? 'Luluskan versi' : 'Tolak versi', decision === 'approved' ? 'primary' : 'quiet', (button) => learningAction(button, async () => {
+            if (!confirmAction(`${decision === 'approved' ? 'Luluskan' : 'Tolak'} versi ${version.version} aturan ${rule.id}? Keputusan akan disimpan dalam riwayat.`)) return;
+            await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/versions/${encodeURIComponent(version.version)}/decision`, {method:'POST',body:JSON.stringify({decision,reason:lifecycleReason()})});
+            await loadLearning();
+          })));
+        } else if (version.decision === 'approved' && state.learningCapabilities?.activationEnabled === true && Number(rule.activeVersion) !== Number(version.version) && !rule.superseded) {
+          const rollback = Number(rule.activeVersion) > Number(version.version);
+          controls.append(learningButton(rollback ? 'Pulihkan versi ini' : 'Aktifkan versi ini', 'quiet', (button) => learningAction(button, async () => {
+            const preview = await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation-preview`, {method:'POST',body:JSON.stringify({version:version.version})});
+            if (!preview.preview?.canActivate) { showActivationResult(panel, preview.preview || {}); return; }
+            if (!confirmAction(`${rollback ? 'Pulihkan' : 'Aktifkan'} versi ${version.version}? Penggunaan prompt masih memerlukan flag server yang berasingan.`)) return;
+            const actionPath = rollback
+              ? `/api/learning/rules/${encodeURIComponent(rule.id)}/rollback`
+              : `/api/learning/rules/${encodeURIComponent(rule.id)}/activation`;
+            await api(actionPath,{method:'POST',body:JSON.stringify({version:version.version,reason:lifecycleReason()})});
+            await loadLearning();
+          })));
+        }
+        row.append(controls); content.push(row);
+      }
+      const audit = document.createElement('details'); const summary = learningNode('summary', `Audit tindakan (${actions.length})`); audit.append(summary);
+      if (actions.length) for (const action of actions) audit.append(learningNode('p', `${action.action} · versi ${action.version ?? '—'} · admin ${action.actorId} · ${learningDate(action.createdAt)} · ${action.reason || 'tanpa alasan'}`, 'muted'));
+      else audit.append(learningNode('p', 'Belum ada tindakan.', 'muted'));
+      content.push(audit);
+      panel.replaceChildren(...(content.length ? content : [learningNode('p','Riwayat versi belum tersedia.','muted')]));
+    } catch (error) { panel.replaceChildren(learningNode('p', `Riwayat tidak dapat dimuat: ${errorText(error)}`, 'notice error')); }
+  }
+  function renderLearningRules(rules) {
+    const target = $('#learning-rules');
+    if (!rules.length) { learningEmpty(target, 'Belum ada pembelajaran yang disetujui.'); renderShadowRuleOptions([]); return; }
+    const activationEnabled = state.learningCapabilities?.activationEnabled === true;
+    target.replaceChildren(...rules.map((rule) => {
+      const item = document.createElement('article'); item.className = 'learning-item stack';
+      const header = document.createElement('div'); header.className = 'learning-rule-header';
+      header.append(learningNode('strong', `Aturan ${rule.id} · ${rule.approvalStatus || 'status tidak diketahui'}${rule.superseded ? ' · diganti' : ''}`));
+      const instructionText = rule.instructionStatus === 'withheld'
+        ? 'Arahan aturan disembunyikan untuk melindungi maklumat sensitif.'
+        : (rule.instruction || 'Arahan aturan tidak tersedia.');
+      item.append(header, learningNode('p', instructionText, 'learning-evidence'));
+      item.append(learningNode('p', `Skop: ${rule.scope} · kategori: ${rule.productCategory} · topik: ${rule.contentTopic} · versi terkini: ${rule.version} · versi aktif: ${rule.activeVersion ?? 'tiada'} · ${rule.active ? 'Aktif' : 'Tidak aktif'}`, 'muted'));
+      const lifecycleStatus=document.createElement('div'); lifecycleStatus.setAttribute('role','status');
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      if (!rule.superseded && rule.active) actions.append(learningButton('Nyahaktifkan', 'quiet', (button) => learningAction(button, async () => {
+          if (!confirmAction(`Nyahaktifkan aturan ${rule.id} versi ${rule.activeVersion}?`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/deactivation`, {method:'POST',body:JSON.stringify({version:rule.activeVersion,reason:lifecycleReason()})}); await loadLearning();
+        }), !activationEnabled));
+      else if (rule.approvalStatus === 'approved' && !rule.superseded) actions.append(learningButton('Semak konflik & aktifkan', 'primary', (button) => learningAction(button, async () => {
+          const version = rule.approvalStatus === 'approved' ? rule.version : rule.activeVersion;
+          const {preview} = await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation-preview`, {method:'POST',body:JSON.stringify({version})});
+          showActivationResult(lifecycleStatus, preview);
+          if (!preview.canActivate) return;
+          if (!confirmAction(`Aktifkan aturan ${rule.id} versi ${version}? Prompt integration kekal mengikut flag server.`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation`, {method:'POST',body:JSON.stringify({version,reason:lifecycleReason()})}); await loadLearning();
+        }), !activationEnabled));
+      const historyPanel = document.createElement('div'); historyPanel.hidden = true;
+      actions.append(learningButton('Versi & audit', 'quiet', async (button) => {
+        historyPanel.hidden = !historyPanel.hidden;
+        button.setAttribute('aria-expanded', String(!historyPanel.hidden));
+        if (!historyPanel.hidden) await renderRuleVersions(rule,historyPanel);
+      }));
+      const revision = learningButton('Buat revisi', 'quiet', (button) => {
+        const form = document.createElement('form'); form.className = 'stack learning-revision-form';
+        const instructionLabel = learningNode('label','Instruksi revisi'); const instruction = document.createElement('textarea'); instruction.name='instruction'; instruction.maxLength=500; instruction.rows=3; instruction.value=rule.instruction || ''; instruction.setAttribute('aria-describedby','learning-text-data-guidance'); instructionLabel.append(instruction);
+        const scopeField = learningSelect('Skop','scope',[['global','Global'],['account','Akun ML'],['topup','Top-up']],rule.scope);
+        const topicField = learningSelect('Topik','contentTopic',learningTopics,rule.contentTopic || 'all');
+        const reasonLabel = learningNode('label','Sebab perubahan (pilihan)'); const reason = document.createElement('input'); reason.name='reason'; reason.maxLength=300; reason.setAttribute('aria-describedby','learning-text-data-guidance'); reasonLabel.append(reason);
+        const submit = learningNode('button','Simpan sebagai versi menunggu kelulusan','button primary'); submit.type='submit';
+        form.append(instructionLabel,scopeField.label,topicField.label,reasonLabel,submit);
+        form.addEventListener('submit',(event)=>{event.preventDefault(); learningAction(submit,async()=>{
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/revisions`,{method:'POST',body:JSON.stringify({expectedVersion:rule.version,instruction:instruction.value.trim(),scope:scopeField.select.value,productCategory:scopeField.select.value==='global'?'all':scopeField.select.value,contentTopic:topicField.select.value,reason:reason.value.trim()})});
+          await loadLearning();
+        },'Menyimpan…',form);});
+        item.insertBefore(form,historyPanel); form.scrollIntoView({behavior:'smooth',block:'nearest'}); button.disabled=true;
+      }, rule.superseded);
+      actions.append(revision);
+      if (rule.active) {
+        const supersedeForm = document.createElement('form'); supersedeForm.className='form-actions learning-supersede-form';
+        const replacementId = document.createElement('input'); replacementId.inputMode='numeric'; replacementId.maxLength=20; replacementId.placeholder='ID aturan pengganti'; replacementId.setAttribute('aria-label','ID aturan pengganti');
+        const replacementVersion = document.createElement('input'); replacementVersion.inputMode='numeric'; replacementVersion.maxLength=10; replacementVersion.placeholder='Versi'; replacementVersion.setAttribute('aria-label','Versi aturan pengganti');
+        const supersede = learningNode('button','Ganti aturan aktif','button quiet'); supersede.type='submit'; supersede.disabled=!activationEnabled;
+        supersedeForm.append(replacementId,replacementVersion,supersede);
+        supersedeForm.addEventListener('submit',(event)=>{event.preventDefault(); learningAction(supersede,async()=>{
+          if (!/^\d+$/.test(replacementId.value) || !/^\d+$/.test(replacementVersion.value)) throw Object.assign(new Error('Masukkan ID dan versi aturan pengganti.'),{code:'INVALID_SUPERSESSION'});
+          if (!confirmAction(`Ganti aturan ${rule.id} versi ${rule.activeVersion} dengan aturan ${replacementId.value}?`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/supersession`,{method:'POST',body:JSON.stringify({version:rule.activeVersion,replacementRuleId:replacementId.value,replacementVersion:Number(replacementVersion.value),reason:lifecycleReason()})}); await loadLearning();
+        },'Memproses…',supersedeForm);});
+        item.append(supersedeForm);
+      }
+      item.append(lifecycleStatus,actions,historyPanel);
+      return item;
+    }));
+    renderShadowRuleOptions(rules);
+  }
+  function renderLearningReviews(reviews) {
+    const target = $('#learning-reviews');
+    if (!reviews.length) { learningEmpty(target, 'Belum ada riwayat review.'); return; }
+    target.replaceChildren(...reviews.map((review) => {
+      const item = document.createElement('div'); item.className = 'learning-item';
+      item.append(learningNode('strong', review.action), learningNode('p', `Kandidat: ${review.candidateId || '—'} · Admin: ${review.actorId || '—'} · ${learningDate(review.createdAt)}`, 'muted'), learningNode('p', review.reason || 'Tidak ada alasan tertulis.'));
+      return item;
+    }));
+  }
+  function percent(value) { return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : 'Belum cukup data'; }
+  function metricCard(name, summary, details) {
+    const card = document.createElement('article'); card.className='metric'; card.append(learningNode('span',name),learningNode('strong',summary),learningNode('small',details)); return card;
+  }
+  function complianceSummary(compliance) {
+    const rate=percent(compliance.firstPassApprovalRate);
+    if(compliance.status==='complete'&&Number.isFinite(compliance.firstPassApprovalRate))return rate;
+    if(compliance.status==='incomplete')return Number.isFinite(compliance.firstPassApprovalRate)?`Sementara · ${rate}`:'Data belum lengkap';
+    return 'Belum cukup data';
+  }
+  function metricDetails(label, lines) {
+    const details = document.createElement('details'); details.className = 'metric-details';
+    details.append(learningNode('summary', label));
+    const body = document.createElement('div'); body.className = 'metric-detail-lines';
+    for (const line of lines.filter(Boolean)) body.append(learningNode('small', line));
+    details.append(body); return details;
+  }
+  function renderLearningMetrics(result) {
+    const target=$('#learning-metrics');
+    if (!result) { learningEmpty(target,'Metrik tidak dapat dimuat. Cuba muat ulang.'); return; }
+    const compliance=result.compliance||{}; const quality=result.quality||{}; const effectiveness=result.effectiveness||{};
+    const firstPassDenominator=Number.isInteger(compliance.firstPassDenominator)?compliance.firstPassDenominator:'belum tersedia';
+    const complianceDetails=`Lulus ${compliance.firstPassSuccesses||0} / ${firstPassDenominator} percubaan pertama · populasi eligible ${compliance.eligibleFirstAttempts||0} · pengecualian teknikal ${compliance.technicalExclusions||0} · kontekstual ${compliance.contextualFailures||0} · tidak diketahui ${compliance.unknownOutcomes||0} · belum selesai ${compliance.incompleteOutcomes||0} · percubaan hilang ${compliance.missingAttempts||0} · liputan rekod ${percent(compliance.attemptRecordCoverage)} · liputan outcome terminal ${percent(compliance.terminalOutcomeCoverage)} · deterministik ${percent(compliance.deterministicStage?.passRate)} · Semantic Auditor ${percent(compliance.semanticStage?.passRate)} · ${compliance.statusText||'Belum cukup data'}`;
+    const qualityDetails=`Maklum balas ${quality.reviewedCaptions||0} / ${quality.eligibleCaptions||0} kandungan (${percent(quality.feedbackCoverage)}) · positif ${quality.positiveFeedbackSubmissions||0} · negatif ${quality.negativeFeedbackSubmissions||0} · ${quality.statusText||'Belum cukup data'}`;
+    const effectivenessDetails=`Perbandingan aturan ${effectiveness.comparisonCount||0} · ${effectiveness.statusText||'Belum cukup data'} · pemerhatian sahaja, tiada dakwaan sebab-akibat`;
+    const cards=[metricCard('Content Compliance',complianceSummary(compliance),complianceDetails),metricCard('Content Quality',percent(quality.feedbackCoverage),qualityDetails),metricCard('Learning Effectiveness',effectiveness.statusText||'Belum cukup data',effectivenessDetails)];
+    const failureLines=Object.entries(compliance.failureCategories||{}).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([code,count])=>`Kategori ${code}: ${count}`);
+    cards[0].append(metricDetails('Perincian outcome dan tahap validasi',[
+      `Lulus pertama ${compliance.firstPassSuccesses||0} / ${firstPassDenominator}; populasi eligible ${compliance.eligibleFirstAttempts||0}; pengecualian teknikal ${compliance.technicalExclusions||0}; outcome lulus atau gagal kontekstual yang dinilai ${compliance.evaluatedFirstAttempts||0}.`,
+      `Liputan rekod ${percent(compliance.attemptRecordCoverage)}; liputan terminal ${percent(compliance.terminalOutcomeCoverage)}; status ${compliance.statusText||'Belum cukup data'}.`,
+      `Validasi deterministik: ${compliance.deterministicStage?.passed||0} lulus, ${compliance.deterministicStage?.failed||0} gagal, ${percent(compliance.deterministicStage?.passRate)}.`,
+      `Semantic Auditor: ${compliance.semanticStage?.passed||0} lulus, ${compliance.semanticStage?.failed||0} gagal, ${percent(compliance.semanticStage?.passRate)}.`,
+      ...failureLines,
+    ]));
+    for (const dimension of Object.keys(quality.dimensions||{})) {
+      const data=quality.dimensions[dimension]; cards[1].append(learningNode('small',`${dimension}: ${data.average==null?'tiada rating':data.average.toFixed(2)} / 5 · ${data.captionSampleSize||0} kandungan dinilai · n=${data.count}${data.smallSample?' · sampel kecil':''}`));
+    }
+    cards[1].append(metricDetails('Perincian maklum balas manusia',[
+      `Kandungan layak ${quality.eligibleCaptions||0}; kandungan disemak ${quality.reviewedCaptions||0}; belum disemak ${quality.unreviewedCaptions||0}.`,
+      `Jumlah hantaran feedback ${quality.feedbackSubmissions||0}; feedback tanpa rating dimensi ${quality.unratedFeedback||0}; status ${quality.statusText||'Belum cukup data'}.`,
+      `Rubrik ${quality.rubricVersion||'—'}; sampel minimum ${quality.minimumCaptions||0}; tiada engagement atau conversion pihak luar disimpulkan.`,
+      ...(quality.trends||[]).slice(-6).map((trend)=>`${trend.month}: ${trend.reviewedCaptions}/${trend.eligibleCaptions} disemak · liputan ${percent(trend.feedbackCoverage)} · positif ${trend.positiveFeedbackSubmissions} · negatif ${trend.negativeFeedbackSubmissions}`),
+    ]));
+    for (const comparison of effectiveness.comparisons||[]) {
+      cards[2].append(learningNode('small',`Aturan ${comparison.ruleId} v${comparison.version}: percubaan beratribusi baseline=${comparison.baseline?.attributedAttempts||0}, selepas=${comparison.observed?.attributedAttempts||0}; sampel outcome percubaan pertama n=${comparison.baseline?.firstAttemptOutcomeSampleSize||0}/${comparison.observed?.firstAttemptOutcomeSampleSize||0}; kegagalan kontekstual ${comparison.failureRateDifference==null?'—':percent(comparison.failureRateDifference)} · kategori sumber ${comparison.relevantFailureCategory||'tiada'} (${comparison.relevantFailureRateDifference==null?'—':percent(comparison.relevantFailureRateDifference)}) · fakta berubah ${comparison.confounders?.factsChanged?'ya':'tidak diketahui'} · panduan berubah ${comparison.confounders?.guidelinesChanged?'ya':'tidak diketahui'} · validator berubah ${comparison.confounders?.validatorChanged?'ya':'tidak diketahui'} · model/konfigurasi berubah ${comparison.confounders?.modelOrConfigChanged?'ya':'tidak diketahui'} · ${comparison.statusText||'Belum cukup data'}`));
+      const armLines=(label,arm)=>[
+        `${label}: ${arm?.windowFrom||'—'} hingga ${arm?.windowTo||'—'}.`,
+        `Percubaan beratribusi ${arm?.attributedAttempts||0}; sampel outcome percubaan pertama ${arm?.firstAttemptOutcomeSampleSize||0}; lulus ${arm?.passed||0}; gagal kontekstual ${arm?.contextualFailed||0}; teknikal dikecualikan ${arm?.technicalExcluded||0}; tidak diketahui ${arm?.unknown||0}; belum selesai ${arm?.incomplete||0}.`,
+        `Kadar kegagalan kontekstual ${percent(arm?.contextualFailureRate)}; kategori relevan ${arm?.relevantFailureCategory||'—'}: ${arm?.relevantFailureCount??'—'} (${percent(arm?.relevantFailureRate)}).`,
+        `Feedback kualiti: ${arm?.quality?.reviewedCaptions||0}/${arm?.quality?.eligibleCaptions||0} kandungan; status ${arm?.quality?.statusText||'Belum cukup data'}.`,
+      ];
+      const confounders=comparison.confounders||{};
+      cards[2].append(metricDetails(`Perincian aturan ${comparison.ruleId} versi ${comparison.version}`,[
+        ...armLines('Baseline',comparison.baseline),...armLines('Pemerhatian',comparison.observed),
+        `Skop kategori/topik ${comparison.productCategory||'all'} / ${comparison.contentTopic||'all'}; co-applied rules ${comparison.coAppliedRules?.map((rule)=>`${rule.ruleId} v${rule.version}`).join(', ')||'tiada'}.`,
+        `Confounder: model/config ${confounders.modelOrConfigChanged?'berubah':'tiada perbezaan dikesan'}; fakta ${confounders.factsChanged?'berubah':'tiada perbezaan dikesan'}; panduan ${confounders.guidelinesChanged?'berubah':'tiada perbezaan dikesan'}; validator ${confounders.validatorChanged?'berubah/tidak diketahui':'konsisten'}.`,
+        `Penilaian: ${comparison.statusText||'Belum cukup data'}; hasil pemerhatian sahaja, bukan kesan sebab-akibat.`,
+      ]));
+    }
+    target.replaceChildren(...cards);
+  }
+  async function fetchLearningMetrics() {
+    const days=Number($('#learning-metric-range').elements.days.value);
+    if(![30,90,365].includes(days)) throw Object.assign(new Error('INVALID_ANALYTICS_WINDOW'),{code:'INVALID_ANALYTICS_WINDOW'});
+    const to=new Date();const from=new Date(to.getTime()-days*86400000);
+    return api(`/api/learning/metrics?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
+  }
+  let learningNextBeforeId = null;
+  let learningCandidateStatus = 'pending';
+  let learningCandidateSource = '';
+  let learningCandidateSearch = '';
+  function learningCandidateUrl(beforeId = null) {
+    const params = new URLSearchParams();
+    if (learningCandidateStatus) params.set('status', learningCandidateStatus);
+    if (learningCandidateSource) params.set('source', learningCandidateSource);
+    if (learningCandidateSearch) params.set('q', learningCandidateSearch);
+    if (beforeId) params.set('beforeId', beforeId);
+    return `/api/learning/candidates?${params.toString()}`;
+  }
+  function fetchLearningCandidates(beforeId = null) { return api(learningCandidateUrl(beforeId)); }
+  function renderShadowRuleOptions(rules) {
+    const select=$('#learning-shadow-form').elements.ruleIds;
+    const approved=(rules||[]).filter((rule)=>rule.approvalStatus==='approved'&&!rule.superseded);
+    select.replaceChildren(...approved.map((rule)=>{const option=learningNode('option',`Aturan ${rule.id} v${rule.version} · ${rule.productCategory}/${rule.contentTopic} · ${rule.active?'aktif':'tidak aktif'}`);option.value=String(rule.id);return option;}));
+    const button=$('#learning-shadow-form button[type="submit"]'); button.disabled=state.learningCapabilities?.shadowEnabled!==true||approved.length===0;
+  }
+  function renderShadowEvaluations(evaluations) {
+    const target=$('#learning-shadow-results');
+    if (!evaluations.length) { learningEmpty(target,'Belum ada perbandingan shadow.'); return; }
+    const dimensions=['hook','creativity','language','relevance','brandVoice','clarity','diversity','cta'];
+    target.replaceChildren(...evaluations.map((evaluation)=>{
+      const item=document.createElement('article');item.className='learning-item stack';
+      const evaluationId=String(evaluation.evaluationId||evaluation.id||'');
+      item.append(learningNode('strong',`Evaluation ${evaluationId} · ${evaluation.status} · model ${evaluation.modelId||'—'} · ${learningDate(evaluation.createdAt)}`));
+      item.append(learningNode('p',`${evaluation.completedSamples||0}/${evaluation.requestedSamples||0} pasangan · ${evaluation.providerCalls||0} panggilan provider · anggaran maks ${evaluation.estimatedMaxTokens||0} token${evaluation.failureCode?` · ${evaluation.failureCode}`:''}`, 'muted'));
+      for(const sample of evaluation.results||[]) {
+        item.append(learningNode('h3',`Sampel ${sample.sampleIndex}`));
+        for(const variant of ['baseline','learning']) {
+          const result=sample[variant]||{}; const block=document.createElement('section');block.className='shadow-variant';
+          block.append(learningNode('strong',variant==='baseline'?'Tanpa lesson':'Dengan lesson'),learningNode('p',`Hasil: ${result.outcome||'incomplete'} · deterministik ${result.deterministicOutcome||'—'} · auditor ${result.semanticOutcome||'—'}`,'muted'));
+          block.append(learningNode('p',result.validatedCaption||'Output tervalidasi tidak tersedia.','learning-evidence'));
+          if(result.outcome==='passed'&&evaluationId) {
+            const form=document.createElement('form');form.className='shadow-rating-form';
+            const type=learningSelect('Penilaian','feedbackType',[['positive','Positif'],['negative','Negatif']], 'positive');form.append(type.label);
+            const ratingFields=[];
+            for(const dimension of dimensions){const field=learningSelect(dimension,'rating',[['','Tidak dinilai'],['1','1 · buruk'],['2','2'],['3','3 · memadai'],['4','4'],['5','5 · sangat baik']],'');field.label.className='shadow-rating-field';form.append(field.label);ratingFields.push([dimension,field.select]);}
+            const explanationLabel=learningNode('label','Catatan (pilihan)');const explanation=document.createElement('input');explanation.maxLength=300;explanation.setAttribute('aria-describedby','learning-text-data-guidance');explanationLabel.append(explanation);form.append(explanationLabel);
+            const save=learningNode('button','Simpan rating','button quiet');save.type='submit';form.append(save);
+            form.addEventListener('submit',(event)=>{event.preventDefault();const ratings=Object.fromEntries(ratingFields.filter(([,field])=>field.value).map(([key,field])=>[key,Number(field.value)]));if(!Object.keys(ratings).length){show('#learning-error','Pilih sedikitnya satu dimensi.');return;}learningAction(save,async()=>{await api(`/api/learning/shadow-evaluations/${encodeURIComponent(evaluationId)}/reviews`,{method:'POST',body:JSON.stringify({sampleIndex:sample.sampleIndex,variant,feedbackType:type.select.value,ratings,explanation:explanation.value.trim()})});show('#global-success','Rating shadow tersimpan berasingan daripada maklum balas kandungan diterbitkan.');},'Menyimpan…',form);});
+            block.append(form);
+          }
+          item.append(block);
+        }
+      }
+      return item;
+    }));
+  }
+  async function loadLearning() {
+    const [capabilities,candidates,rules,reviews]=await Promise.all([
+      api('/api/learning/capabilities'),fetchLearningCandidates(),api('/api/learning/rules'),api('/api/learning/reviews'),
+    ]);
+    state.learningCapabilities=capabilities;
+    const capabilityText=`Capture ${capabilities.captureEnabled?'aktif':'tidak aktif'} · aktivasi ${capabilities.activationEnabled?'aktif':'tidak aktif'} · retrieval ${capabilities.retrievalEnabled?'aktif':'tidak aktif'} · prompt ${capabilities.promptIntegrationEnabled?'aktif':'tidak aktif'} · shadow ${capabilities.shadowEnabled?'aktif':'tidak aktif'}. Kemampuan eksekusi dikawal server.`;
+    $('#learning-capability-status').textContent=capabilityText;
+    renderLearningCandidates(candidates.candidates||[]);learningNextBeforeId=candidates.nextBeforeId;$('#learning-next').hidden=!learningNextBeforeId;
+    renderLearningRules(rules.rules||[]);renderLearningReviews(reviews.reviews||[]);
+    const [metricsResult,shadowResult]=await Promise.allSettled([fetchLearningMetrics(),api('/api/learning/shadow-evaluations?limit=10')]);
+    renderLearningMetrics(metricsResult.status==='fulfilled'?metricsResult.value:null);
+    renderShadowEvaluations(shadowResult.status==='fulfilled'?(shadowResult.value.evaluations||[]):[]);
+    if(shadowResult.status==='rejected') $('#learning-shadow-results').replaceChildren(learningNode('p',`Riwayat shadow tidak tersedia: ${errorText(shadowResult.reason)}`,'muted'));
+    hide('#learning-error');
+  }
+  $('#learning-candidate-filter').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    learningCandidateStatus = form.elements.status.value;
+    learningCandidateSource = form.elements.source.value;
+    learningCandidateSearch = form.elements.q.value.trim();
+    learningNextBeforeId = null;
+    return withPending($('button[type="submit"]', form), async () => {
+      try {
+        const response = await fetchLearningCandidates();
+        renderLearningCandidates(response.candidates || []);
+        learningNextBeforeId = response.nextBeforeId;
+        $('#learning-next').hidden = !learningNextBeforeId;
+        hide('#learning-error');
+      } catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Mencari…', form);
+  });
+  $('#learning-next').addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    return withPending(button, async () => {
+    try {
+      const response = await fetchLearningCandidates(learningNextBeforeId);
+      renderLearningCandidates(response.candidates || [], {append:true}); learningNextBeforeId = response.nextBeforeId; button.hidden = !learningNextBeforeId; hide('#learning-error');
+    } catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Memuat…');
+  });
+  $('#learning-candidate-dialog').addEventListener('keydown',(event)=>{
+    if(event.key!=='Tab')return;
+    const dialog=event.currentTarget;
+    const focusable=[...dialog.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+      .filter((element)=>element.getClientRects().length>0);
+    if(!focusable.length){event.preventDefault();dialog.focus();return;}
+    const first=focusable[0];const last=focusable[focusable.length-1];
+    if(event.shiftKey&&(document.activeElement===first||!dialog.contains(document.activeElement))){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&(document.activeElement===last||!dialog.contains(document.activeElement))){event.preventDefault();first.focus();}
+  });
+  $('#learning-candidate-dialog-close').addEventListener('click', () => $('#learning-candidate-dialog').close());
+  $('#learning-metric-range').addEventListener('submit',(event)=>{
+    event.preventDefault();const form=event.currentTarget;const button=$('button[type="submit"]',form);
+    return withPending(button,async()=>{try{renderLearningMetrics(await fetchLearningMetrics());}catch(error){renderLearningMetrics(null);show('#learning-error',errorText(error));}},'Memuat…',form);
+  });
+  $('#learning-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadLearning().catch((error) => show('#learning-error', errorText(error))), 'Memuat…'));
+  $('#learning-shadow-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form=event.currentTarget; const button=$('button[type="submit"]',form);
+    const ruleIds=[...form.elements.ruleIds.selectedOptions].map((option)=>option.value);
+    if(!ruleIds.length||ruleIds.length>5){show('#learning-error','Pilih antara 1 hingga 5 aturan yang diluluskan.');return;}
+    return learningAction(button,async()=>{
+      $('#learning-shadow-results').replaceChildren(learningNode('p','Perbandingan berpasangan sedang berjalan. Tiada slot penerbitan akan dibuat.','muted'));
+      const response=await api('/api/learning/shadow-evaluations',{method:'POST',body:JSON.stringify({ruleIds,samples:Number(form.elements.samples.value)})});
+      renderShadowEvaluations([response.evaluation]);
+      show('#global-success','Shadow evaluation selesai dan kekal terpisah daripada operasi penerbitan.');
+      hide('#learning-error');
+    },'Menilai…',form);
+  });
+  $('#learning-feedback-form').addEventListener('submit', (event) => {
+    event.preventDefault(); const form = event.currentTarget; const button = $('button[type="submit"]', form);
+    const ratings = {}; for (const key of ['hook', 'creativity', 'language', 'relevance', 'brandVoice', 'clarity', 'diversity', 'cta']) { if (form.elements[key].value) ratings[key] = Number(form.elements[key].value); }
+    if (!Object.keys(ratings).length) { show('#learning-error', 'Pilih sedikitnya satu penilaian kualitas.'); return; }
+    const payload = { slotId: form.elements.slotId.value.trim(), type: form.elements.type.value, ratings, explanation: form.elements.explanation.value.trim() };
+    return withPending(button, async () => {
+      try { await api('/api/learning/feedback', { method: 'POST', body: JSON.stringify(payload) }); form.reset(); hide('#learning-error'); show('#global-success', 'Umpan balik tersimpan untuk review.'); await loadLearning(); }
+      catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Menyimpan…', form);
   });
 
   $('#refresh-button').addEventListener('click', () => refresh().catch((error) => show('#global-error', errorText(error))));

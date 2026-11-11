@@ -63,3 +63,16 @@ test('scheduler validates its runner and polling interval', () => {
   assert.throws(() => createScheduler({ intervalMs: 1000 }), /run/);
   assert.throws(() => createScheduler({ run() {}, intervalMs: 999 }), /intervalMs/);
 });
+
+test('scheduler halt stops future polls without canceling an active critical dispatch', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const scheduler = createScheduler({ run: async () => gate, intervalMs: 60_000 });
+  scheduler.start({ runImmediately: false });
+  const active = scheduler.tick();
+  assert.equal(scheduler.halt().enabled, false);
+  assert.equal(scheduler.status().running, true);
+  release({ claimed: 1 });
+  await active;
+  assert.equal(scheduler.status().running, false);
+});

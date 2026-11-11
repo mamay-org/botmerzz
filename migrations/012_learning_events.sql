@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS learning_capture_events (
+  event_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  slot_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  attempt_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  validation_run_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  finding_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  category VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  classification_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  validation_stage VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  event_time DATETIME(3) NOT NULL,
+  model_id VARCHAR(128) NULL,
+  config_version VARCHAR(64) NULL,
+  capture_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'captured',
+  evidence_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  evidence_reason VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  evidence_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  candidate_id BIGINT UNSIGNED NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY event_identity (slot_id, attempt_id, validation_run_id, finding_id),
+  INDEX events_time_status (event_time, classification_status),
+  FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE RESTRICT,
+  FOREIGN KEY (candidate_id) REFERENCES learning_candidates(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

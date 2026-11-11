@@ -68,7 +68,13 @@ function createScheduler({ run, intervalMs = 60_000, logger, clock = () => new D
     return status();
   }
 
-  return { start, stop, tick, runNow, status };
+  function halt() {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+    return status();
+  }
+
+  return { start, stop, halt, tick, runNow, status };
 }
 
 module.exports = { createScheduler };

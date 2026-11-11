@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
+const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&['localhost','127.0.0.1','::1'].includes(process.env.DB_HOST)&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
 
 test('isolated MySQL bootstrap, version conflicts and account switch remain fail closed', {skip:!enabled}, async()=>{
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createConfigurationService}=require('../src/configuration');

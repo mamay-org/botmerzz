@@ -398,7 +398,10 @@ function createRepository(pool) {
         delete settings.activationFirstPostAt;
         await c.execute('UPDATE settings SET settings_json=? WHERE id=1', [JSON.stringify(settings)]);
       }
-      if (slot.status === 'pending') await c.execute("UPDATE slots SET status='generating',claimed_at=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, integration.model, integration.version, slot.id]);
+      if (slot.status === 'pending') {
+        await c.execute('INSERT INTO generation_slot_claims (slot_id,claimed_at) VALUES (?,?)', [slot.id, now]);
+        await c.execute("UPDATE slots SET status='generating',claimed_at=?,openrouter_model=?,model_config_version=? WHERE id=? AND status='pending'", [now, integration.model, integration.version, slot.id]);
+      }
       else await c.execute("UPDATE slots SET claimed_at=? WHERE id=? AND status='ready'", [now, slot.id]);
       await c.commit();
       return { id: slot.id, automationSessionId: slot.automation_session_id, scheduledAt: slot.scheduled_at, status: slot.status, requestPayload: json(slot.request_payload), idempotencyKey: slot.idempotency_key, caption: slot.caption, pillar: slot.pillar, factBearing: Boolean(slot.fact_bearing), factIds: json(slot.fact_ids, []), factVersions: json(slot.fact_versions, []), contentSafetyHash: slot.content_safety_hash, profileId: slot.tebar_profile_id, accountId: slot.tebar_account_id, configVersion: slot.tebar_config_version, model: slot.status === 'pending' ? integration.model : slot.openrouter_model, modelVersion: slot.status === 'pending' ? integration.version : slot.model_config_version };
@@ -431,6 +434,7 @@ function createRepository(pool) {
       if(!current.isValid){await c.rollback();return {slot:null,created:false,skippedCount:0};}
       const [staleGenerations]=await c.execute("SELECT id FROM slots WHERE automation_session_id=? AND status='generating' AND claimed_at < DATE_SUB(?, INTERVAL 10 MINUTE) FOR UPDATE",[sessionId,current.toJSDate()]);
       for(const stale of staleGenerations){
+        await c.execute("UPDATE generation_attempts SET state='unknown',failure_codes=JSON_ARRAY_APPEND(failure_codes,'$','WORKER_INTERRUPTED'),completed_at=COALESCE(completed_at,?) WHERE slot_id=? AND state IN ('reserved','generating','validating')",[current.toJSDate(),stale.id]);
         await c.execute("UPDATE slots SET status='failed',error_code='stale_generation',completed_at=? WHERE id=? AND automation_session_id=? AND status='generating'",[current.toJSDate(),stale.id,sessionId]);
         await c.execute("INSERT INTO activity_logs (slot_id,event,details_json) VALUES (?,'ai_generation_failed',?)",[stale.id,JSON.stringify({code:'generation_failed',reason:'stale_generation',attempts:0})]);
       }
