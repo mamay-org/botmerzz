@@ -9,3 +9,7 @@ npm-debug.log*
 coverage
 docs
 *.log
+backups/
+releases/
+runtime-data/
+.botmerzz-commit

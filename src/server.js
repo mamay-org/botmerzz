@@ -24,7 +24,7 @@ function createServer({ config, repository, auth, services = {} }) {
   if (!config || !repository || !auth) throw new TypeError('config, repository, and auth are required');
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', config.trustProxy === true ? 1 : false);
+  app.set('trust proxy', config.trustProxy === true ? 1 : config.trustProxy);
   const webhookRateLimit = createIpRateLimiter({ limit: 120, windowMs: 60_000 });
 
   app.use((req, res, next) => {

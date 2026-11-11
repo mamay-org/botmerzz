@@ -1,4 +1,6 @@
-# Laporan Kesiapan Deployment VPS BotMerzz
+# [Historical] Laporan Kesiapan Deployment VPS BotMerzz
+
+> **Historical audit only — superseded.** This snapshot records a prior VPS/GHCR design and is retained as historical context. The current and only deployment target is Proxmox LXC 10027 using the local self-hosted runner and local Docker build described in [Deployment](DEPLOYMENT.md). Do not follow the VPS, SSH, or GHCR procedures below as current deployment instructions. No VPS was changed by the homelab migration, and the homelab LXC/public ingress has not yet been verified by a live release.
 
 **Tanggal audit:** 6 November 2026
 **Cakupan:** codebase, Docker Compose, MySQL, AI guardrails, Tebar, scheduler, Telegram, CI/CD, dan pengujian lokal. Tidak ada koneksi SSH/VPS, permintaan API provider, atau publikasi Threads sungguhan.

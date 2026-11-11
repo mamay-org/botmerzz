@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const readline = require('node:readline/promises');
+const { StringDecoder } = require('node:string_decoder');
 const { stdin, stdout } = require('node:process');
 const { loadEnv } = require('./config');
 const { createPool, endOptionalPoolBounded } = require('./db');
@@ -19,20 +20,23 @@ function providerConnectionStatus(accounts, effective) {
   return { connected: Boolean(target && target.platform === 'threads' && target.status === 'active' && target.planSuspended === false), status: target?.planSuspended === true ? 'plan_suspended' : target?.planSuspended == null ? 'status_unknown' : target?.status || 'not_connected', username: target?.username || null };
 }
 
-async function askHidden(prompt) {
-  stdout.write(prompt);
-  stdin.setRawMode?.(true); stdin.resume();
+async function askHidden(prompt, { input = stdin, output = stdout } = {}) {
+  output.write(prompt);
+  input.setRawMode?.(true); input.resume();
   let value = '';
+  const decoder = new StringDecoder('utf8');
   return new Promise((resolve, reject) => {
     const onData = (chunk) => {
-      const char = chunk.toString('utf8');
-      if (char === '\u0003') { cleanup(); reject(new Error('CANCELLED')); }
-      else if (char === '\r' || char === '\n') { stdout.write('\n'); cleanup(); resolve(value); }
-      else if (char === '\u007f') value = value.slice(0, -1);
-      else if (char >= ' ') value += char;
+      const text = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      for (const char of text) {
+        if (char === '\u0003') { cleanup(); reject(new Error('CANCELLED')); return; }
+        if (char === '\r' || char === '\n') { output.write('\n'); cleanup(); resolve(value); return; }
+        if (char === '\u007f') value = [...value].slice(0, -1).join('');
+        else if (char >= ' ') value += char;
+      }
     };
-    const cleanup = () => { stdin.off('data', onData); stdin.setRawMode?.(false); };
-    stdin.on('data', onData);
+    const cleanup = () => { input.off('data', onData); input.setRawMode?.(false); input.pause?.(); };
+    input.on('data', onData);
   });
 }
 
@@ -320,4 +324,4 @@ if (require.main === module) main().catch((error) => {
   process.stderr.write(`${code}\n`); process.exitCode = 1;
 });
 
-module.exports = { main, providerConnectionStatus };
+module.exports = { askHidden, main, providerConnectionStatus };

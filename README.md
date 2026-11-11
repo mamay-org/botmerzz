@@ -1,81 +1,65 @@
-# Kedai Merzz Threads Automation
+# BotMerzz
 
-An MVP dashboard and scheduled publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions and publish history in MySQL; OpenRouter generates a full caption from approved context and performs a separate semantic review before publication. Deterministic checks complement that review. Tebar is the publishing adapter. Automation and the in-process scheduler are off by default.
+BotMerzz is a dashboard and scheduled publishing service for Malaysian Malay Threads content. It stores schedules, facts, sessions, learning evidence, and publishing history in MySQL. OpenRouter generates captions and performs semantic review; deterministic checks enforce content policy. Tebar is the publishing adapter, and Telegram notifications use a durable outbox.
 
-## Run locally with Docker
+The application also includes the AI Learning Center: candidate capture, feedback, approval and rollback, scoped retrieval, prompt integration, shadow evaluation, and quality/compliance analytics. The homelab database starts empty. No VPS records or learning history are copied into it.
 
-Requirements: Docker Engine/Desktop with Docker Compose v2. The image uses Node.js 22.
+## Local Docker
 
-On a fresh checkout, copy `.env.example` to `.env` and replace the local database passwords. If a `.env` already exists, keep it and verify its values before using Compose. Never commit `.env`.
+Requirements: Docker Engine with Docker Compose and Node.js 20.6+ for host-based checks. The image uses Node.js 22.
+
+Copy the example environment file, set new local database passwords, and use a loopback host binding for a developer machine:
 
 ```sh
+cp .env.example .env
+# Set DB_PASSWORD and DB_ROOT_PASSWORD; for local-only use, set HOST_IP=127.0.0.1.
 docker compose up --build -d --wait
 docker compose ps
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The app is bound to localhost by default; change `HOST_PORT` to choose another host port, or `PORT` to change the container port. MySQL is private to the Compose network and persists in the `mysql_data` named volume.
+Open [http://localhost:3000](http://localhost:3000). MySQL has no host port and persists in the Compose named volume. Never commit `.env` or use production provider credentials in local development.
 
-Create the first administrator interactively:
+Create the first administrator interactively after the app is ready:
 
 ```sh
 docker compose exec -it app npm run admin:create
 ```
 
-The password prompt is hidden. Use a unique password of at least 12 characters. Provider credentials are optional until staging onboarding; add only development/staging credentials to `.env` when needed.
+The email and password are prompted; password entry is hidden. There is no default administrator credential. Authenticated administrators can manage other accounts from the dashboard.
 
-## Migrations and tests
-
-Compose applies migrations before starting the dashboard. To apply them manually:
-
-```sh
-docker compose exec app npm run migrate
-```
-
-Run the Docker test profile against an isolated test MySQL service and volume. Test mutations cannot affect the local dashboard database:
-
-```sh
-docker compose --profile test run --rm tests
-```
-
-For host-based checks, use Node.js 20.6 or newer:
+## Checks and tests
 
 ```sh
 npm ci
 npm run check
 npm test
-npm run test:integration
 ```
 
-`npm test` uses mocked providers for AI/publishing tests. The database integration smoke test runs when database environment variables are configured. It does not publish to Threads or message Telegram.
+The database-backed integration suites require a separate disposable MySQL 8.4 instance bound to loopback and the explicit `ALLOW_DESTRUCTIVE_DB_TESTS=true` opt-in. The GitHub-hosted CI job provides that disposable service. Never point destructive tests at a production database or the persistent Compose volume.
 
-## Environment and application commands
+AI and publishing tests use mocks. CI does not call paid AI providers, send Telegram messages, or publish Threads posts.
 
-See [.env.example](.env.example) for database, port, timezone and optional provider settings. The local example starts with automation disabled and no provider credentials. Production must use HTTPS, a private database, unique credentials and a separately provisioned Tebar account. Do not use client production credentials for local tests.
+## Homelab deployment
+
+The only deployment target is Proxmox LXC `10027` (`bot-merzz`, `192.168.0.27`) on the Mamay node. A separate `workflow_run` deploy workflow validates a successful trusted `CI` push run for `main`, checks its workflow path, repository/head repository, and full commit SHA, then uses the self-hosted runner label `botmerzz-lxc-10027`. It checks out that validated tested SHA, rechecks current `main`, builds `botmerzz:<full-commit-sha>` locally, and runs Compose from `/opt/botmerzz`; it does not publish to GHCR or SSH to a VPS.
+
+The app is published at `192.168.0.27:3000` for the existing ingress gateway. Traefik on LXC `10080` routes the public hostname [https://botmerzz.sequein.my.id](https://botmerzz.sequein.my.id) to that address. MySQL 8.4 remains private to Docker networking and uses the persistent named volume `botmerzz_mysql_data`.
+
+See [Deployment](docs/DEPLOYMENT.md) for the LXC preparation, first database/admin bootstrap, release flow, backups, rollback limits, and recovery. See [Docker](docs/DOCKER.md) for Compose and local operation details.
+
+Live deployment and public ingress have not been verified by this repository change. Do not merge the deployment workflow until its PR and required CI have been reviewed and the owner explicitly approves release activation. The first installation keeps the scheduler and every AI Learning execution flag disabled.
+
+## Application operations
 
 - `npm start` — run the dashboard server.
-- `npm run migrate` — apply versioned MySQL migrations.
-- `npm run admin:create` — create the first administrator with hidden password input. Authenticated admins can add, update, or deactivate other accounts from the Admin dashboard tab; password changes revoke all active sessions for that account.
-- `npm run dispatch` — process one due slot and exit for safe manual or cron invocation.
+- `npm run migrate` — apply ordered, restart-safe MySQL migrations under an advisory lock.
+- `npm run admin:create` — create the first administrator with hidden password input.
+- `npm run dispatch` — process one due slot for reviewed manual/cron use.
 - `npm test` — run unit and HTTP tests.
-- `npm run test:integration` — run database-backed integration checks when DB settings are present.
+- `npm run test:integration` — run database-backed checks against explicitly configured disposable MySQL.
 
-## Architecture
+The scheduler is in-process and runs only with `SCHEDULER_ENABLED=true`. It polls every 60 seconds by default (minimum 15 seconds); this is separate from the admin-configured posting interval. Enabling automation requests the first dispatch immediately. Missed slots are skipped without catch-up, and unresolved provider outcomes block later publishing until reconciled. Keep automation off until the intended Tebar account, brand facts, schedule, and provider settings have been reviewed.
 
-The Express dashboard and dispatcher use the same MySQL repository. When `SCHEDULER_ENABLED=true`, the server polls for due work every minute by default; the database persists slots and serializes claims across restarts or concurrent processes. Domain policy and content generation are isolated from the Tebar, OpenRouter and Telegram adapters. The dispatcher persists exact post payloads and idempotency keys before publishing, and fails closed on an uncertain provider outcome until an operator reconciles it. Telegram delivery uses a durable outbox with deduplication and retries. Emergency pause disables new claims before attempting provider cancellation.
+The AI Learning Center remains available in the application, but its six execution flags are false for initial homelab setup. Do not activate rules or run paid model evaluations as part of deployment validation.
 
-New schedule settings default to 60 minutes. Admins can configure whole hours and minutes, with a minimum of one minute; legacy `intervalHours` settings are converted to total minutes when read. Publishing runs 24/7; legacy active-day and active-hour settings are ignored. Enabling automation requests the first dispatch immediately; later slots follow the configured interval from the confirmed post or failure time. The scheduler polls every 60 seconds by default (minimum 15 seconds), so a short cadence can run late by the polling interval. MySQL claims serialize each automation session so a slow generation or publishing request does not overlap with another. Unknown provider outcomes block later posts until reconciliation. Monitor provider quotas, rate limits, latency, and API cost before selecting short intervals. Missed slots are skipped without catch-up. The daily Telegram summary is fixed at 22:00 Asia/Kuala_Lumpur.
-
-See [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), [Docker workflow](docs/DOCKER.md), [deployment](docs/DEPLOYMENT.md), and [operations](docs/OPERATIONS.md).
-
-## CI/CD and VPS
-
-GitHub Actions runs dependency audit, syntax checks, unit/integration tests against MySQL, and Docker build validation. After a successful CI run on `main`, a separate workflow publishes the tested commit to GHCR using its full commit SHA plus a moving `main` tag, and records the content digest in the workflow summary. Prefer that digest in `APP_IMAGE` when deploying; use the full commit-SHA tag as the versioned fallback.
-
-No VPS deployment workflow is enabled. Host, SSH credentials, TLS/ingress, backup destination and monitoring have not been configured. Follow [deployment and rollback](docs/DEPLOYMENT.md) after those decisions are made; do not put production secrets in GitHub workflow files.
-
-## Current limits
-
-- MVP posts text only; social listening, media generation, live inventory integration, website analytics and multi-admin roles are deferred.
-- Staging credentials and a test Threads account are needed for a live provider acceptance test. Automated tests use mocks.
-- Profile-visit metrics are not available from the documented Threads insights adapter; the dashboard shows Tebar's 30-day account click total when statistics permission and data are available.
-- The VPS Compose template keeps the scheduler disabled until explicitly enabled. Its one-minute polling interval is separate from the configurable business cadence. Legacy day/hour windows do not limit publishing; missed slots are skipped without catch-up.
+For product requirements and architecture, see [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), and [operations](docs/OPERATIONS.md).

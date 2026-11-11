@@ -6,6 +6,13 @@ const {createServer}=require('../src/server');
 function request(server,path,{method='GET',headers={},body}={}){return new Promise((resolve,reject)=>{const address=server.address();const req=http.request({host:'127.0.0.1',port:address.port,path,method,headers:{...(body?{'content-type':'application/json'}:{}),...headers}},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:data}));});req.setTimeout(3000,()=>req.destroy(new Error(`HTTP timeout ${method} ${path}`)));req.on('error',reject);if(body)req.write(body);req.end();});}
 function closeServer(server){return new Promise(resolve=>{server.close(resolve);server.closeAllConnections?.();});}
 
+test('proxy trust is scoped to the configured ingress IP',()=>{
+  const app=createServer({config:{nodeEnv:'production',baseUrl:'https://botmerzz.example',trustProxy:'192.168.0.80'},repository:{},auth:{}});
+  const trusted=app.get('trust proxy fn');
+  assert.equal(trusted('192.168.0.80'),true);
+  assert.equal(trusted('192.168.0.81'),false);
+});
+
 test('health, dashboard auth, static UI, same-origin login, CSRF and logout are enforced',async t=>{
   let token='';let logoutCalls=0;const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
   const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},brand:{},guardrails:{}},facts:[],history:[],automationEnabled:false}),listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>x,saveFact:async()=>({}),setAutomationEnabled:async()=>{},};
