@@ -70,7 +70,7 @@ jobs:
           DB_USER: root
           DB_PASSWORD: root-test-password-only
         run: node --test test/learning-upgrade.mysql.integration.test.js
-      - name: Validate staging deployment script syntax
-        run: bash -n scripts/deploy-staging.sh && bash -n scripts/retry-command.sh
+      - name: Validate homelab deployment script syntax
+        run: bash -n scripts/deploy-homelab.sh
       - name: Validate Docker image build
-        run: docker build --target runtime --tag kedai-merzz-threads:ci .
+        run: docker build --target runtime --tag botmerzz:ci .

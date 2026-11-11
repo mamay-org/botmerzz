@@ -1,14 +1,14 @@
-name: kedai-merzz-threads
+name: botmerzz
 
 services:
   db:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${DB_NAME:?Copy .env.example to .env and set DB_NAME}
-      MYSQL_USER: ${DB_USER:?Set DB_USER in .env}
-      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${DB_NAME:?Set DB_NAME in /opt/botmerzz/.env}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in /opt/botmerzz/.env}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in /opt/botmerzz/.env}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in /opt/botmerzz/.env}
       TZ: UTC
     volumes:
       - mysql_data:/var/lib/mysql
@@ -18,36 +18,35 @@ services:
       timeout: 4s
       retries: 20
       start_period: 30s
+    mem_limit: 2g
+    cpus: 1.0
     networks:
-      - backend
-    # Deliberately no host port: MySQL is reachable only by app containers.
+      - database
+    # MySQL stays private to the Docker network; it has no published port.
 
   app:
     build:
-      context: .
+      context: ${BOTMERZZ_BUILD_CONTEXT:-.}
       dockerfile: Dockerfile
-    image: kedai-merzz-threads:local
+      target: runtime
+      args:
+        VCS_REF: ${BOTMERZZ_IMAGE_TAG:-local}
+    image: botmerzz:${BOTMERZZ_IMAGE_TAG:-local}
     restart: unless-stopped
     init: true
     environment:
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-3000}
-      BASE_URL: ${BASE_URL:-http://localhost:${HOST_PORT:-3000}}
+      BASE_URL: ${BASE_URL:-https://botmerzz.sequein.my.id}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
+      TRUST_PROXY: ${TRUST_PROXY:-192.168.0.80}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
-      LEARNING_CAPTURE_ENABLED: ${LEARNING_CAPTURE_ENABLED:-false}
-      LEARNING_ACTIVATION_ENABLED: ${LEARNING_ACTIVATION_ENABLED:-false}
-      LEARNING_RETRIEVAL_ENABLED: ${LEARNING_RETRIEVAL_ENABLED:-false}
-      LEARNING_PROMPT_INTEGRATION_ENABLED: ${LEARNING_PROMPT_INTEGRATION_ENABLED:-false}
-      LEARNING_SHADOW_ENABLED: ${LEARNING_SHADOW_ENABLED:-false}
-      LEARNING_RETENTION_ENABLED: ${LEARNING_RETENTION_ENABLED:-false}
-      LEARNING_RETENTION_DAYS: ${LEARNING_RETENTION_DAYS:-}
       SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
       DB_HOST: db
       DB_PORT: 3306
-      DB_NAME: ${DB_NAME:?Set DB_NAME in .env}
-      DB_USER: ${DB_USER:?Set DB_USER in .env}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:?Set DB_NAME in /opt/botmerzz/.env}
+      DB_USER: ${DB_USER:?Set DB_USER in /opt/botmerzz/.env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in /opt/botmerzz/.env}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       TEBAR_API_KEY: ${TEBAR_API_KEY:-}
       TEBAR_PROFILE_ID: ${TEBAR_PROFILE_ID:-}
@@ -59,12 +58,19 @@ services:
       OPENROUTER_GENERATOR_TOP_P: ${OPENROUTER_GENERATOR_TOP_P:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      LEARNING_CAPTURE_ENABLED: ${LEARNING_CAPTURE_ENABLED:-false}
+      LEARNING_ACTIVATION_ENABLED: ${LEARNING_ACTIVATION_ENABLED:-false}
+      LEARNING_RETRIEVAL_ENABLED: ${LEARNING_RETRIEVAL_ENABLED:-false}
+      LEARNING_PROMPT_INTEGRATION_ENABLED: ${LEARNING_PROMPT_INTEGRATION_ENABLED:-false}
+      LEARNING_SHADOW_ENABLED: ${LEARNING_SHADOW_ENABLED:-false}
+      LEARNING_RETENTION_ENABLED: ${LEARNING_RETENTION_ENABLED:-false}
+      LEARNING_RETENTION_DAYS: ${LEARNING_RETENTION_DAYS:-}
     command: ["npm", "start"]
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${HOST_PORT:-3000}:${PORT:-3000}"
+      - "${HOST_IP:-192.168.0.27}:${HOST_PORT:-3000}:${PORT:-3000}"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -72,72 +78,22 @@ services:
       retries: 6
       start_period: 20s
     stop_grace_period: 220s
-    mem_limit: 512m
+    mem_limit: 768m
     cpus: 1.0
     networks:
-      - backend
-
-  tests:
-    profiles: ["test"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: test
-    image: kedai-merzz-threads:test
-    environment:
-      NODE_ENV: test
-      ALLOW_DESTRUCTIVE_DB_TESTS: "true"
-      PORT: ${PORT:-3000}
-      BASE_URL: ${BASE_URL:-http://localhost:3000}
-      TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
-      DB_HOST: db-test
-      DB_PORT: 3306
-      DB_NAME: merzz_test
-      DB_USER: merzz_test
-      DB_PASSWORD: ${TEST_DB_PASSWORD:-test-password-only}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
-      TEBAR_API_KEY: ""
-      TEBAR_PROFILE_ID: ""
-      TEBAR_ACCOUNT_ID: ""
-      TEBAR_WEBHOOK_SECRET: ""
-      OPENROUTER_API_KEY: ""
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-3.8-flash}
-      OPENROUTER_GENERATOR_TEMPERATURE: ${OPENROUTER_GENERATOR_TEMPERATURE:-}
-      OPENROUTER_GENERATOR_TOP_P: ${OPENROUTER_GENERATOR_TOP_P:-}
-      TELEGRAM_BOT_TOKEN: ""
-      TELEGRAM_CHAT_ID: ""
-    command: ["sh", "-c", "npm run check && npm test && npm run test:integration"]
-    depends_on:
-      db-test:
-        condition: service_healthy
-    networks:
-      - backend
-
-  db-test:
-    profiles: ["test"]
-    image: mysql:8.4
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: merzz_test
-      MYSQL_USER: merzz_test
-      MYSQL_PASSWORD: ${TEST_DB_PASSWORD:-test-password-only}
-      MYSQL_ROOT_PASSWORD: ${TEST_DB_ROOT_PASSWORD:-root-test-password-only}
-      TZ: UTC
-    volumes:
-      - mysql_test_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
-      interval: 5s
-      timeout: 4s
-      retries: 20
-      start_period: 30s
-    networks:
-      - backend
+      database: {}
+      egress:
+        gw_priority: 1
 
 volumes:
   mysql_data:
-  mysql_test_data:
+    name: botmerzz_mysql_data
 
 networks:
-  backend:
+  database:
+    name: botmerzz_database
+    driver: bridge
+    internal: true
+  egress:
+    name: botmerzz_egress
     driver: bridge

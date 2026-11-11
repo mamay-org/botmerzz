@@ -1,5 +1,7 @@
 # AI Learning Center — Controlled Rollout Readiness
 
+> **Historical VPS/GHCR assessment — superseded.** The technical evidence below records an earlier VPS deployment review and is retained unchanged as historical context. Its target, workflows, credentials, database state, commands, and readiness decisions do not describe the current homelab deployment. The current target and operator instructions are in [Deployment](DEPLOYMENT.md); no live LXC 10027 deployment or ingress verification is claimed here.
+
 ## Automatic in-place release preparation — latest
 
 The operator chose the existing VPS, Compose project, app service and MySQL volume for both production and testing, with automatic deployment after successful `main` CI and `STAGING_DEPLOY_ENABLED=true`. Temporary app/scheduler downtime and reduced test isolation are accepted. This decision supersedes earlier proposals that every release require a manual GitHub Environment approval; it does not authorize a deployment during this preparation. No GitHub variable or production configuration was changed, and live GitHub branch protection, queued workflows and effective variable values remain unverified.

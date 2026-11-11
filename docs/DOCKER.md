@@ -1,59 +1,81 @@
-# Local Docker workflow
+# Docker and Compose
 
-## Prerequisites
+The multi-stage Dockerfile keeps the runtime image separate from dependencies and test tooling. Runtime images use Node.js 22 and run the application as the non-root `node` user. Homelab release images are built locally and tagged with the full source commit SHA.
 
-- Docker Engine/Desktop with Docker Compose v2.
-- Node.js 22 is used in the image; local Node.js 20.6 or newer is supported by the app.
+## Compose services
 
-## Start
+The primary Compose project is named `botmerzz` and contains:
 
-On a fresh checkout, copy `.env.example` to `.env` and replace both local database passwords with different random values. If `.env` already exists, verify its values and preserve it. Then run:
+- `app`: dashboard, API, in-process scheduler, and dispatch endpoints.
+- `db`: MySQL `8.4`, health checked, with no published host port.
+
+The app listens on container port `3000` and is published only at `192.168.0.27:3000` for the existing ingress LXC. It joins an internal app/database network and a separate egress network so provider calls originate from the app. MySQL joins only the internal network. Persistent data lives in the named volume `botmerzz_mysql_data`.
+
+Compose applies conservative CPU and memory limits suitable for the 2-core, 8 GiB LXC shared with the runner and operating system. Builds run locally on that LXC. Avoid overlapping manual builds with deployments.
+
+## Local development
+
+For a developer machine, use unique local MySQL passwords and set `HOST_IP=127.0.0.1` and `BASE_URL=http://localhost:3000` in your local `.env`. The homelab example values use the LXC address and HTTPS origin.
 
 ```sh
-docker compose up --build -d
+cp .env.example .env
+# Edit .env with local DB passwords and loopback HOST_IP/BASE_URL.
+docker compose up --build -d --wait
 docker compose ps
-docker compose logs -f app
+curl -fsS http://localhost:3000/health/ready
 ```
 
-The app binds to `127.0.0.1:3000` by default. Set `HOST_PORT` to change the host port or `PORT` to change the container port. MySQL has no published host port; the app reaches it on the private Compose network. The named `mysql_data` volume persists database contents across container restarts and rebuilds.
-
-To run quality checks and tests inside an isolated test image against a separate test-only MySQL service and named volume:
+Compose waits for MySQL health before starting the app. The app CLI runs ordered, advisory-locked migrations before serving. You can also apply them explicitly:
 
 ```sh
-docker compose --env-file .env.example --profile test run --build --rm tests
-```
-
-The test target includes test/development files and dependencies. The default runtime image excludes them. The test profile uses `db-test` and `mysql_test_data`; it cannot write to the dashboard's `mysql_data` database.
-
-Compose waits for MySQL health before starting the app. The CLI applies versioned migrations under a MySQL advisory lock before serving. The app health check calls `/health/ready`; `/health/live` reports process liveness. Automation and the in-process scheduler are disabled by default.
-
-## Common operations
-
-```sh
-docker compose --env-file .env.example --profile test run --build --rm tests
 docker compose exec app npm run migrate
-docker compose restart app
-docker compose down                 # keeps mysql_data
-docker compose down -v              # DESTRUCTIVE: deletes local database data
+docker compose exec -it app npm run admin:create
 ```
 
-Do not use `down -v` when you need to retain local test data. Back up a database before removing or migrating persistent volumes.
+`admin:create` prompts for the first administrator interactively and hides password entry. It never creates default credentials.
 
-## GHCR image and VPS staging
-
-GitHub Actions runs CI for pull requests to `main` and pushes to `main`. After CI passes for a push, the publish workflow pushes the runtime image tagged with the full commit SHA and `main`, and records its immutable digest in the workflow summary. `compose.vps.yaml` has no build context and requires `APP_IMAGE`, so VPS deployments use the digest-pinned GHCR reference. The staging-named deployment job runs after image publication only when `STAGING_DEPLOY_ENABLED` is exactly `true`. For the operator-confirmed in-place BotMerzz promotion, that existing target becomes production: enabling the variable and pushing to `main` can replace the production app and run pending migrations. No separate production job or approval environment exists in this repository; verify the live GitHub Environment protections before any separately authorized release.
-
-The existing staging-named GitHub Environment secrets are `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_PRIVATE_KEY`, and `STAGING_SSH_KNOWN_HOSTS`; the deployment account and `/opt/botmerzz-staging` path are identifiers in the current workflow. Do not enable the deployment variable until production preflight is complete and a deployment is explicitly authorized. The job uses a short-lived `GITHUB_TOKEN` with `packages: read` to pull the image; it does not require a long-lived GHCR token. Follow [Deployment](DEPLOYMENT.md#staging-cicd) for host-key verification and the existing app-only deployment/rollback behavior.
-
-Keep the VPS environment file private with mode `0600`. Set `BASE_URL` to the HTTPS origin, `TRUST_PROXY=true` only behind the single trusted Caddy reverse proxy, and use unique database credentials. MySQL remains on the internal Compose network; the app binds to loopback. Keep `SCHEDULER_ENABLED=false` on initial startup and keep automation off until account, content facts, schedule, and publishing approval are verified. The VPS template uses a mutable `mysql:8.4` tag; for an app-only release, pull only the digest-pinned app image. Change the database image only through a separately reviewed MySQL upgrade and backup/restore procedure.
+The environment template carries production-ready defaults for the homelab target, but placeholders for DB and provider secrets remain empty. Validate Compose syntax with synthetic values only; the `--quiet` option prevents resolved environment values from being printed:
 
 ```sh
-docker compose -p botmerzz-staging -f compose.vps.yaml config --quiet
-docker compose -p botmerzz-staging -f compose.vps.yaml ps
+DB_PASSWORD=compose-check DB_ROOT_PASSWORD=compose-check \
+  docker compose --env-file .env.example config --quiet
 ```
 
-These are inspection/image-fetch examples for the staging setup, not a promotion procedure. For the operator-confirmed in-place production target, do not run a generic `up` command that can recreate MySQL or start another scheduler. The reviewed deployment script pulls and recreates only the existing app service with `--no-deps`; run it only after production preflight and explicit deployment authorization.
+Never run Compose against the homelab production `.env` from a development checkout.
 
-The service applies migrations under a MySQL advisory lock before serving. Initialize an administrator interactively only during an authorized initial setup; do not run account-creation commands during in-place promotion. Preserve the existing scheduler and automation state. A redeployed app with the scheduler enabled performs an immediate startup tick; if persisted automation is active and a slot is due, it can publish according to the existing schedule. Inspect due/ready/unknown slots and choose a safe release window before restarting the existing app.
+## Integration testing
 
-For staging rollback, restore the matching saved image reference and Compose file described in [Deployment](DEPLOYMENT.md#staging-cicd), then recreate only the app. Image rollback alone cannot reverse an irreversible schema or data migration; restore the pre-deployment database dump if needed.
+The destructive MySQL suites require `ALLOW_DESTRUCTIVE_DB_TESTS=true` and loopback `DB_HOST`. CI supplies an isolated, disposable MySQL 8.4 service for each job; its test account can create/drop only disposable test databases for the suite. Tests do not use the production Compose volume. For local integration runs, create a separate disposable MySQL container bound to `127.0.0.1` on a test-only port and use a test account with create/drop privileges on that disposable server. Do not attach a test container to `botmerzz_mysql_data` or use a live database hostname.
+
+```sh
+npm ci
+npm run check
+npm test
+# Set DB_HOST=127.0.0.1, a test-only DB_PORT/DB_NAME/DB_USER/DB_PASSWORD,
+# and ALLOW_DESTRUCTIVE_DB_TESTS=true only for an isolated disposable DB.
+npm run test:integration
+```
+
+Unit/HTTP tests use mocked providers. They do not call OpenRouter, send Telegram messages, or publish Threads content.
+
+## Homelab release and maintenance
+
+The deployment workflow invokes `bash scripts/deploy-homelab.sh` on the runner in LXC 10027 after hosted CI succeeds for a trusted `main` push. It checks out the tested SHA, builds a local `botmerzz:<full-sha>` image, validates Compose, applies migrations, updates only the app service, checks readiness/revision, and promotes the active release pointer only after success. There is no active GHCR publish/pull or VPS SSH deployment path.
+
+Operations use the current release configuration under `/opt/botmerzz/active`, the local runtime file `/opt/botmerzz/.env`, and stable Compose project `botmerzz`. The full runbook is [Deployment](DEPLOYMENT.md).
+
+```sh
+docker compose \
+  --project-directory /opt/botmerzz \
+  --env-file /opt/botmerzz/.env \
+  --env-file /opt/botmerzz/active/release.env \
+  -p botmerzz \
+  -f /opt/botmerzz/active/compose.yaml \
+  ps
+```
+
+Container health endpoints are `/health/live` and `/health/ready`. Readiness checks database availability and schema compatibility, and scheduler readiness when enabled. The release job separately verifies the image's revision label against the tested SHA.
+
+`docker compose down` preserves named volumes, but routine releases do not need to stop the whole project. Never run `docker compose down -v`, `docker volume prune`, or `docker volume rm` during deployment or routine maintenance. A volume is persistent state, not a backup; use the tested database backup and restore procedure in [Deployment](DEPLOYMENT.md#backups-and-disaster-recovery).
+
+The first homelab release keeps `SCHEDULER_ENABLED=false` and all six AI Learning execution flags false. The deployment itself makes no provider calls and publishes no posts. The scheduler can tick immediately when enabled, so activation is a separate operator decision after onboarding.

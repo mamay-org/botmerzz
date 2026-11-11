@@ -1,0 +1,172 @@
+name: Deploy BotMerzz to homelab
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate_release:
+    name: Validate trusted CI release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      workflow_name: ${{ steps.validate.outputs.workflow_name }}
+      workflow_path: ${{ steps.validate.outputs.workflow_path }}
+      event: ${{ steps.validate.outputs.event }}
+      branch: ${{ steps.validate.outputs.branch }}
+      conclusion: ${{ steps.validate.outputs.conclusion }}
+      repository: ${{ steps.validate.outputs.repository }}
+      head_repository: ${{ steps.validate.outputs.head_repository }}
+      commit_sha: ${{ steps.validate.outputs.commit_sha }}
+    steps:
+      # Do not checkout or download any artifact from the completed CI run.
+      - name: Validate originating workflow and release metadata
+        id: validate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const payload = context.payload;
+            const run = payload.workflow_run;
+            const repository = payload.repository?.full_name;
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`;
+            const fail = (message) => core.setFailed(message);
+
+            if (context.eventName !== 'workflow_run' || !run) {
+              fail('Expected a completed workflow_run event.');
+              return;
+            }
+            if (expectedRepository !== 'mamay-org/botmerzz' || repository !== expectedRepository) {
+              fail('Release repository does not match the configured BotMerzz repository.');
+              return;
+            }
+            if (run.name !== 'CI' || run.event !== 'push' || run.head_branch !== 'main' ||
+                run.conclusion !== 'success' || run.status !== 'completed') {
+              fail('Only a successful push-to-main CI run can be deployed.');
+              return;
+            }
+            if (run.repository?.full_name !== expectedRepository ||
+                run.head_repository?.full_name !== expectedRepository) {
+              fail('The CI run must originate from this repository, not a fork.');
+              return;
+            }
+            if (!/^[a-f0-9]{40}$/.test(run.head_sha || '') || !Number.isSafeInteger(run.id)) {
+              fail('The CI run does not contain a valid full commit SHA and run ID.');
+              return;
+            }
+
+            const runResponse = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id,
+            });
+            const verifiedRun = runResponse.data;
+            if (verifiedRun.name !== 'CI' || verifiedRun.event !== 'push' ||
+                verifiedRun.head_branch !== 'main' || verifiedRun.conclusion !== 'success' ||
+                verifiedRun.status !== 'completed' || verifiedRun.head_sha !== run.head_sha ||
+                verifiedRun.repository?.full_name !== expectedRepository ||
+                verifiedRun.head_repository?.full_name !== expectedRepository) {
+              fail('GitHub API metadata does not match the completed CI release event.');
+              return;
+            }
+
+            const workflowResponse = await github.rest.actions.getWorkflow({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: verifiedRun.workflow_id,
+            });
+            if (workflowResponse.data.name !== 'CI' ||
+                workflowResponse.data.path !== '.github/workflows/ci.yml') {
+              fail('The completed run did not use the trusted CI workflow file.');
+              return;
+            }
+
+            core.setOutput('workflow_name', workflowResponse.data.name);
+            core.setOutput('workflow_path', workflowResponse.data.path);
+            core.setOutput('event', verifiedRun.event);
+            core.setOutput('branch', verifiedRun.head_branch);
+            core.setOutput('conclusion', verifiedRun.conclusion);
+            core.setOutput('repository', verifiedRun.repository.full_name);
+            core.setOutput('head_repository', verifiedRun.head_repository.full_name);
+            core.setOutput('commit_sha', verifiedRun.head_sha);
+
+  deploy:
+    name: Build and deploy on LXC 10027
+    needs: validate_release
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'CI' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.repository.full_name == github.repository &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      needs.validate_release.outputs.workflow_name == 'CI' &&
+      needs.validate_release.outputs.workflow_path == '.github/workflows/ci.yml' &&
+      needs.validate_release.outputs.event == 'push' &&
+      needs.validate_release.outputs.branch == 'main' &&
+      needs.validate_release.outputs.conclusion == 'success' &&
+      needs.validate_release.outputs.repository == github.repository &&
+      needs.validate_release.outputs.head_repository == github.repository &&
+      needs.validate_release.outputs.commit_sha == github.event.workflow_run.head_sha
+    runs-on: [self-hosted, linux, x64, botmerzz-lxc-10027]
+    timeout-minutes: 45
+    concurrency:
+      group: botmerzz-lxc-10027-production
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout the validated CI commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.validate_release.outputs.commit_sha }}
+          persist-credentials: false
+
+      # This check runs only after the job has acquired the production slot.
+      - name: Refuse stale main revision
+        id: freshness
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          RELEASE_COMMIT_SHA: ${{ needs.validate_release.outputs.commit_sha }}
+          RELEASE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { checkReleaseHead } = require('./scripts/check-release-head');
+            await checkReleaseHead({
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              commit: process.env.RELEASE_COMMIT_SHA,
+              token: process.env.RELEASE_GITHUB_TOKEN,
+            });
+            core.setOutput('main_sha', process.env.RELEASE_COMMIT_SHA);
+
+      - name: Build and deploy locally
+        env:
+          BOTMERZZ_COMMIT_SHA: ${{ needs.validate_release.outputs.commit_sha }}
+          BOTMERZZ_EXPECTED_MAIN_SHA: ${{ steps.freshness.outputs.main_sha }}
+          BOTMERZZ_CI_WORKFLOW_NAME: ${{ needs.validate_release.outputs.workflow_name }}
+          BOTMERZZ_CI_WORKFLOW_PATH: ${{ needs.validate_release.outputs.workflow_path }}
+          BOTMERZZ_CI_EVENT: ${{ needs.validate_release.outputs.event }}
+          BOTMERZZ_CI_BRANCH: ${{ needs.validate_release.outputs.branch }}
+          BOTMERZZ_CI_CONCLUSION: ${{ needs.validate_release.outputs.conclusion }}
+          BOTMERZZ_CI_REPOSITORY: ${{ needs.validate_release.outputs.repository }}
+          BOTMERZZ_CI_HEAD_REPOSITORY: ${{ needs.validate_release.outputs.head_repository }}
+        run: bash scripts/deploy-homelab.sh
+
+      - name: Record deployed revision
+        if: success()
+        env:
+          DEPLOYED_SHA: ${{ needs.validate_release.outputs.commit_sha }}
+        run: |
+          printf 'Homelab deployed commit: %s\n' "$DEPLOYED_SHA" >> "$GITHUB_STEP_SUMMARY"

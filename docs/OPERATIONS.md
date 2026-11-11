@@ -1,5 +1,7 @@
 # Operations
 
+These operational notes apply to the homelab deployment in [Deployment](DEPLOYMENT.md). The prior VPS/GHCR workflow is historical and is no longer the current release path.
+
 ## Start, stop and health
 
 Use the matching Compose project and file to start or stop services while preserving the named database volume. Do not use `down -v` unless intentionally deleting that environment's database. Check application health at `/health/live` and `/health/ready`; readiness exposes only a minimal status. Inspect logs with `docker compose logs --tail=200 app` and `docker compose logs --tail=200 db`.
@@ -20,7 +22,7 @@ Use the authenticated dashboard emergency-pause control. It disables future slot
 
 ## Secrets and incidents
 
-Keep the VPS environment file outside source control and restrict it to the deployment account (`0600`). Rotate a leaked credential at its provider, update the deployment environment, restart affected services and inspect audit/application logs. Notifications and logs should contain safe error codes, never provider response bodies, passwords, tokens or full connection strings. Apply request limits for dashboard login and Tebar webhooks at the HTTPS reverse proxy.
+Keep `/opt/botmerzz/.env` on LXC 10027, outside source control, owned by the runner account, and restricted to mode `0600`. Do not print it in CI or include it in build contexts/backups without encryption. Rotate a leaked credential at its provider, update the local file, and restart affected services. Notifications and logs should contain safe error codes, never provider response bodies, passwords, tokens, or full connection strings. Apply request limits for dashboard login and Tebar webhooks at the existing HTTPS reverse proxy.
 
 ## Daily operations
 
