@@ -23,7 +23,10 @@ test('three-pillar analytics queries execute against isolated MySQL schema', {sk
     const [[rule]]=await pool.execute('SELECT id FROM learning_rules WHERE candidate_id=?',[candidate.insertId]); ruleId=rule.id;
     await store.activateRule(ruleId,{version:1,reason:'Semakan ujian metrik.'},adminId);
     const analytics=createLearningAnalytics(pool);
-    const to=new Date();
+    // Anchor the exclusive report boundary to the database event itself. CI's
+    // runner and MySQL service clocks can differ by a few milliseconds.
+    const [[activation]]=await pool.execute("SELECT created_at AS activatedAt FROM learning_rule_actions WHERE rule_id=? AND action='activated' ORDER BY id DESC LIMIT 1",[ruleId]);
+    const to=new Date(new Date(activation.activatedAt).getTime()+1000);
     const from=new Date(to.getTime()-30*86400000);
     const [compliance,quality,effectiveness]=await Promise.all([
       analytics.compliance({from,to}),analytics.quality({from,to}),analytics.effectiveness({from,to}),
