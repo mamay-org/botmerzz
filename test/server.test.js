@@ -202,6 +202,11 @@ test('brand templates accept and preserve the bounded AI content direction',asyn
   const hookVocabulary=['Cerita pengalaman','Sembang santai'];
   const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief santai',category:'brand',data:{contentDirection:direction,hookVocabulary}})});
   assert.equal(created.status,201,created.body);assert.equal(calls[0].data.contentDirection,direction);assert.equal(JSON.parse(created.body).template.data.contentDirection,direction);assert.deepEqual(calls[0].data.hookVocabulary,hookVocabulary);
+  const expandedVocabulary=Array.from({length:300},(_,index)=>`kata-${index+1}`);
+  const expanded=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 300 hook',category:'brand',data:{hookVocabulary:expandedVocabulary}})});
+  assert.equal(expanded.status,201,expanded.body);assert.equal(JSON.parse(expanded.body).template.data.hookVocabulary.length,300);
+  const tooMany=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 301 hook',category:'brand',data:{hookVocabulary:[...expandedVocabulary,'kata-301']}})});
+  assert.equal(tooMany.status,400);
   const maxLength=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief maksimum',category:'brand',data:{contentDirection:'x'.repeat(7000)}})});
   assert.equal(maxLength.status,201,maxLength.body);
   const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(7001)}})});

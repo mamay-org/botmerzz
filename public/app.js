@@ -511,7 +511,7 @@
       editorControl('Arahan konten AI', 'contentDirection', data.contentDirection, { multiline: true, hint: 'Acuan utama untuk topik dan sudut konten; tetap mengikuti batas AI.' }),
       editorControl('Wawasan pelanggan', 'audienceNotes', data.audienceNotes, { multiline: true }),
       editorControl('Game top-up dalam whitelist', 'gameWhitelist', data.gameWhitelist, { multiline: true, hint: 'Simpan hanya game yang sudah ada di whitelist.' }),
-      editorControl('Kosakata hook yang disarankan', 'hookVocabulary', data.hookVocabulary, { multiline: true, hint: 'Opsional. Satu kata atau frasa per baris; hanya panduan, bukan allowlist.' }),
+      editorControl('Kosakata hook yang disarankan', 'hookVocabulary', data.hookVocabulary, { multiline: true, hint: 'Opsional. Maksimal 300 kata atau frasa; satu per baris. Batas kolom 7.000 karakter; hanya panduan, bukan allowlist.' }),
       editorControl('Tautan top-up', 'trackedTopup', data.trackedTopup), editorControl('Tautan akun', 'trackedAccount', data.trackedAccount),
       editorControl('Klaim dilarang', 'forbiddenClaims', data.forbiddenClaims, { multiline: true }), editorControl('Klaim disetujui', 'approvedClaims', data.approvedClaims, { multiline: true }),
     );
