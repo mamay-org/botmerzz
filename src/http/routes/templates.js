@@ -50,7 +50,7 @@ function normalizeTemplateData(category, data, whitelist) {
     }
     const listLimits = [
       ['gameWhitelist', { maxItems: 50, maxLength: 80 }],
-      ['hookVocabulary', { maxItems: 100, maxLength: 500 }],
+      ['hookVocabulary', { maxItems: 300, maxLength: 500 }],
       ['forbiddenClaims', { maxItems: 40, maxLength: 200 }],
       ['approvedClaims', { maxItems: 40, maxLength: 200 }],
     ];

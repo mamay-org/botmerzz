@@ -99,7 +99,11 @@ test('settings normalize optional hook vocabulary guidance', () => {
   assert.equal(checked.valid, true);
   assert.deepEqual(checked.settings.guardrails.hookVocabulary, ['Cerita pengalaman', 'Sembang santai']);
   assert.deepEqual(validateSettings({}).settings.guardrails.hookVocabulary, []);
-  assert.equal(validateSettings({ guardrails: { hookVocabulary: Array(101).fill('kata') } }).valid, false);
+  const maximumVocabulary = Array.from({ length: 300 }, (_, index) => `kata-${index + 1}`);
+  const maximumChecked = validateSettings({ guardrails: { hookVocabulary: maximumVocabulary } });
+  assert.equal(maximumChecked.valid, true);
+  assert.equal(maximumChecked.settings.guardrails.hookVocabulary.length, 300);
+  assert.equal(validateSettings({ guardrails: { hookVocabulary: [...maximumVocabulary, 'kata-301'] } }).valid, false);
   assert.equal(validateSettings({ guardrails: { hookVocabulary: ['x'.repeat(501)] } }).valid, false);
 });
 
