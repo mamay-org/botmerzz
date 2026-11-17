@@ -151,7 +151,8 @@ async function cancelIfSessionRevoked({ repository, publisher, slot, post, statu
 async function reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts, logger, slotIds, profileId, accountId, correlationId = randomUUID(), clock = () => new Date() }) {
   const hasTargetScope = typeof profileId === 'string' && profileId.length > 0 && typeof accountId === 'string' && accountId.length > 0;
   if (typeof repository.recoverStalePublishing === 'function') {
-    const recovered = await repository.recoverStalePublishing({ now: clock(), staleAfterMs: STALE_PUBLISHING_AFTER_MS });
+    const recoveryScope = Array.isArray(slotIds) ? { slotIds } : {};
+    const recovered = await repository.recoverStalePublishing({ now: clock(), staleAfterMs: STALE_PUBLISHING_AFTER_MS, ...recoveryScope });
     for (const slotId of recovered || []) {
       try { logger?.warn?.('publication.worker_interrupted', { correlationId, slotId, outcome: 'unknown_outcome' }); } catch { /* Observability must not change publication state. */ }
       await sendNotice(notifier, 'unknown_outcome', { repository, slotId, time: clock() });
@@ -223,7 +224,7 @@ async function reconcileSwitch({ repository, publisherForProfile, profileId, acc
       await repository.updateSlot(slot.id, { status: 'canceled', providerStatus: 'canceled', completedAt: clock().toISOString() });
     } catch { /* Preserve uncertain state; operator can retry reconciliation. */ }
   }
-  return reconcileUnsettled({ repository, publisherForProfile, notifier, logger, profileId, accountId, clock });
+  return reconcileUnsettled({ repository, publisherForProfile, notifier, logger, profileId, accountId, slotIds: slots.map(slot => slot.id), clock });
 }
 
 async function runDispatcher({

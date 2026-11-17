@@ -16,7 +16,7 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
   const { createRepository } = require('../src/repository');
   const pool = createPool(loadEnv());
   const recoveryPool = createPool(loadEnv());
-  const ids = [randomUUID(), randomUUID()];
+  const ids = [randomUUID(), randomUUID(), randomUUID()];
   const requestIds = [randomUUID(), randomUUID()];
   const sessionId = randomUUID();
   const profileId = `fence-profile-${randomUUID()}`;
@@ -109,9 +109,13 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
     assert.deepEqual(events, ['provider-stub-entered', 'outcome-recorded', 'fence-committed']);
     assert.deepEqual(closeEvents, ['close-committed']);
 
-    await pool.execute('UPDATE slots SET publish_started_at=? WHERE id=?', [staleAt, ids[1]]);
-    const recoveredAfterPause = await secondRepository.recoverStalePublishing({ now: new Date() });
+    await pool.execute('UPDATE slots SET publish_started_at=? WHERE id IN (?,?)', [staleAt, ids[1], ids[2]]);
+    const recoveredAfterPause = await secondRepository.recoverStalePublishing({ now: new Date(), slotIds: [ids[1]] });
     assert.ok(recoveredAfterPause.includes(ids[1]), 'a stale row without target metadata must be made operator-resolvable');
+    assert.equal(recoveredAfterPause.includes(ids[2]), false, 'a scoped recovery must leave unrelated stale slots unchanged');
+    assert.equal((await repository.getPublicationSlot(ids[2])).status, 'publishing');
+    const recoveredOutOfScope = await secondRepository.recoverStalePublishing({ now: new Date() });
+    assert.ok(recoveredOutOfScope.includes(ids[2]), 'the unrelated slot remains recoverable by a later global sweep');
     await repository.closeUnknownPublication(input(ids[1], requestIds[1]));
     let staleProviderStubCalled = false;
     const staleWorkerResult = await repository.withPublicationFence(ids[1], async () => {
@@ -135,7 +139,7 @@ test('MySQL serializes a publish outcome with recovery and admin closure, and de
       await pool.execute('DELETE FROM activity_logs WHERE slot_id IN (?,?)', ids).catch(() => {});
       await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key IN (?,?)', requestIds.map(id => require('node:crypto').createHash('sha256').update(`publication-resolution:${id}`).digest('hex'))).catch(() => {});
       await pool.execute('DELETE FROM audit_logs WHERE admin_id=?', [adminId]).catch(() => {});
-      await pool.execute('DELETE FROM slots WHERE id IN (?,?)', ids).catch(() => {});
+      await pool.execute(`DELETE FROM slots WHERE id IN (${ids.map(() => '?').join(',')})`, ids).catch(() => {});
       await pool.execute('DELETE FROM admins WHERE id=?', [adminId]).catch(() => {});
     }
     await recoveryPool.end();

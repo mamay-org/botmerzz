@@ -647,17 +647,20 @@ function createRepository(pool) {
     const [[state]]=await pool.execute('SELECT automation_enabled,settings_json FROM settings WHERE id=1');
     return Boolean(state?.automation_enabled)&&json(state?.settings_json).automationSessionId===sessionId;
   }
-  async function recoverStalePublishing({ now = new Date(), staleAfterMs = STALE_PUBLISHING_AFTER_MS } = {}) {
+  async function recoverStalePublishing({ now = new Date(), staleAfterMs = STALE_PUBLISHING_AFTER_MS, slotIds } = {}) {
     const current = now instanceof Date ? now : new Date(now);
     if (!Number.isFinite(current.getTime())) throw Object.assign(new Error('INVALID_RECOVERY_TIME'), { code: 'INVALID_RECOVERY_TIME' });
     const age = Number.isSafeInteger(staleAfterMs) ? Math.max(STALE_PUBLISHING_AFTER_MS, staleAfterMs) : STALE_PUBLISHING_AFTER_MS;
     const cutoff = new Date(current.getTime() - age);
+    const selectedIds = Array.isArray(slotIds) ? [...new Set(slotIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 128))] : null;
+    if (selectedIds?.length === 0) return [];
+    const selectedFilter = selectedIds ? ` AND id IN (${selectedIds.map(() => '?').join(',')})` : '';
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
       const [rows] = await connection.execute(`SELECT id FROM slots
-        WHERE status='publishing' AND provider_post_id IS NULL AND publish_started_at IS NOT NULL AND publish_started_at<=?
-        ORDER BY publish_started_at LIMIT 100 FOR UPDATE SKIP LOCKED`, [cutoff]);
+        WHERE status='publishing' AND provider_post_id IS NULL AND publish_started_at IS NOT NULL AND publish_started_at<=?${selectedFilter}
+        ORDER BY publish_started_at LIMIT 100 FOR UPDATE SKIP LOCKED`, [cutoff, ...(selectedIds || [])]);
       const recovered = [];
       for (const row of rows) {
         const [updated] = await connection.execute(`UPDATE slots

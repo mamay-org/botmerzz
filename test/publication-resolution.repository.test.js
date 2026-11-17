@@ -82,6 +82,37 @@ test('unsettled-slot query can scope valid targets and keeps incomplete or misma
   assert.doesNotMatch(queries[1].sql, /tebar_profile_id IS NULL OR tebar_account_id IS NULL/);
 });
 
+test('stale publishing recovery accepts a validated slot allowlist and does no query for an empty scope', async () => {
+  const statements = [];
+  let connections = 0;
+  const connection = {
+    beginTransaction: async () => {},
+    execute: async (sql, params) => {
+      statements.push({ sql, params });
+      if (sql.includes('SELECT id FROM slots')) return [[{ id: 'slot-a' }]];
+      return [{ affectedRows: 1 }];
+    },
+    commit: async () => {},
+    rollback: async () => {},
+    release: () => {},
+  };
+  const repository = createRepository({
+    execute: async () => { throw new Error('unexpected pool-level query'); },
+    getConnection: async () => { connections++; return connection; },
+  });
+  const now = new Date('2026-11-17T00:00:00.000Z');
+  const recovered = await repository.recoverStalePublishing({ now, slotIds: ['slot-a', 'slot-a', '', null, 'x'.repeat(129)] });
+  assert.deepEqual(recovered, ['slot-a']);
+  const scan = statements.find(({ sql }) => sql.includes('SELECT id FROM slots'));
+  assert.match(scan.sql, /AND id IN \(\?\)/);
+  assert.deepEqual(scan.params, [new Date(now.getTime() - 120_000), 'slot-a']);
+
+  const statementCount = statements.length;
+  assert.deepEqual(await repository.recoverStalePublishing({ now, slotIds: ['', null, 'x'.repeat(129)] }), []);
+  assert.equal(connections, 1);
+  assert.equal(statements.length, statementCount);
+});
+
 test('automation re-enable scopes unresolved blockers to the configured target and ambiguous rows', async () => {
   const statements = [];
   const connection = {

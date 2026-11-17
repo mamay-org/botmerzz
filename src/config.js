@@ -1,3 +1,23 @@
+const { isIP } = require("node:net");
+
+function normalizeTrustedProxies(value) {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (typeof value !== "string") return false;
+  const addresses = value.split(",").map((address) => address.trim());
+  if (!addresses.length || addresses.some((entry) => {
+    const [address, prefix, ...extra] = entry.split("/");
+    if (extra.length || !address) return true;
+    const version = isIP(address);
+    if (!version) return true;
+    if (prefix === undefined) return false;
+    if (!/^\d+$/.test(prefix)) return true;
+    const length = Number(prefix);
+    return length > (version === 4 ? 32 : 128);
+  })) return false;
+  return addresses.join(",");
+}
+
 function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = process.versions.node } = {}) {
   const [major, minor] = nodeVersion.split(".").map(Number);
   if (!Number.isInteger(major) || major < 20 || (major === 20 && minor < 6)) {
@@ -27,8 +47,8 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   const nodeEnv = env.NODE_ENV || "development";
   if (!["development", "test", "production"].includes(nodeEnv)) errors.push("NODE_ENV");
   const port = integer("PORT", 3000, 1, 65535);
-  if (env.TRUST_PROXY !== undefined && !["true", "false"].includes(env.TRUST_PROXY)) errors.push("TRUST_PROXY");
-  const trustProxy = env.TRUST_PROXY === "true";
+  const trustProxy = env.TRUST_PROXY === undefined ? false : normalizeTrustedProxies(env.TRUST_PROXY);
+  if (env.TRUST_PROXY !== undefined && trustProxy === false && env.TRUST_PROXY !== "false") errors.push("TRUST_PROXY");
   if (env.SCHEDULER_ENABLED !== undefined && !["true", "false"].includes(env.SCHEDULER_ENABLED)) errors.push("SCHEDULER_ENABLED");
   const schedulerEnabled = env.SCHEDULER_ENABLED === "true";
   if (env.LEARNING_CAPTURE_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_CAPTURE_ENABLED)) errors.push("LEARNING_CAPTURE_ENABLED");

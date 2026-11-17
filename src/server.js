@@ -17,7 +17,7 @@ const { registerLearningEvaluationRoutes } = require('./http/routes/learning-eva
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
-  'PUBLICATION_VERIFICATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
+  'PUBLICATION_VERIFICATION_UNAVAILABLE', 'PUBLICATION_RECONCILIATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
   'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
 ]);
 
@@ -25,7 +25,7 @@ function createServer({ config, repository, auth, services = {} }) {
   if (!config || !repository || !auth) throw new TypeError('config, repository, and auth are required');
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', config.trustProxy === true ? 1 : false);
+  app.set('trust proxy', config.trustProxy === true ? 1 : config.trustProxy);
   const webhookRateLimit = createIpRateLimiter({ limit: 120, windowMs: 60_000 });
 
   app.use((req, res, next) => {

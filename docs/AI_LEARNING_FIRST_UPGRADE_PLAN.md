@@ -1,6 +1,8 @@
-# BotMerzz First Learning Upgrade Plan
+# [Historical archive] BotMerzz First Learning Upgrade Plan — Legacy VPS/GHCR
 
-**Status:** Prepared for operator approval; not approved and not an execution authorization.
+> **Archived and superseded. Do not execute this plan.** This document records a previous VPS/GHCR migration rehearsal and is retained as historical context only. The current deployment target and procedure are Proxmox LXC 10027 in [Deployment](DEPLOYMENT.md). The legacy host, backup, image, workflow, paths, approvals, and commands below are not current infrastructure facts or authorization to access a VPS, run an old workflow, migrate a database, or publish content.
+
+**Historical status:** Superseded; not approved and not an execution authorization.
 
 ## Release binding
 

@@ -136,6 +136,18 @@ test('explicit linked-slot reconciliation uses only the scoped GET service and c
   assert.deepEqual(serviceCalls, [['reconcile', { slotId }], ['reconcile', { slotId }]]);
 });
 
+test('reconciliation-unavailable responses preserve their actionable public error code', async t => {
+  const linkedSlot = { id: slotId, status: 'unknown', providerStatus: 'unknown', providerPostId: 'post-1',
+    profileId: 'old-profile', accountId: 'old-account', resolutionTargetValid: true };
+  const { request } = await fixture(t, {
+    repository: { getPublicationSlot: async () => linkedSlot },
+    services: { reconcileLinkedPublication: async () => { throw new Error('provider unavailable'); } },
+  });
+  const response = await request(`/api/publication-resolution/${slotId}/reconcile`, { method: 'POST' });
+  assert.equal(response.status, 503);
+  assert.deepEqual(response.body, { error: 'PUBLICATION_RECONCILIATION_UNAVAILABLE' });
+});
+
 test('explicit reconciliation rejects terminal, missing-ID, and malformed-target slots before calling services', async t => {
   const serviceCalls = [];
   const invalidSlots = [

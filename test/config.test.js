@@ -68,9 +68,13 @@ test("scheduler requires an explicit boolean and enforces a bounded polling inte
   }
 });
 
-test("proxy trust is explicit and boolean", () => {
+test("proxy trust can be restricted to a trusted ingress address", () => {
   assert.equal(loadEnv({ ...database, TRUST_PROXY: "true" }).trustProxy, true);
-  assert.throws(() => loadEnv({ ...database, TRUST_PROXY: "yes" }), /TRUST_PROXY/);
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "192.168.0.80" }).trustProxy, "192.168.0.80");
+  assert.equal(loadEnv({ ...database, TRUST_PROXY: "192.168.0.80, 192.168.0.81" }).trustProxy, "192.168.0.80,192.168.0.81");
+  for (const value of ["yes", "192.168.0.80/33", "192.168.0.80,not-an-address", "2001:db8::1/129"]) {
+    assert.throws(() => loadEnv({ ...database, TRUST_PROXY: value }), /TRUST_PROXY/);
+  }
 });
 
 test("ports and connection pool limits must be bounded integers", () => {

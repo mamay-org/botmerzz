@@ -11,7 +11,7 @@
     "migrate": "node src/cli.js migrate",
     "admin:create": "node src/cli.js admin:create",
     "dispatch": "node src/cli.js dispatch",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:integration": "node --test test/database.integration.test.js test/server.test.js test/dispatcher.test.js test/webhook.test.js && node --test test/configuration.mysql.js",
     "test:learning:browser": "node --test e2e/learning.browser.e2e.js",
     "check": "node scripts/check.js"

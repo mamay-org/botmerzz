@@ -1,5 +1,7 @@
 # Operations
 
+These operational notes apply to the homelab deployment in [Deployment](DEPLOYMENT.md). The prior VPS/GHCR workflow is historical and is no longer the current release path.
+
 ## Start, stop and health
 
 Use the matching Compose project and file to start or stop services while preserving the named database volume. Do not use `down -v` unless intentionally deleting that environment's database. Check application health at `/health/live` and `/health/ready`; readiness exposes only a minimal status. Inspect logs with `docker compose logs --tail=200 app` and `docker compose logs --tail=200 db`.
@@ -12,7 +14,7 @@ The dashboard accepts whole hours and minutes, with a one-minute minimum and a 6
 
 ## Recovery
 
-If readiness fails, inspect database health and application logs first. Restarting the app is safe because schedule claims and publication idempotency are stored in MySQL. The poller skips work missed by more than 15 minutes. A slot with an uncertain outcome and no provider post ID blocks later publishing; do not replay it. Verify it in Tebar and the target Threads account, then resolve the slot through a reviewed operator procedure before resuming automation.
+If readiness fails, inspect database health and application logs first. Restarting the app is safe because schedule claims and publication idempotency are stored in MySQL. The poller skips work missed by more than 15 minutes. A slot with an uncertain outcome and no provider post ID blocks later publishing; do not replay it. Verify it in Tebar and the exact original Threads account, then use the audited dashboard workflow in the [Publication Resolution Runbook](publication-resolution-runbook.md). A manual closure is not provider-confirmed failure; keep automation off until account reconciliation is complete.
 
 ## Emergency pause
 
@@ -20,7 +22,7 @@ Use the authenticated dashboard emergency-pause control. It disables future slot
 
 ## Secrets and incidents
 
-Keep the VPS environment file outside source control and restrict it to the deployment account (`0600`). Rotate a leaked credential at its provider, update the deployment environment, restart affected services and inspect audit/application logs. Notifications and logs should contain safe error codes, never provider response bodies, passwords, tokens or full connection strings. Apply request limits for dashboard login and Tebar webhooks at the HTTPS reverse proxy.
+Keep `/opt/botmerzz/.env` on LXC 10027, outside source control, owned by the runner account, and restricted to mode `0600`. Do not print it in CI or include it in build contexts/backups without encryption. Rotate a leaked credential at its provider, update the local file, and restart affected services. Notifications and logs should contain safe error codes, never provider response bodies, passwords, tokens, or full connection strings. Apply request limits for dashboard login and Tebar webhooks at the existing HTTPS reverse proxy.
 
 ## Daily operations
 

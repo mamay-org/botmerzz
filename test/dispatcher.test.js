@@ -118,7 +118,8 @@ test('stale publishing without a provider ID becomes an operator-review blocker 
 
 test('slot-scoped reconciliation reads and updates only the linked publication without a provider mutation', async () => {
   const { repository, publisher } = harness();
-  const reads = []; const updates = [];
+  const reads = []; const updates = []; const recoveryCalls = [];
+  repository.recoverStalePublishing = async options => { recoveryCalls.push(options); return []; };
   repository.listUnsettledSlots = async () => [
     { id: 'linked-slot', profileId: 'original-profile', accountId: 'original-account', providerPostId: 'verified-post', requestPayload: { targets: [{ account_id: 'original-account' }] } },
     { id: 'other-slot', profileId: 'other-profile', accountId: 'other-account', providerPostId: 'other-post', requestPayload: { targets: [{ account_id: 'other-account' }] } },
@@ -128,6 +129,7 @@ test('slot-scoped reconciliation reads and updates only the linked publication w
   publisher.publishNow = async () => assert.fail('manual linking must never republish');
   const checked = await reconcileUnsettled({ repository, publisher, slotIds: ['linked-slot'], clock: fixedClock });
   assert.equal(checked, 1);
+  assert.deepEqual(recoveryCalls.map(call => call.slotIds), [['linked-slot']]);
   assert.deepEqual(reads, ['verified-post']);
   assert.deepEqual(updates.map((update) => update.id), ['linked-slot']);
   assert.equal(updates[0].patch.status, 'published');
@@ -747,13 +749,18 @@ test('switch reconciliation leaves scheduled blockers when provider GET or DELET
   const calls = [];
   const providerCalls = [];
   const scopes = [];
+  const recoveryScopes = [];
   const slots = [
     { id: 'wrong-get', profileId: 'profile-old', accountId: 'acct-old', providerPostId: 'post-get-expected', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-old' }] } },
     { id: 'wrong-delete', profileId: 'profile-old', accountId: 'acct-old', providerPostId: 'post-delete-expected', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-old' }] } },
     { id: 'other-account', profileId: 'profile-other', accountId: 'acct-other', providerPostId: 'post-other', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-other' }] } },
   ];
   const repository = {
-    listUnsettledSlots: async (scope) => { scopes.push(scope); return slots; },
+    listUnsettledSlots: async (scope) => {
+      scopes.push(scope);
+      return slots.filter(slot => slot.profileId === scope?.profileId && slot.accountId === scope?.accountId);
+    },
+    recoverStalePublishing: async ({ slotIds }) => { recoveryScopes.push(slotIds); return []; },
     recordCancellation: async (...args) => calls.push(['recordCancellation', ...args]),
     updateSlot: async (...args) => calls.push(['updateSlot', ...args]),
     isAutomationSessionActive: async () => false,
@@ -765,6 +772,7 @@ test('switch reconciliation leaves scheduled blockers when provider GET or DELET
   await reconcileSwitch({ repository, publisherForProfile, profileId: 'profile-old', accountId: 'acct-old' });
   assert.ok(scopes.length >= 1);
   assert.ok(scopes.every((scope) => scope?.profileId === 'profile-old' && scope?.accountId === 'acct-old'));
+  assert.deepEqual(recoveryScopes, [['wrong-get', 'wrong-delete']], 'stale recovery must be fenced to the outgoing account slots');
   assert.deepEqual(providerCalls.filter((call) => call[0] === 'cancel').map((call) => call[1]), ['post-delete-expected']);
   assert.equal(calls.some((call) => call[0] === 'recordCancellation' || call[0] === 'updateSlot' && call[2]?.status === 'canceled'), false);
 });

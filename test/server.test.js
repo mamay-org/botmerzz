@@ -6,6 +6,13 @@ const {createServer}=require('../src/server');
 function request(server,path,{method='GET',headers={},body}={}){return new Promise((resolve,reject)=>{const address=server.address();const req=http.request({host:'127.0.0.1',port:address.port,path,method,headers:{...(body?{'content-type':'application/json'}:{}),...headers}},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:data}));});req.setTimeout(3000,()=>req.destroy(new Error(`HTTP timeout ${method} ${path}`)));req.on('error',reject);if(body)req.write(body);req.end();});}
 function closeServer(server){return new Promise(resolve=>{server.close(resolve);server.closeAllConnections?.();});}
 
+test('proxy trust is scoped to the configured ingress IP',()=>{
+  const app=createServer({config:{nodeEnv:'production',baseUrl:'https://botmerzz.example',trustProxy:'192.168.0.80'},repository:{},auth:{}});
+  const trusted=app.get('trust proxy fn');
+  assert.equal(trusted('192.168.0.80'),true);
+  assert.equal(trusted('192.168.0.81'),false);
+});
+
 test('health, dashboard auth, static UI, same-origin login, CSRF and logout are enforced',async t=>{
   let token='';let logoutCalls=0;const config={nodeEnv:'test',baseUrl:'http://localhost',tebar:{}};
   const repository={healthCheck:async()=>{},getRuntimeState:async()=>({settings:{schedule:{},brand:{},guardrails:{}},facts:[],history:[],automationEnabled:false}),listFacts:async()=>({}),listSlots:async()=>[],listActivity:async()=>[],listAudit:async()=>[],saveSettings:async x=>x,saveKnowledge:async x=>x,saveFact:async()=>({}),setAutomationEnabled:async()=>{},};
@@ -195,11 +202,11 @@ test('brand templates accept and preserve the bounded AI content direction',asyn
   const hookVocabulary=['Cerita pengalaman','Sembang santai'];
   const created=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief santai',category:'brand',data:{contentDirection:direction,hookVocabulary}})});
   assert.equal(created.status,201,created.body);assert.equal(calls[0].data.contentDirection,direction);assert.equal(JSON.parse(created.body).template.data.contentDirection,direction);assert.deepEqual(calls[0].data.hookVocabulary,hookVocabulary);
-  const expandedVocabulary=Array.from({length:300},(_,index)=>`Hook ${index+1}`);
+  const expandedVocabulary=Array.from({length:300},(_,index)=>`kata-${index+1}`);
   const expanded=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 300 hook',category:'brand',data:{hookVocabulary:expandedVocabulary}})});
-  assert.equal(expanded.status,201,expanded.body);assert.deepEqual(JSON.parse(expanded.body).template.data.hookVocabulary,expandedVocabulary);
-  const beyondVocabulary=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 301 hook',category:'brand',data:{hookVocabulary:[...expandedVocabulary,'Hook 301']}})});
-  assert.equal(beyondVocabulary.status,400);
+  assert.equal(expanded.status,201,expanded.body);assert.equal(JSON.parse(expanded.body).template.data.hookVocabulary.length,300);
+  const tooMany=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief 301 hook',category:'brand',data:{hookVocabulary:[...expandedVocabulary,'kata-301']}})});
+  assert.equal(tooMany.status,400);
   const maxLength=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief maksimum',category:'brand',data:{contentDirection:'x'.repeat(7000)}})});
   assert.equal(maxLength.status,201,maxLength.body);
   const tooLong=await request(server,'/api/templates',{method:'POST',headers,body:JSON.stringify({name:'Brief panjang',category:'brand',data:{contentDirection:'x'.repeat(7001)}})});

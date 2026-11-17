@@ -45,11 +45,13 @@ Each slot has a unique scheduled instant and durable state: pending, generating,
 
 ## Storage choice
 
-MySQL is chosen because the dashboard and one-shot dispatcher need durable transactions and uniqueness constraints across separate HTTP and scheduled processes. Docker Compose provides local MySQL; VPS storage can be a managed database or a backed-up private MySQL volume. Migrations are versioned SQL files.
+MySQL is chosen because the dashboard and one-shot dispatcher need durable transactions and uniqueness constraints across separate HTTP and scheduled processes. Local Compose uses MySQL 8.4. The homelab deployment keeps MySQL private to Docker networking on LXC 10027 and persists data in the stable named volume `botmerzz_mysql_data`; the database starts empty and receives ordered migrations. A tested encrypted backup is still required because a Docker volume is persistence, not a backup.
 
 ## Deployment constraints
 
-The runtime Docker image is environment-neutral and is the default build target. VPS Compose requires an immutable GHCR commit-SHA image, a private MySQL volume, HTTPS termination and protected environment variables. Publishing remains disabled by default; staging deployment is opt-in and production deployment is not configured.
+The runtime Docker image is environment-neutral and is built locally with a full commit-SHA tag. GitHub-hosted CI handles pull requests and `main`; a separate `workflow_run` deployment workflow validates the completed `CI` run's workflow path, push/main/success metadata, same repository/head repository, and full SHA before the self-hosted runner on LXC 10027 can run. After acquiring the serialized deployment slot, it checks out that validated SHA, rechecks it against current `main`, and updates the local Compose app service after migrations, LAN/Traefik/public health checks, and image revision verification. No active GHCR publish/pull or VPS SSH deployment path remains.
+
+The app binds to `192.168.0.27:3000` for the existing Traefik gateway on LXC 10080. Public TLS terminates through the existing Cloudflare Tunnel/Traefik path at `https://botmerzz.sequein.my.id`; the app uses that HTTPS origin and trusts forwarded proxy metadata only from `192.168.0.80`. Runtime secrets stay in `/opt/botmerzz/.env` on the LXC and are not synchronized from Git. The first homelab bootstrap keeps the scheduler and all AI Learning execution flags false. Live LXC deployment and ingress behavior remain unverified until an approved release is performed.
 
 ## Provider capabilities and MVP limits
 
