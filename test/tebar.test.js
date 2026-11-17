@@ -99,6 +99,19 @@ test("network and server failures leave publish outcome unknown without retry or
   }
 });
 
+test('network timeout diagnostics retain only a safe transport code and timeout flag', async () => {
+  const api = client(async () => { throw Object.assign(new Error('Bearer secret and response body'), { code: 'ETIMEDOUT', config: { headers: { Authorization: 'secret' } } }); });
+  await assert.rejects(api.publishNow({ content: 'Hi', targets: [{ account_id: 'a1' }] }, 'key'), (error) => {
+    assert.equal(error.code, 'network_error');
+    assert.equal(error.status, null);
+    assert.equal(error.transportCode, 'ETIMEDOUT');
+    assert.equal(error.timedOut, true);
+    assert.equal(error.unknownOutcome, true);
+    assert.doesNotMatch(inspect(error), /Bearer secret|response body|Authorization/);
+    return true;
+  });
+});
+
 test("insights sends only documented query keys and preserves missing data", async () => {
   const api = client(async (request) => {
     assert.equal(request.url, "https://api.tebar.app/v1/accounts/a1/insights");

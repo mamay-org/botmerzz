@@ -8,7 +8,7 @@ const { runMigrations } = require('./migrate');
 const { createRepository } = require('./repository');
 const { createAuth } = require('./auth');
 const { createServer } = require('./server');
-const { runDispatcher, pauseAutomation, reconcileUnsettled } = require('./dispatcher');
+const { runDispatcher, pauseAutomation, reconcileUnsettled, reconcileSwitch: reconcileSwitchSlots } = require('./dispatcher');
 const { generatePost } = require('./content-service');
 const { createLogger } = require('./logger');
 const { createOutboxNotifier } = require('./notifications');
@@ -176,6 +176,11 @@ async function main(argv = process.argv.slice(2)) {
       evaluateLearningShadow: async (request) => getLearningShadowServices().execution.evaluate(request),
       logger,
       configuration,
+      verifyProviderPostForSlot: async ({ profileId, postId }) => {
+        if (!config.tebar.apiKey) throw Object.assign(new Error('TEBAR_NOT_CONFIGURED'), { code: 'TEBAR_NOT_CONFIGURED' });
+        const provider = await publisherForProfile(profileId);
+        return provider.getPost(postId);
+      },
       getProviderStatus: async () => {
         try {
           const effective = await configuration.getActive();
@@ -190,25 +195,18 @@ async function main(argv = process.argv.slice(2)) {
     services.aiConfigured = Boolean(config.openRouter.apiKey);
     const telegram = config.telegram.botToken && config.telegram.chatId ? require('./providers/telegram').createTelegramClient(config.telegram) : null;
     const notifier = telegram ? createOutboxNotifier({ repository, transport: telegram }) : null;
+    services.reconcileLinkedPublication = async ({ slotId }) => {
+      const linked = await repository.getPublicationSlot(slotId);
+      const scope = linked?.profileId && linked?.accountId ? { profileId: linked.profileId, accountId: linked.accountId } : {};
+      await reconcileUnsettled({ repository, publisherForProfile, notifier, logger, counts: { published: 0, failed: 0, unknown: 0 }, slotIds: [slotId], ...scope });
+      const slot = await repository.getPublicationSlot(slotId);
+      const status = slot?.status || 'unknown';
+      return { status, pending: !['published', 'failed', 'partial', 'canceled', 'admin_closed_unknown'].includes(status) };
+    };
     services.reconcileSwitch = async () => {
-      const slots = await repository.listUnsettledSlots();
-      for (const slot of slots) {
-        if (!slot.profileId || !slot.accountId || !slot.providerPostId
-          || slot.requestPayload?.targets?.[0]?.account_id !== slot.accountId
-          || !['scheduled', 'draft'].includes(slot.providerStatus)) continue;
-        try {
-          const publisher = await publisherForProfile(slot.profileId);
-          const post = await publisher.getPost(slot.providerPostId);
-          if (!['scheduled', 'draft'].includes(post.status)
-            || !post.targets?.some((target) => target.accountId === slot.accountId && target.platform === 'threads')) continue;
-          const canceled = await publisher.cancelPost(slot.providerPostId);
-          if (canceled.status === 'canceled') {
-            await repository.recordCancellation(slot.providerPostId, { status: 'canceled' });
-            await repository.updateSlot(slot.id, { status: 'canceled', providerStatus: 'canceled', completedAt: new Date().toISOString() });
-          }
-        } catch { /* Preserve uncertain state; operator can retry reconciliation. */ }
-      }
-      await reconcileUnsettled({ repository, publisherForProfile, notifier, logger });
+      const outgoing = await configuration.getActive();
+      await reconcileSwitchSlots({ repository, publisherForProfile, notifier, logger,
+        profileId: outgoing.profileId, accountId: outgoing.accountId });
     };
     let scheduler = null;
     let retentionPool;
@@ -244,7 +242,7 @@ async function main(argv = process.argv.slice(2)) {
     services.pauseAutomation = async ({ adminId }) => {
       const effective = await configuration.getActive();
       if (!config.tebar.apiKey || !effective.profileId) { await repository.setAutomationEnabled(false, adminId); return { enabled: false, outcomes: [{ status: 'provider_unavailable' }] }; }
-      return pauseAutomation({ repository, publisher: await publisherForProfile(effective.profileId), notifier, accountId: effective.accountId, adminId });
+      return pauseAutomation({ repository, publisher: await publisherForProfile(effective.profileId), notifier, profileId: effective.profileId, accountId: effective.accountId, adminId });
     };
     const dispatchOnce = async () => {
       const effective = await configuration.getActive();

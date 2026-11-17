@@ -1,8 +1,9 @@
 const axios = require("axios");
+const TRANSPORT_CODES = new Set(["ECONNABORTED", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "EPIPE", "ERR_NETWORK", "ERR_CANCELED", "ERR_BAD_REQUEST", "ERR_BAD_RESPONSE"]);
 
-function providerError(code, status = null) {
+function providerError(code, status = null, { transportCode = null, timedOut = false } = {}) {
   return Object.assign(new Error(`OpenRouter request failed: ${code}`), {
-    provider: "openrouter", code, status, unknownOutcome: false,
+    provider: "openrouter", code, status, unknownOutcome: false, transportCode, timedOut,
     retryable: status === null || status === 429 || status >= 500,
   });
 }
@@ -35,9 +36,11 @@ function createOpenRouterClient({ apiKey, model, http = axios }) {
       });
     } catch (error) {
       const status = Number.isInteger(error.response?.status) ? error.response.status : null;
+      const transportCode = TRANSPORT_CODES.has(error?.code) ? error.code : null;
+      const timedOut = ["ECONNABORTED", "ETIMEDOUT"].includes(transportCode) || error?.name === "TimeoutError";
       throw providerError(status === 429 ? "rate_limited"
         : status === 401 || status === 403 ? "unauthorized"
-          : status ? "provider_error" : "network_error", status);
+          : status ? "provider_error" : "network_error", status, { transportCode, timedOut });
     }
     const choice = response.data?.choices?.[0];
     if (choice?.finish_reason === "length") throw providerError("invalid_response");

@@ -14,7 +14,7 @@ function requireServices(services) {
   if (!services.configuration || !services.configurationValidators) throw Object.assign(new Error('CONFIG_UNAVAILABLE'),{code:'CONFIG_UNAVAILABLE',status:503});
   return { store:services.configuration, validator:services.configurationValidators };
 }
-async function validate(store, actorId, kind, action) {
+async function validateAndAudit(store, actorId, kind, action) {
   try {
     const result = await action();
     await store.recordValidation({actorId,kind,outcome:'success'});
@@ -24,10 +24,20 @@ async function validate(store, actorId, kind, action) {
     throw e;
   }
 }
-function registerIntegrationRoutes(app, { services, authenticated, mutation }) {
+function registerIntegrationRoutes(app, { repository = {}, services, authenticated, mutation }) {
+  async function validate(store, actorId, kind, action) {
+    return validateAndAudit(store, actorId, kind, async () => {
+      const result = await action();
+      if (typeof repository.clearProviderHold === 'function') {
+        if (kind === 'model') await repository.clearProviderHold({ provider: 'openrouter', actorId });
+        else if (validId(result?.profileId) && validId(result?.id)) await repository.clearProviderHold({ provider: 'tebar', profileId: result.profileId, accountId: result.id, actorId });
+      }
+      return result;
+    });
+  }
   const limit=createIpRateLimiter({limit:30,windowMs:60_000});
   app.get('/api/integrations', authenticated, async (_req,res,next)=>{
-    try { const {store}=requireServices(services); const [configuration,history]=await Promise.all([store.getActive(),store.history()]); return res.json({configuration,history}); } catch(e){return next(e);}
+    try { const {store}=requireServices(services); const [configuration,history,providerHolds]=await Promise.all([store.getActive(),store.history(),repository.listActiveProviderHolds ? repository.listActiveProviderHolds() : []]); return res.json({configuration,history,providerHolds}); } catch(e){return next(e);}
   });
   app.get('/api/integrations/models', authenticated, limit, async (_req,res,next)=>{
     try { const {validator}=requireServices(services); return res.json({models:await validator.listModels()}); } catch(e){return next(e);}

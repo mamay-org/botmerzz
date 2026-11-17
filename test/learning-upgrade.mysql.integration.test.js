@@ -32,7 +32,7 @@ test('upgrade from existing 011 records retains legacy evidence as unavailable',
     assert.deepEqual(await runMigrations(pool),[
       '013_validation_outcome_observations.sql','014_generation_attempts.sql','015_learning_lifecycle.sql',
       '016_learning_shadow_evaluation.sql','017_generation_learning_snapshots.sql','018_learning_quality_analytics_index.sql',
-      '019_learning_shadow_admission.sql',
+      '019_learning_shadow_admission.sql','020_manual_publication_resolution.sql',
     ]);
     const [[retained]]=await pool.execute('SELECT COUNT(*) AS n FROM learning_capture_events WHERE event_id=?',['legacy-event']);
     assert.equal(Number(retained.n),1);

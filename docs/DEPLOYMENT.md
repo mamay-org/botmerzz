@@ -154,7 +154,7 @@ docker compose \
   run --rm --no-deps app npm run admin:create
 ```
 
-Enter the new administrator email and password interactively. Password entry is hidden; the command does not create default credentials. Do not run `admin:create` on every deploy. The application migration command applies migrations in filename order, including 011–019, and records successful versions under the existing MySQL advisory lock. Migration 018's partial-DDL recovery behavior remains part of the app.
+Enter the new administrator email and password interactively. Password entry is hidden; the command does not create default credentials. Do not run `admin:create` on every deploy. The application migration command applies migrations in filename order, including 011–020, and records successful versions under the existing MySQL advisory lock. Migrations 018 and 020 are restartable after partial DDL because MySQL implicitly commits DDL.
 
 The initial administrator onboarding checklist is:
 
@@ -227,6 +227,8 @@ No real database or environment backup is created by this change. A Proxmox snap
 
 ## Recovery guide
 
+For `unknown` publication outcomes, audited administrator closure, verified provider-ID linking, and account-switch recovery, follow the [Publication Resolution Runbook](publication-resolution-runbook.md). An `admin_closed_unknown` result remains explicitly unverified and is never replayed; app rollback does not reverse migration 020.
+
 | Failure | Safe first checks |
 |---|---|
 | Runner offline | Check `/home/runner/actions-runner/./svc.sh status`, Docker access, and repository runner label. Do not re-register an existing runner. |
@@ -249,7 +251,7 @@ Use this order for the first release. The repository work is prepared before the
 2. Generate new DB credentials directly on the LXC and write the full initial runtime configuration to `/opt/botmerzz/.env`. Verify mode `0600` without displaying the file. Keep the scheduler and all six Learning execution flags false.
 3. Confirm the already-installed runner is online, idle, able to use Docker, and has custom label `botmerzz-lxc-10027`. Do not reinstall/re-register it.
 4. Open the homelab deployment PR. Review the diff and wait for hosted CI, including fresh-schema MySQL tests, Docker build, workflow checks, and deployment-script tests. No deployment occurs from the PR.
-5. After explicit owner approval, merge the PR to `main`. The workflow checks the exact SHA and current `main` head, builds the local image, creates/starts the new `botmerzz_mysql_data` volume and MySQL 8.4 database, applies migrations 001–019, starts the app, and verifies readiness/revision. A failed check leaves the release unpromoted and does not delete DB state or the prior image.
+5. After explicit owner approval, merge the PR to `main`. The workflow checks the exact SHA and current `main` head, builds the local image, creates/starts the new `botmerzz_mysql_data` volume and MySQL 8.4 database, applies migrations 001–020, starts the app, and verifies readiness/revision. A failed check leaves the release unpromoted and does not delete DB state or the prior image.
 6. After a successful first deployment, run `npm run admin:create` using the Compose command above. Use a new unique admin password; entry is hidden and no default account is created.
 7. Verify local readiness on LXC 10027 and LAN reachability from LXC 10080 using the commands in [Health and ingress verification](#health-and-ingress-verification).
 8. Check the existing Traefik Host-header route from LXC 10080, then check the public HTTPS health URL. These are read-only GET requests; no provider or publishing call is needed.

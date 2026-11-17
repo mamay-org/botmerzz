@@ -223,9 +223,40 @@
         <section class="panel stack" aria-labelledby="integrations-title">
           <div><p class="eyebrow">KONFIGURASI AKTIF</p><h2 id="integrations-title">Integrasi Tebar</h2><p class="muted">Kelola koneksi akun Threads. Kredensial provider tetap disimpan di server.</p></div>
           <div id="integration-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
+          <div id="integration-provider-holds" class="notice warning publication-holds" role="status" hidden></div>
           <dl class="integration-summary"><div><dt>Profile Tebar</dt><dd id="integration-active-profile">Belum tersedia</dd></div><div><dt>Akun Threads</dt><dd id="integration-active-account">Belum tersedia</dd></div><div><dt>Verifikasi akun</dt><dd id="integration-provider-status">Belum tersedia</dd></div><div><dt>Status pergantian</dt><dd id="integration-switch-status">Belum tersedia</dd></div></dl>
           <div class="form-actions"><button id="integration-refresh" type="button" class="button quiet">Muat ulang konfigurasi</button><button id="integration-check-active" type="button" class="button quiet" disabled>Periksa akun aktif</button><button id="integration-reconcile" type="button" class="button quiet" hidden>Lanjutkan pemeriksaan</button></div>
         </section>
+        <section class="panel stack" aria-labelledby="publication-blockers-title">
+          <div><h2 id="publication-blockers-title" tabindex="-1">Pemeriksaan publikasi</h2><p class="muted">Periksa riwayat Tebar dan Threads pada akun asal dengan mencocokkan waktu dan caption. Selesaikan setiap slot sebelum melanjutkan pergantian akun.</p></div>
+          <p id="publication-blocker-count" class="muted" role="status">Muat konfigurasi untuk melihat slot yang perlu diperiksa.</p>
+          <div id="publication-resolution-result" class="notice info" role="status" hidden></div>
+          <div id="publication-blockers" class="stack"></div>
+          <details id="publication-resolution-audit" hidden><summary>Riwayat keputusan admin terbaru</summary><div id="publication-resolution-history" class="stack"></div></details>
+        </section>
+        <section class="panel stack publication-follow-up" aria-labelledby="publication-closed-blockers-title">
+          <div><h2 id="publication-closed-blockers-title">Publikasi terlambat ditemukan</h2><p class="muted">Jika post muncul setelah slot ditutup, ID Tebar dapat dikaitkan setelah diverifikasi. Proses ini hanya memeriksa status melalui GET dan tidak menerbitkan ulang post.</p></div>
+          <form id="publication-closed-search-form" class="publication-slot-search" role="search">
+            <label>Slot ID tertutup<input name="slotId" maxlength="36" pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"><span class="field-hint">Cari tepat satu slot lama yang tidak termasuk daftar 100 terbaru.</span></label>
+            <button type="submit" class="button quiet">Cari Slot ID</button><button id="publication-closed-search-reset" type="button" class="button quiet">Tampilkan 100 terbaru</button>
+          </form>
+          <div id="publication-closed-search-error" class="notice error" role="alert" hidden></div>
+          <p id="publication-closed-blocker-count" class="muted" role="status">Muat konfigurasi untuk melihat slot yang sudah ditutup.</p>
+          <div id="publication-closed-blockers" class="stack"></div>
+        </section>
+        <dialog id="publication-resolution-dialog" class="template-dialog publication-dialog" aria-labelledby="publication-resolution-title" aria-describedby="publication-resolution-guidance">
+          <form id="publication-resolution-form" class="stack">
+            <h2 id="publication-resolution-title"></h2>
+            <p id="publication-resolution-target" class="muted publication-text"></p>
+            <p id="publication-resolution-guidance" class="notice warning"></p>
+            <label id="publication-provider-post-field" hidden>ID post Tebar<input name="providerPostId" maxlength="128" pattern="[A-Za-z0-9_\x2d]+" autocomplete="off"></label>
+            <label>Alasan<textarea name="reason" rows="2" minlength="10" maxlength="1000" required></textarea></label>
+            <label>Ringkasan dan referensi bukti<textarea name="evidenceSummary" rows="3" minlength="10" maxlength="2000" required></textarea><span class="field-hint">Sebutkan sumber, akun, dan waktu yang diperiksa. Simpan kredensial secara terpisah.</span></label>
+            <label class="check-row"><input name="confirmed" type="checkbox" required><span id="publication-resolution-confirm-label"></span></label>
+            <div id="publication-resolution-error" class="notice error" role="alert" hidden></div>
+            <div class="form-actions"><button id="publication-resolution-cancel" type="button" class="button quiet">Batal</button><button id="publication-resolution-submit" type="submit" class="button primary">Konfirmasi</button></div>
+          </form>
+        </dialog>
         <form id="integration-account-form" class="panel form-grid">
           <div class="panel-heading full"><div><p class="eyebrow">AKUN THREADS</p><h2>Ganti akun Tebar</h2><p class="muted">Isian berikut adalah draft perubahan; konfigurasi aktif ditampilkan di atas. Profile dan akun divalidasi sebagai satu pasangan. Post lama tetap terkait akun asal; pergantian dapat tertahan jika status post belum pasti. Otomasi tetap dijeda setelah pergantian.</p></div></div>
           <label>Profile ID<input name="profileId" maxlength="128" required autocomplete="off"></label>
@@ -240,6 +271,7 @@
         <section class="panel stack" aria-labelledby="ai-title">
           <div><p class="eyebrow">KONFIGURASI AI</p><h2 id="ai-title">Model OpenRouter</h2><p class="muted">Model aktif dipakai pada generasi berikutnya. Kunci API tetap disimpan di server.</p></div>
           <div id="ai-notice" class="notice info" role="status">Muat pengaturan untuk melihat status terkini.</div>
+          <div id="ai-provider-holds" class="notice warning publication-holds" role="status" hidden></div>
           <dl class="integration-summary"><div><dt>Model aktif</dt><dd id="ai-active-model">Belum tersedia</dd><p id="ai-active-model-status" class="field-hint">Status konfigurasi akan dimuat dari server.</p></div></dl>
           <div class="form-actions"><button id="ai-refresh" type="button" class="button quiet">Muat ulang model</button></div>
         </section>
