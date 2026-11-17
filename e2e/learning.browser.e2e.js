@@ -96,7 +96,7 @@ async function assertAccessible(page, surface) {
   })),[],`axe-core WCAG 2.2 AA violations on ${surface}`);
 }
 
-test('Learning Center browser acceptance on isolated MySQL and local Chrome', async (t) => {
+test('dashboard browser acceptance for Learning Center and publication resolution on isolated MySQL and local Chrome', async (t) => {
   const requestedConfig = loadEnv(process.env);
   assert.equal(process.env.NODE_ENV, 'test', 'Browser test requires NODE_ENV=test');
   assert.equal(process.env.ALLOW_DESTRUCTIVE_DB_TESTS, 'true', 'Browser test requires explicit test-database authorization');
@@ -139,6 +139,11 @@ test('Learning Center browser acceptance on isolated MySQL and local Chrome', as
           await connection.beginTransaction();
           if (slotIds.length) {
             const slotPlaceholders = slotIds.map(() => '?').join(',');
+            const [resolutionEvents] = await connection.execute(`SELECT request_id FROM publication_resolution_events WHERE slot_id IN (${slotPlaceholders})`, slotIds);
+            for (const event of resolutionEvents) {
+              await connection.execute('DELETE FROM notification_outbox WHERE dedupe_key=?', [createHash('sha256').update(`publication-resolution:${event.request_id}`).digest('hex')]);
+            }
+            await connection.execute(`DELETE FROM publication_resolution_events WHERE slot_id IN (${slotPlaceholders})`, slotIds);
             const [rules] = await connection.execute(`SELECT r.id FROM learning_rules r JOIN learning_candidates c ON c.id=r.candidate_id WHERE c.slot_id IN (${slotPlaceholders})`,slotIds);
             const ruleIds = rules.map((row) => String(row.id));
             if (ruleIds.length) {
@@ -153,9 +158,11 @@ test('Learning Center browser acceptance on isolated MySQL and local Chrome', as
             await connection.execute(`DELETE FROM learning_reviews WHERE candidate_id IN (SELECT id FROM learning_candidates WHERE slot_id IN (${slotPlaceholders}))`,slotIds);
             await connection.execute(`DELETE FROM learning_candidates WHERE slot_id IN (${slotPlaceholders})`,slotIds);
             await connection.execute(`DELETE FROM learning_feedback WHERE slot_id IN (${slotPlaceholders})`,slotIds);
+            await connection.execute(`DELETE FROM activity_logs WHERE slot_id IN (${slotPlaceholders})`,slotIds);
             await connection.execute(`DELETE FROM slots WHERE id IN (${slotPlaceholders})`,slotIds);
           }
           await connection.execute('DELETE FROM sessions WHERE admin_id=?',[fixtureAdminId]);
+          await connection.execute('DELETE FROM audit_logs WHERE admin_id=?',[fixtureAdminId]);
           await connection.execute('DELETE FROM admins WHERE id=?',[fixtureAdminId]);
           await connection.commit();
         } catch (error) {
@@ -250,6 +257,64 @@ test('Learning Center browser acceptance on isolated MySQL and local Chrome', as
     await page.locator('#app-view:not([hidden])').waitFor();
     await page.locator('#dashboard-title').waitFor();
     await assertAccessible(page,'dashboard');
+  });
+
+  await t.test('admin closes an unknown publication in the browser only after explicit confirmation', async () => {
+    const slotId = randomUUID();
+    const profileId = `browser-profile-${randomUUID()}`;
+    const accountId = `browser-account-${randomUUID()}`;
+    const caption = 'Bila ada event gacha dalam MLBB, korang team top-up hari pertama atau tunggu fasa recharge?';
+    slotIds.push(slotId);
+    await pool.execute(
+      "INSERT INTO slots (id,scheduled_at,status,provider_status,provider_post_id,caption,request_payload,idempotency_key,tebar_profile_id,tebar_account_id,error_code,publish_started_at) VALUES (?,UTC_TIMESTAMP(3),'unknown','unknown',NULL,?,?,?,?,?,'network_error',UTC_TIMESTAMP(3))",
+      [slotId, caption, JSON.stringify({ content: caption, targets: [{ account_id: accountId }] }), `browser-key-${slotId}`, profileId, accountId],
+    );
+
+    await page.getByRole('tab', { name: 'Integrasi' }).click();
+    const card = page.locator('#publication-blockers article.publication-card').filter({ hasText: slotId });
+    await card.waitFor();
+    assert.ok((await card.innerText()).includes(caption));
+    assert.ok((await card.innerText()).includes(accountId), 'the source account must remain visible for review');
+
+    await card.getByRole('button', { name: 'Close as Unverified — Not Found' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Close as Unverified — Not Found' });
+    await dialog.waitFor({ state: 'visible' });
+    assert.match(await dialog.innerText(), /tanpa mengirim ulang/);
+    await dialog.locator('[name=reason]').fill('Riwayat publikasi dan akun asal telah diperiksa.');
+    await dialog.locator('[name=evidenceSummary]').fill('Tebar history and original Threads account checked at the scheduled attempt time.');
+
+    let closeRequests = 0;
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === `/api/publication-resolution/${slotId}/close-unverified`
+        && request.method() === 'POST') closeRequests++;
+    });
+    await dialog.getByRole('button', { name: 'Tutup tanpa verifikasi' }).click();
+    assert.equal(closeRequests, 0, 'an unchecked explicit confirmation must not submit a resolution');
+    assert.equal(await dialog.evaluate((element) => element.open), true);
+    await dialog.locator('[name=confirmed]').check();
+
+    const closeResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname
+      === `/api/publication-resolution/${slotId}/close-unverified` && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Tutup tanpa verifikasi' }).click();
+    const closeResponse = await closeResponsePromise;
+    assert.equal(closeResponse.status(), 200);
+    assert.equal(closeRequests, 1);
+    const payload = await closeResponse.json();
+    assert.equal(payload.resolution.newStatus, 'admin_closed_unknown');
+    await page.locator('#publication-blocker-count').getByText('Tidak ada slot yang masih menghambat rekonsiliasi publikasi.').waitFor();
+    await page.locator('#publication-resolution-result:not([hidden])').waitFor();
+    assert.match(await page.locator('#publication-resolution-result').innerText(), /tanpa verifikasi/);
+    await page.locator('#publication-resolution-audit:not([hidden])').waitFor();
+    await page.locator('#publication-resolution-audit summary').click();
+    const history = await page.locator('#publication-resolution-history').innerText();
+    assert.match(history, /Penutupan tanpa verifikasi/);
+    assert.match(history, /Riwayat publikasi dan akun asal telah diperiksa\./);
+
+    const [[saved]] = await pool.execute('SELECT status,provider_post_id,tebar_profile_id,tebar_account_id FROM slots WHERE id=?', [slotId]);
+    assert.deepEqual([saved.status, saved.provider_post_id, saved.tebar_profile_id, saved.tebar_account_id],
+      ['admin_closed_unknown', null, profileId, accountId]);
+    const [[audit]] = await pool.execute("SELECT COUNT(*) AS n FROM audit_logs WHERE admin_id=? AND action='publication.close_unverified' AND JSON_UNQUOTE(JSON_EXTRACT(details_json,'$.slotId'))=?", [fixtureAdminId, slotId]);
+    assert.equal(Number(audit.n), 1);
   });
 
   await t.test('learning navigation, loading/error states, filters, details, and stored-XSS output', async () => {

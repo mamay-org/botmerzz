@@ -26,7 +26,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       [id, new Date(tick++), status, 'unknown', providerPostId, 'Bila ada event gacha dalam MLBB...', JSON.stringify({ content: 'Bila ada event gacha dalam MLBB...', targets: [{ account_id: accountId }] }), `key-${id}`, profileId, accountId, 'network_error', new Date(tick++)]);
     return id;
   }
-  let savedSettings; let savedConfig; let switchVersions = [];
+  let savedSettings; let savedConfig; let switchVersions = []; let dispatchSessionIds = [];
   try {
     const [[database]] = await pool.query('SELECT DATABASE() AS name,VERSION() AS version');
     assert.equal(database.name, 'merzz_test'); assert.match(database.version, /^8\.4\./);
@@ -206,6 +206,7 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
     });
 
     await t.test('account switch waits for every blocker and finishes with automation off', async () => {
+      const { runDispatcher } = require('../src/dispatcher');
       const [[max]] = await pool.query('SELECT COALESCE(MAX(version),0) AS version FROM integration_config_history');
       const version = Number(max.version) + 10;
       const settings = { profileId, targetAccountId: accountId, integrationConfigInitialized: true, onboardingComplete: true };
@@ -223,8 +224,65 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       assert.equal(active.accountId, otherAccountId); assert.equal(active.status, 'ACTIVE');
       assert.equal((await repo.getSettings()).automationEnabled, false);
       assert.equal((await repo.getPublicationSlot(first)).accountId, accountId);
+      assert.equal((await repo.getPublicationSlot(second)).accountId, accountId);
+      assert.equal((await repo.getPublicationSlot(first)).status, 'admin_closed_unknown');
+      assert.equal((await repo.getPublicationSlot(second)).status, 'admin_closed_unknown');
+
+      let publishRequests = [];
+      const paused = await runDispatcher({
+        repository: repo,
+        publisher: { publishNow: async payload => { publishRequests.push(payload); return assert.fail('account switching must leave automation paused'); } },
+        content: async () => assert.fail('paused automation must not generate content'),
+        clock: () => new Date(Date.now() + 5_000),
+      });
+      assert.equal(paused.claimed, 0);
+      assert.equal(paused.published, 0);
+      assert.deepEqual(publishRequests, []);
+
+      const readySettings = {
+        schedule: { intervalMinutes: 60, timezone: 'Asia/Kuala_Lumpur' },
+        brand: { name: 'Kedai Merzz', voice: 'Santai' },
+        guardrails: { approved: true, forbiddenClaims: [], approvedClaims: [] },
+        targetAccountId: otherAccountId,
+        profileId,
+        onboardingComplete: true,
+      };
+      await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [
+        JSON.stringify(readySettings), JSON.stringify({ brand: readySettings.brand, guardrails: readySettings.guardrails }),
+      ]);
+      const enabledAutomation = await repo.setAutomationEnabled(true, actorId);
+      dispatchSessionIds.push(enabledAutomation.sessionId);
+      assert.equal(enabledAutomation.changed, true);
+      assert.equal((await repo.getRuntimeState()).accountId, otherAccountId);
+
+      const sent = [];
+      const dispatchNow = () => new Date(Date.now() + 5_000);
+      const published = await runDispatcher({
+        repository: repo,
+        publisher: {
+          publishNow: async (payload, idempotencyKey) => {
+            sent.push({ payload, idempotencyKey });
+            return { id: 'mock-new-account-post', status: 'published', targets: [{ accountId: otherAccountId, platform: 'threads', status: 'published' }] };
+          },
+        },
+        content: async () => ({ status: 'ready', text: 'Mock post after deliberate reactivation.', pillar: 'topup', factBearing: false, factIds: [] }),
+        clock: dispatchNow,
+      });
+      assert.equal(published.published, 1);
+      assert.equal(sent.length, 1, 'one scheduled slot must produce exactly one mocked provider request');
+      assert.deepEqual(sent[0].payload.targets, [{ account_id: otherAccountId }]);
+      assert.notEqual(sent[0].payload.targets[0].account_id, accountId);
+      const [[newSlot]] = await pool.execute('SELECT id,status,tebar_profile_id,tebar_account_id,request_payload FROM slots WHERE automation_session_id=? AND status=\'published\'', [enabledAutomation.sessionId]);
+      assert.ok(newSlot);
+      assert.equal(newSlot.tebar_profile_id, profileId);
+      assert.equal(newSlot.tebar_account_id, otherAccountId);
+      assert.equal(JSON.parse(typeof newSlot.request_payload === 'string' ? newSlot.request_payload : JSON.stringify(newSlot.request_payload)).targets[0].account_id, otherAccountId);
     });
   } finally {
+    for (const sessionId of dispatchSessionIds) {
+      const [sessionSlots] = await pool.execute('SELECT id FROM slots WHERE automation_session_id=?', [sessionId]);
+      for (const sessionSlot of sessionSlots) if (!created.includes(sessionSlot.id)) created.push(sessionSlot.id);
+    }
     if (actorId) {
       const [events] = await pool.execute('SELECT request_id FROM publication_resolution_events WHERE actor_id=?', [actorId]);
       for (const event of events) await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key=?', [createHash('sha256').update(`publication-resolution:${event.request_id}`).digest('hex')]);
@@ -234,7 +292,13 @@ test('disposable MySQL 8.4 publication resolution, restart, concurrency, holds, 
       for (const version of switchVersions) await pool.execute('DELETE FROM integration_config_history WHERE version=?', [version]);
       await pool.execute('DELETE FROM admins WHERE id=?', [actorId]);
     }
-    for (const id of created) { await pool.execute('DELETE FROM activity_logs WHERE slot_id=?', [id]); await pool.execute('DELETE FROM slots WHERE id=?', [id]); }
+    for (const id of created) {
+      await pool.execute('DELETE FROM activity_logs WHERE slot_id=?', [id]);
+      await pool.execute('DELETE FROM generation_learning_snapshots WHERE slot_id=?', [id]);
+      await pool.execute('DELETE FROM generation_attempts WHERE slot_id=?', [id]);
+      await pool.execute('DELETE FROM generation_slot_claims WHERE slot_id=?', [id]);
+      await pool.execute('DELETE FROM slots WHERE id=?', [id]);
+    }
     if (savedSettings) await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1', [typeof savedSettings.settings_json === 'string' ? savedSettings.settings_json : JSON.stringify(savedSettings.settings_json), typeof savedSettings.knowledge_json === 'string' ? savedSettings.knowledge_json : JSON.stringify(savedSettings.knowledge_json), savedSettings.automation_enabled]);
     if (savedConfig) await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1', [savedConfig.version,savedConfig.profile_id,savedConfig.account_id,savedConfig.model,savedConfig.status,savedConfig.pending_profile_id,savedConfig.pending_account_id,savedConfig.pending_model,savedConfig.updated_by]);
     else if (savedSettings) await pool.execute('DELETE FROM integration_config WHERE id=1');
