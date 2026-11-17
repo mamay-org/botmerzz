@@ -89,6 +89,12 @@ function confirmedCompletedAt(status, post, expectedAccountId, observedAt) {
   return Number.isFinite(observedTime.getTime()) ? observedTime.toISOString() : null;
 }
 
+function slotMatchesOriginalTarget(slot, profileId, accountId) {
+  const targets = slot?.requestPayload?.targets;
+  return slot?.profileId === profileId && slot?.accountId === accountId
+    && Array.isArray(targets) && targets.length === 1 && targets[0]?.account_id === accountId;
+}
+
 async function providerOutcomeStatus(repository, slot, post, expectedAccountId) {
   const status = providerSlotStatus(post, expectedAccountId);
   if (post.status !== 'canceled' || !slot?.automationSessionId || typeof repository.isAutomationSessionActive !== 'function') return status;
@@ -161,8 +167,7 @@ async function reconcileUnsettled({ repository, publisher, publisherForProfile, 
   const listedSlots = await repository.listUnsettledSlots(hasTargetScope ? { profileId, accountId } : undefined);
   const selectedIds = Array.isArray(slotIds) ? new Set(slotIds.map(String)) : null;
   const slots = listedSlots.filter((slot) => (!selectedIds || selectedIds.has(String(slot.id)))
-    && (!hasTargetScope || slot.profileId === profileId && slot.accountId === accountId
-      && slot.requestPayload?.targets?.length === 1 && slot.requestPayload.targets[0]?.account_id === accountId));
+    && (!hasTargetScope || slotMatchesOriginalTarget(slot, profileId, accountId)));
   let checked = 0;
   for (const slot of slots) {
     if (!slot.providerPostId && (!slot.requestPayload || !slot.idempotencyKey)) continue;
@@ -209,8 +214,7 @@ async function reconcileSwitch({ repository, publisherForProfile, profileId, acc
   if (!repository || typeof publisherForProfile !== 'function' || !profileId || !accountId) return 0;
   const slots = await repository.listUnsettledSlots({ profileId, accountId });
   for (const slot of slots) {
-    if (slot.profileId !== profileId || slot.accountId !== accountId
-      || slot.requestPayload?.targets?.length !== 1 || slot.requestPayload.targets[0]?.account_id !== accountId
+    if (!slotMatchesOriginalTarget(slot, profileId, accountId)
       || !slot.providerPostId || !['scheduled', 'draft'].includes(slot.providerStatus)) continue;
     try {
       const publisher = await publisherForProfile(profileId);
@@ -224,7 +228,10 @@ async function reconcileSwitch({ repository, publisherForProfile, profileId, acc
       await repository.updateSlot(slot.id, { status: 'canceled', providerStatus: 'canceled', completedAt: clock().toISOString() });
     } catch { /* Preserve uncertain state; operator can retry reconciliation. */ }
   }
-  return reconcileUnsettled({ repository, publisherForProfile, notifier, logger, profileId, accountId, slotIds: slots.map(slot => slot.id), clock });
+  // Keep ambiguous rows in the unscoped blocker query used by switch resume,
+  // but only recover/reconcile stale rows with an exact immutable target.
+  const recoverableSlotIds = slots.filter(slot => slotMatchesOriginalTarget(slot, profileId, accountId)).map(slot => slot.id);
+  return reconcileUnsettled({ repository, publisherForProfile, notifier, logger, profileId, accountId, slotIds: recoverableSlotIds, clock });
 }
 
 async function runDispatcher({

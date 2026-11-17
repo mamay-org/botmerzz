@@ -750,19 +750,22 @@ test('switch reconciliation leaves scheduled blockers when provider GET or DELET
   const providerCalls = [];
   const scopes = [];
   const recoveryScopes = [];
+  const updates = [];
   const slots = [
     { id: 'wrong-get', profileId: 'profile-old', accountId: 'acct-old', providerPostId: 'post-get-expected', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-old' }] } },
     { id: 'wrong-delete', profileId: 'profile-old', accountId: 'acct-old', providerPostId: 'post-delete-expected', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-old' }] } },
+    { id: 'legacy-unattributed', profileId: null, accountId: null, providerPostId: null, providerStatus: 'unknown', status: 'publishing', requestPayload: null },
+    { id: 'malformed-target', profileId: 'profile-old', accountId: 'acct-old', providerPostId: null, providerStatus: 'unknown', status: 'publishing', requestPayload: { targets: [{ account_id: 'acct-other' }] } },
     { id: 'other-account', profileId: 'profile-other', accountId: 'acct-other', providerPostId: 'post-other', providerStatus: 'scheduled', requestPayload: { targets: [{ account_id: 'acct-other' }] } },
   ];
   const repository = {
     listUnsettledSlots: async (scope) => {
       scopes.push(scope);
-      return slots.filter(slot => slot.profileId === scope?.profileId && slot.accountId === scope?.accountId);
+      return slots;
     },
     recoverStalePublishing: async ({ slotIds }) => { recoveryScopes.push(slotIds); return []; },
     recordCancellation: async (...args) => calls.push(['recordCancellation', ...args]),
-    updateSlot: async (...args) => calls.push(['updateSlot', ...args]),
+    updateSlot: async (...args) => { updates.push(args); calls.push(['updateSlot', ...args]); },
     isAutomationSessionActive: async () => false,
   };
   const publisherForProfile = async (profileId) => ({
@@ -774,6 +777,7 @@ test('switch reconciliation leaves scheduled blockers when provider GET or DELET
   assert.ok(scopes.every((scope) => scope?.profileId === 'profile-old' && scope?.accountId === 'acct-old'));
   assert.deepEqual(recoveryScopes, [['wrong-get', 'wrong-delete']], 'stale recovery must be fenced to the outgoing account slots');
   assert.deepEqual(providerCalls.filter((call) => call[0] === 'cancel').map((call) => call[1]), ['post-delete-expected']);
+  assert.ok(updates.every(([id]) => ['wrong-get', 'wrong-delete'].includes(id)), 'ambiguous and other-account slots are not reconciled');
   assert.equal(calls.some((call) => call[0] === 'recordCancellation' || call[0] === 'updateSlot' && call[2]?.status === 'canceled'), false);
 });
 
