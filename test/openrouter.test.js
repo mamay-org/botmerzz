@@ -67,3 +67,17 @@ test("OpenRouter transport failures discard request secrets and response bodies"
   });
   assert.equal(calls, 1);
 });
+
+test('OpenRouter records safe HTTP and transport diagnostics without retaining provider error text', async () => {
+  const api = createOpenRouterClient({ apiKey: 'sk-or-secret', model: 'model', http: { request: async () => {
+    throw Object.assign(new Error('sk-or-secret timeout'), { code: 'ETIMEDOUT', config: { headers: { Authorization: 'sk-or-secret' } } });
+  } } });
+  await assert.rejects(api.generate({ system: 'system', user: 'user' }), (error) => {
+    assert.equal(error.code, 'network_error');
+    assert.equal(error.status, null);
+    assert.equal(error.transportCode, 'ETIMEDOUT');
+    assert.equal(error.timedOut, true);
+    assert.doesNotMatch(inspect(error), /sk-or-secret|timeout|Authorization/);
+    return true;
+  });
+});

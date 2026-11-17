@@ -154,7 +154,7 @@ docker compose \
   run --rm --no-deps app npm run admin:create
 ```
 
-Enter the new administrator email and password interactively. Password entry is hidden; the command does not create default credentials. Do not run `admin:create` on every deploy. The application migration command applies migrations in filename order, including 011–019, and records successful versions under the existing MySQL advisory lock. Migration 018's partial-DDL recovery behavior remains part of the app.
+Enter the new administrator email and password interactively. Password entry is hidden; the command does not create default credentials. Do not run `admin:create` on every deploy. The application migration command applies migrations in filename order, including 011–020, and records successful versions under the existing MySQL advisory lock. Migrations 018 and 020 are restartable after partial DDL because MySQL implicitly commits DDL.
 
 The initial administrator onboarding checklist is:
 
@@ -206,9 +206,9 @@ These checks use only health GET requests. Confirm that admin redirects remain o
 
 Deployments may briefly stop the app while migrations and replacement run. The app is built locally with a full immutable SHA tag. MySQL is not recreated unless its Compose definition changes; the routine workflow updates only the intended app service after migrations.
 
-The workflow checks health and image revision before moving `active`. On a failed build, DB startup, migration, app startup, or readiness check, the job fails and does not promote the candidate release pointer. It does not delete the previous image, restore an old database snapshot, or restart an old app against a possibly changed schema. Inspect the failed run and local DB/app state before an operator chooses a recovery action.
+The workflow checks health and image revision before moving `active`. On a failed build, DB startup, migration, app startup, or readiness check, the job fails and does not promote the candidate release pointer. If the candidate app was started, the deployment script attempts to stop it before exiting; check the failed run and confirm the container is stopped if that cleanup reports a warning. It does not delete the previous image, restore an old database snapshot, or restart an old app against a possibly changed schema. Inspect the failed run and local DB/app state before an operator chooses a recovery action.
 
-If the new schema is backward-compatible with the previous app, an operator can set the Compose file to the SHA in `previous-release` and recreate only the app service with `--no-deps`. Confirm the previous image still exists locally and verify the database remains healthy. If a migration is backward-incompatible, an old image alone is not a rollback. Keep writers stopped and use a restore rehearsed against a separate volume before considering restoration of production data. Never automatically overwrite newer publishing history.
+For an unpromoted upgrade where an `active` release existed before deployment, the pointer still identifies the last successfully promoted release. Use it to identify the pre-deployment SHA; do not use `previous-release`, which records the release preceding the most recent successful promotion and may be older. If the new schema is backward-compatible with the active app, an operator can recreate only the app service from the release referenced by `active` with `--no-deps`. Confirm the image still exists locally and verify the database remains healthy. A failed first bootstrap has no prior `active` release to restore; confirm the candidate is stopped, keep the persistent database volume, and follow an operator-led bootstrap recovery after inspecting the migration and database state. If a migration is backward-incompatible, an old image alone is not a rollback. Keep writers stopped and use a restore rehearsed against a separate volume before considering restoration of production data. Never automatically overwrite newer publishing history.
 
 The app uses the same persistent MySQL state for schedules, automation settings, idempotency records, admin sessions, and Learning data. Scheduler behavior and content state survive app container replacement. If explicitly enabled later, the scheduler may tick immediately at app startup; do not change missed-slot or catch-up behavior during a release.
 
@@ -226,6 +226,8 @@ The Docker volume is persistence, not a backup. Prepare a routine backup job own
 No real database or environment backup is created by this change. A Proxmox snapshot alone is not a verified MySQL restore. For full recovery, restore the encrypted `.env`, source/release metadata or repository revision, and a tested MySQL backup; preserve publishing/idempotency state. Do not restore a stale snapshot over newer history without explicit owner approval.
 
 ## Recovery guide
+
+For `unknown` publication outcomes, audited administrator closure, verified provider-ID linking, and account-switch recovery, follow the [Publication Resolution Runbook](publication-resolution-runbook.md). An `admin_closed_unknown` result remains explicitly unverified and is never replayed; app rollback does not reverse migration 020.
 
 | Failure | Safe first checks |
 |---|---|
@@ -249,7 +251,7 @@ Use this order for the first release. The repository work is prepared before the
 2. Generate new DB credentials directly on the LXC and write the full initial runtime configuration to `/opt/botmerzz/.env`. Verify mode `0600` without displaying the file. Keep the scheduler and all six Learning execution flags false.
 3. Confirm the already-installed runner is online, idle, able to use Docker, and has custom label `botmerzz-lxc-10027`. Do not reinstall/re-register it.
 4. Open the homelab deployment PR. Review the diff and wait for hosted CI, including fresh-schema MySQL tests, Docker build, workflow checks, and deployment-script tests. No deployment occurs from the PR.
-5. After explicit owner approval, merge the PR to `main`. The workflow checks the exact SHA and current `main` head, builds the local image, creates/starts the new `botmerzz_mysql_data` volume and MySQL 8.4 database, applies migrations 001–019, starts the app, and verifies readiness/revision. A failed check leaves the release unpromoted and does not delete DB state or the prior image.
+5. After explicit owner approval, merge the PR to `main`. The workflow checks the exact SHA and current `main` head, builds the local image, creates/starts the new `botmerzz_mysql_data` volume and MySQL 8.4 database, applies migrations 001–020, starts the app, and verifies readiness/revision. A failed check leaves the release unpromoted and does not delete DB state or the prior image.
 6. After a successful first deployment, run `npm run admin:create` using the Compose command above. Use a new unique admin password; entry is hidden and no default account is created.
 7. Verify local readiness on LXC 10027 and LAN reachability from LXC 10080 using the commands in [Health and ingress verification](#health-and-ingress-verification).
 8. Check the existing Traefik Host-header route from LXC 10080, then check the public HTTPS health URL. These are read-only GET requests; no provider or publishing call is needed.

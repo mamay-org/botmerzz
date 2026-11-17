@@ -60,6 +60,8 @@ Live deployment and public ingress have not been verified by this repository cha
 
 The scheduler is in-process and runs only with `SCHEDULER_ENABLED=true`. It polls every 60 seconds by default (minimum 15 seconds); this is separate from the admin-configured posting interval. Enabling automation requests the first dispatch immediately. Missed slots are skipped without catch-up, and unresolved provider outcomes block later publishing until reconciled. Keep automation off until the intended Tebar account, brand facts, schedule, and provider settings have been reviewed.
 
+For audited resolution of an `unknown` publication and account-switch recovery, use the [Publication Resolution Runbook](docs/publication-resolution-runbook.md). Manual closure does not verify that the provider rejected a post and does not enable automation.
+
 The AI Learning Center remains available in the application, but its six execution flags are false for initial homelab setup. Do not activate rules or run paid model evaluations as part of deployment validation.
 
 For product requirements and architecture, see [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), and [operations](docs/OPERATIONS.md).

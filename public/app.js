@@ -144,6 +144,7 @@
     ORIGIN_REJECTED: 'Permintaan ditolak karena asal halaman tidak cocok. Muat ulang dashboard lalu coba lagi.',
     RATE_LIMITED: 'Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.',
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
+    AUTOMATION_PROVIDER_HOLD: 'Otomasi tertahan karena akses provider. Buka Integrasi untuk melihat penyebab dan cara pemulihan.',
     ONBOARDING_INCOMPLETE: 'Lengkapi brand, hashtag, tautan top-up dan jual akun, koneksi Threads, serta penyedia AI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
     CONFIG_CONFLICT: 'Konfigurasi sudah berubah. Muat ulang konfigurasi dan periksa lagi; isian Anda tetap tersimpan di form.',
@@ -163,6 +164,13 @@
     CONFIG_VERSION_NOT_RESTORABLE: 'Versi ini tidak dapat dipulihkan karena informasinya belum lengkap.',
     CONFIG_UNAVAILABLE: 'Konfigurasi belum dapat dibaca. Coba lagi atau hubungi administrator server.',
     CONFIG_NOT_LOADED: 'Muat ulang konfigurasi sebelum melanjutkan.',
+    PUBLICATION_NOT_FOUND: 'Slot tidak ditemukan. Muat ulang konfigurasi untuk melihat daftar terbaru.',
+    PUBLICATION_STATE_CONFLICT: 'Status slot sudah berubah. Muat ulang konfigurasi dan periksa kembali.',
+    PUBLICATION_REQUEST_CONFLICT: 'ID permintaan sudah dipakai dengan data berbeda. Batalkan dialog dan periksa kembali slot.',
+    PUBLICATION_TARGET_MISMATCH: 'Tebar tidak mengonfirmasi post yang terbit di akun Threads asal. Periksa kembali ID post dan akun.',
+    PROVIDER_POST_ALREADY_LINKED: 'ID post Tebar sudah terkait dengan slot lain. Periksa riwayat sebelum melanjutkan.',
+    PUBLICATION_VERIFICATION_UNAVAILABLE: 'Verifikasi post Tebar belum tersedia. Periksa koneksi provider lalu coba lagi.',
+    PUBLICATION_RECONCILIATION_UNAVAILABLE: 'Pemeriksaan status Tebar belum berhasil. ID post tetap tersimpan; coba lagi nanti.',
   };
   const fieldLabels = {
     'brand.name': 'nama brand', 'brand.voice': 'gaya komunikasi', 'brand.contentDirection': 'arahan konten AI',
@@ -274,12 +282,18 @@
     publishing: 'Sedang diterbitkan', published: 'Berhasil diterbitkan',
     failed: 'Gagal', skipped: 'Dilewati', canceled: 'Dibatalkan',
     partial: 'Sebagian berhasil', unknown: 'Belum diketahui', scheduled: 'Terjadwal',
+    admin_closed_unknown: 'Ditutup admin tanpa verifikasi',
   };
   const activityLabels = {
     post_published: 'Posting berhasil diterbitkan', publish_accepted: 'Posting diterima penyedia',
     publish_failed: 'Penerbitan gagal', publish_outcome_unknown: 'Status penerbitan belum diketahui',
     ai_generation_failed: 'Pembuatan konten AI gagal', automation_paused: 'Otomasi dijeda',
     slot_skipped: 'Jadwal posting dilewati', post_cancellation: 'Pembatalan posting',
+    'publication.close_unverified': 'Slot ditutup admin tanpa verifikasi',
+    'publication.link_provider_post': 'ID post Tebar dikaitkan oleh admin',
+    publication_close_unverified: 'Slot ditutup admin tanpa verifikasi',
+    publication_link_provider_post: 'ID post Tebar dikaitkan oleh admin',
+    provider_hold_created: 'Akses provider perlu diperiksa',
   };
   function addPasswordToggle(input) {
     if (!input?.parentNode || input.dataset.visibilityToggle === 'ready') return;
@@ -814,6 +828,303 @@
     if (error?.code === 'CONFIG_NOT_LOADED') return 'Muat ulang konfigurasi sebelum melanjutkan.';
     return errorText(error);
   }
+  const publicationActions = {
+    'close-unverified': {
+      title: 'Close as Unverified — Not Found',
+      guidance: 'Postingan masih mungkin muncul terlambat. Tutup slot hanya setelah riwayat Tebar dan Threads pada akun asal diperiksa. BotMerzz akan melewati slot ini tanpa mengirim ulang.',
+      confirmation: 'Saya telah memeriksa akun asal dan memahami bahwa postingan masih mungkin muncul terlambat.',
+      submit: 'Tutup tanpa verifikasi',
+      success: 'Slot ditutup tanpa verifikasi. Jika pergantian akun masih menunggu, periksa slot lain lalu pilih Lanjutkan pemeriksaan.',
+    },
+    'link-provider-post': {
+      title: 'Kaitkan ID post Tebar',
+      guidance: 'Cocokkan caption dan waktu publikasi terlebih dahulu. Server akan meminta Tebar mengonfirmasi bahwa ID ini sudah terbit pada profile dan akun Threads asal.',
+      confirmation: 'Saya telah mencocokkan ID post dengan caption, waktu, dan akun asal slot ini.',
+      submit: 'Verifikasi dan kaitkan ID',
+      success: 'ID post Tebar dikaitkan. Periksa status slot dan lanjutkan pergantian akun jika semua slot sudah selesai.',
+    },
+  };
+
+  function publicationNode(tag, content, className) {
+    const node = document.createElement(tag);
+    if (content !== undefined) node.textContent = content;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function publicationDate(value) {
+    const time = value && new Date(value);
+    return time && Number.isFinite(time.getTime())
+      ? time.toLocaleString('id-ID', { timeZone: 'Asia/Kuala_Lumpur', timeZoneName: 'short' })
+      : 'Tidak tersedia';
+  }
+
+  function renderProviderHolds(holds = [], configuration = {}) {
+    const renderHolds = (selector, entries) => {
+      const target = $(selector);
+      target.replaceChildren(...entries.map(({ provider, profileId, accountId, reasonCode }) => {
+        if (provider === 'openrouter') return publicationNode('p', `OpenRouter ditahan untuk seluruh akun (${reasonCode}). Perbaiki akses OpenRouter, lalu pilih Verifikasi Model dan Muat ulang model di tab AI.`);
+        const active = profileId === configuration.profileId && accountId === configuration.accountId;
+        const recovery = active ? 'Perbaiki akses akun lalu pilih Periksa akun aktif.' : 'Verifikasi pasangan ini sebelum menggunakannya kembali.';
+        return publicationNode('p', `Tebar ditahan untuk profile ${profileId}, akun ${accountId} (${reasonCode}). ${recovery}`);
+      }));
+      target.hidden = entries.length === 0;
+    };
+    const relevant = Array.isArray(holds) ? holds.filter((hold) => ['openrouter', 'tebar'].includes(hold?.provider)) : [];
+    renderHolds('#integration-provider-holds', relevant);
+    renderHolds('#ai-provider-holds', relevant.filter((hold) => hold.provider === 'openrouter'));
+  }
+
+  function openPublicationResolution(slot, action, lateLink = false) {
+    const form = $('#publication-resolution-form');
+    const link = action === 'link-provider-post';
+    const copy = lateLink ? {
+      title: 'Kaitkan publikasi yang muncul terlambat',
+      guidance: 'Slot ini sudah ditutup. Jika post kemudian ditemukan di Tebar, masukkan ID post dan pastikan post sudah terbit pada akun Threads asal. Server hanya melakukan pemeriksaan GET; tindakan ini tidak menerbitkan ulang post.',
+      confirmation: 'Saya telah mencocokkan ID post, caption, waktu, dan akun Threads asal serta memahami post tidak akan dikirim ulang.',
+      submit: 'Verifikasi tanpa mengirim ulang',
+    } : publicationActions[action];
+    form.reset();
+    state.publicationResolution = { slotId: slot.id, action, lateLink };
+    $('#publication-resolution-title').textContent = copy.title;
+    $('#publication-resolution-target').textContent = `Slot ${slot.id} · Profile ${slot.profileId || '—'} · Akun ${slot.accountId || '—'}`;
+    $('#publication-resolution-guidance').textContent = copy.guidance;
+    $('#publication-resolution-confirm-label').textContent = copy.confirmation;
+    $('#publication-resolution-submit').textContent = copy.submit;
+    $('#publication-resolution-error').hidden = true;
+    $('#publication-resolution-result').hidden = true;
+    $('#publication-provider-post-field').hidden = !link;
+    form.elements.providerPostId.required = link;
+    $('#publication-resolution-dialog').showModal();
+  }
+
+  function renderPublicationCard(slot, lateLink = false) {
+    const card = publicationNode('article', undefined, 'integration-history-item publication-card stack');
+    const title = publicationNode('h3', `Slot ${slot.id}`);
+    const fields = publicationNode('dl', undefined, 'integration-summary');
+    for (const [label, value] of [
+      ['Profile asal', slot.profileId], ['Akun Threads asal', slot.accountId],
+      ['Waktu percobaan', publicationDate(slot.publishStartedAt)], ['Waktu terjadwal', publicationDate(slot.scheduledAt)],
+      ['Status slot', statusLabels[slot.status] || slot.status], ['Status Tebar', slot.providerStatus],
+      ['Kode error', slot.errorCode], ['ID post Tebar', slot.providerPostId],
+    ]) {
+      const field = publicationNode('div');
+      field.append(publicationNode('dt', label), publicationNode('dd', value || '—'));
+      fields.append(field);
+    }
+    card.append(title, fields, publicationNode('p', slot.caption || 'Caption tidak tersedia.', 'publication-text'));
+    if (lateLink) {
+      if (slot.lateLinkEligible !== true || !slot.profileId || !slot.accountId) {
+        card.append(publicationNode('p', 'Target asal belum lengkap atau tidak cocok dengan riwayat slot. Periksa catatan publikasi dan pasangan akun asal di server.', 'muted'));
+        return card;
+      }
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const button = publicationNode('button', 'Kaitkan ID post tanpa mengirim ulang', 'button quiet');
+      button.type = 'button';
+      button.setAttribute('aria-haspopup', 'dialog');
+      button.addEventListener('click', () => openPublicationResolution(slot, 'link-provider-post', true));
+      actions.append(button);
+      card.append(publicationNode('p', 'Slot ini sudah ditutup tanpa verifikasi. Post yang ditemukan kemudian dapat ditautkan setelah pemeriksaan.', 'muted'), actions);
+    } else if (slot.status === 'unknown' && slot.providerPostId == null) {
+      if (slot.resolutionEligible === false) {
+        card.append(publicationNode('p', 'Slot ini belum memenuhi syarat untuk keputusan admin. Periksa status dan catatan publikasi di server.', 'muted'));
+        return card;
+      }
+      const targetValid = slot.resolutionTargetValid !== false && Boolean(slot.profileId && slot.accountId);
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const availableActions = targetValid ? Object.keys(publicationActions) : ['close-unverified'];
+      for (const action of availableActions) {
+        const button = publicationNode('button', publicationActions[action].title, 'button quiet');
+        button.type = 'button';
+        button.setAttribute('aria-haspopup', 'dialog');
+        button.addEventListener('click', () => openPublicationResolution(slot, action));
+        actions.append(button);
+      }
+      if (!targetValid) card.append(publicationNode('p', 'Target asal belum lengkap atau tidak cocok dengan riwayat slot. Slot hanya dapat ditutup sebagai tidak terverifikasi setelah pemeriksaan dan pencatatan bukti; ID post tidak dapat dikaitkan.', 'muted'));
+      card.append(actions);
+    } else if (slot.status === 'unknown' && typeof slot.providerPostId === 'string' && slot.providerPostId) {
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const button = publicationNode('button', 'Periksa ulang status Tebar', 'button quiet');
+      button.type = 'button';
+      button.addEventListener('click', () => reconcilePublicationSlot(slot, button));
+      actions.append(button);
+      card.append(publicationNode('p', `ID post sudah terkait. Pemeriksaan GET tetap memakai profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}. Jika status belum diketahui, pemeriksaan dapat dicoba lagi.`, 'muted'), actions);
+    } else {
+      card.append(publicationNode('p', 'Slot ini menunggu rekonsiliasi status dari Tebar. Periksa post pada akun asal sebelum melanjutkan.', 'muted'));
+    }
+    return card;
+  }
+
+  async function reconcilePublicationSlot(slot, button) {
+    return withPending(button, async () => {
+      const notice = $('#publication-resolution-result');
+      notice.hidden = true;
+      try {
+        const { reconciliation } = await api(`/api/publication-resolution/${encodeURIComponent(slot.id)}/reconcile`, { method: 'POST' });
+        const refreshed = await loadPublicationResolution(state.integrationLoad, state.closedSlotSearchId || '');
+        const scope = `profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}`;
+        notice.textContent = reconciliation?.pending === true || reconciliation?.status === 'unknown'
+          ? `Tebar belum memastikan status pada ${scope}. ID post tetap terkait; coba pemeriksaan GET lagi nanti.`
+          : `Pemeriksaan GET selesai pada ${scope}. Status slot: ${reconciliation?.status || 'diperbarui'}.`;
+        if (!refreshed) notice.textContent += ' Daftar slot belum dapat diperbarui.';
+        notice.hidden = false;
+      } catch (error) {
+        notice.textContent = `Pemeriksaan status belum berhasil pada profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}. ID post tetap terkait; coba lagi nanti. ${errorText(error)}`;
+        notice.hidden = false;
+      }
+    }, 'Memeriksa…');
+  }
+
+  function renderPublicationResolution({ slots = [], closedSlots = [], events = [] } = {}, closedSlotId = '') {
+    const cards = slots.map((slot) => renderPublicationCard(slot));
+    const closedCards = closedSlots.map((slot) => renderPublicationCard(slot, true));
+    $('#publication-blockers').replaceChildren(...cards);
+    $('#publication-blocker-count').textContent = cards.length
+      ? `${cards.length} slot perlu diperiksa.`
+      : 'Tidak ada slot yang masih menghambat rekonsiliasi publikasi.';
+    $('#publication-closed-blockers').replaceChildren(...closedCards);
+    $('#publication-closed-blocker-count').textContent = closedSlotId
+      ? closedCards.length ? `Slot ID ${closedSlotId} ditemukan. Publikasi terlambat dapat dikaitkan setelah verifikasi.` : `Slot ID ${closedSlotId} tidak ditemukan sebagai publikasi tertutup yang masih dapat ditindaklanjuti.`
+      : closedCards.length ? `${closedCards.length} slot terbaru telah ditutup; publikasi yang ditemukan kemudian dapat dikaitkan setelah verifikasi.` : 'Tidak ada publikasi terlambat dari slot yang ditutup dalam 100 slot terbaru.';
+    $('#publication-resolution-audit').hidden = events.length === 0;
+    $('#publication-resolution-history').replaceChildren(...events.map((event) => {
+      const row = publicationNode('article', undefined, 'integration-history-item publication-card stack');
+      const actor = event.actorEmail || event.actorId || '—';
+      const action = event.action === 'link_provider_post' ? 'Pengaitan ID post Tebar' : 'Penutupan tanpa verifikasi';
+      row.append(
+        publicationNode('h3', action),
+        publicationNode('strong', `Slot ${event.slotId} · ${statusLabels[event.previousStatus] || event.previousStatus} → ${statusLabels[event.newStatus] || event.newStatus}`),
+        publicationNode('p', `${publicationDate(event.createdAt)} · Admin ${actor}`),
+        publicationNode('p', `Alasan: ${event.reason}`, 'publication-text'),
+        publicationNode('p', `Bukti: ${event.evidenceSummary}`, 'publication-text'),
+      );
+      if (event.providerPostId) row.append(publicationNode('p', `ID post Tebar: ${event.providerPostId}`));
+      return row;
+    }));
+  }
+
+  async function loadPublicationResolution(integrationLoad, closedSlotId = '') {
+    state.publicationLoadRequest = (state.publicationLoadRequest || 0) + 1;
+    const request = state.publicationLoadRequest;
+    try {
+      const path = closedSlotId
+        ? `/api/publication-resolution/slots?slotId=${encodeURIComponent(closedSlotId)}`
+        : '/api/publication-resolution/slots';
+      const data = await api(path);
+      if (request !== state.publicationLoadRequest || integrationLoad !== state.integrationLoad) return false;
+      if (!Array.isArray(data.slots) || !Array.isArray(data.closedSlots) || !Array.isArray(data.events)) throw new Error('Invalid publication resolution response');
+      renderPublicationResolution(data, closedSlotId);
+      return true;
+    } catch {
+      if (request !== state.publicationLoadRequest || integrationLoad !== state.integrationLoad) return false;
+      renderPublicationResolution();
+      $('#publication-blocker-count').textContent = 'Daftar slot belum dapat dibaca. Pilih Muat ulang konfigurasi untuk mencoba kembali.';
+      if (closedSlotId) $('#publication-closed-blocker-count').textContent = `Pencarian Slot ID ${closedSlotId} belum dapat dimuat.`;
+      return false;
+    }
+  }
+
+  $('#publication-closed-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const slotId = form.elements.slotId.value.trim();
+    const error = $('#publication-closed-search-error');
+    error.hidden = true;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slotId)) {
+      error.textContent = 'Masukkan Slot ID lengkap dalam format UUID.';
+      error.hidden = false;
+      return;
+    }
+    state.closedSlotSearchId = slotId.toLowerCase();
+    return withPending(event.submitter || $('button[type="submit"]', form), async () => {
+      if (!await loadPublicationResolution(state.integrationLoad, state.closedSlotSearchId)) {
+        error.textContent = 'Pencarian Slot ID belum berhasil. Coba lagi.';
+        error.hidden = false;
+      }
+    }, 'Mencari…', form);
+  });
+  $('#publication-closed-search-reset').addEventListener('click', () => {
+    state.closedSlotSearchId = '';
+    $('#publication-closed-search-form').elements.slotId.value = '';
+    $('#publication-closed-search-error').hidden = true;
+    return loadPublicationResolution(state.integrationLoad);
+  });
+
+  $('#publication-resolution-cancel').addEventListener('click', () => $('#publication-resolution-dialog').close());
+  $('#publication-resolution-dialog').addEventListener('cancel', (event) => {
+    if ($('#publication-resolution-form').dataset.pending === 'true') event.preventDefault();
+  });
+  $('#publication-resolution-dialog').addEventListener('close', (event) => {
+    if (!event.currentTarget.open) state.publicationResolution = null;
+  });
+  $('#publication-resolution-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const operation = state.publicationResolution;
+    if (!operation) return;
+    const form = event.currentTarget;
+    const errorNotice = $('#publication-resolution-error');
+    errorNotice.hidden = true;
+    const reason = form.elements.reason.value.trim();
+    const evidenceSummary = form.elements.evidenceSummary.value.trim();
+    const providerPostId = form.elements.providerPostId.value.trim();
+    const link = operation.action === 'link-provider-post';
+    if (!form.elements.confirmed.checked || reason.length < 10 || reason.length > 1000
+      || evidenceSummary.length < 10 || evidenceSummary.length > 2000
+      || (link && !/^[A-Za-z0-9_-]{1,128}$/.test(providerPostId))) {
+      errorNotice.textContent = 'Isi alasan dan ringkasan bukti, periksa ID post jika diperlukan, lalu centang konfirmasi.';
+      errorNotice.hidden = false;
+      return;
+    }
+    const body = { reason, evidenceSummary, ...(link ? { providerPostId, confirmOriginalTarget: true } : { confirmDelayedPublication: true }) };
+    const fingerprint = JSON.stringify(body);
+    return withPending($('#publication-resolution-submit'), async () => {
+      if (typeof crypto.randomUUID !== 'function') {
+        errorNotice.textContent = 'Buka dashboard melalui HTTPS untuk menyimpan keputusan.';
+        errorNotice.hidden = false;
+        return;
+      }
+      if (fingerprint !== operation.fingerprint) {
+        operation.fingerprint = fingerprint;
+        operation.requestId = crypto.randomUUID();
+      }
+      try {
+        const slotId = encodeURIComponent(operation.slotId);
+        const payload = JSON.stringify({ requestId: operation.requestId, ...body });
+        const { resolution } = link
+          ? await api(`/api/publication-resolution/${slotId}/link-provider-post`, { method: 'POST', body: payload })
+          : await api(`/api/publication-resolution/${slotId}/close-unverified`, { method: 'POST', body: payload });
+        if (resolution?.requestId !== operation.requestId || resolution.slotId !== operation.slotId) {
+          throw new Error('Missing publication resolution receipt');
+        }
+      } catch (error) {
+        if (state.publicationResolution !== operation) return;
+        const uncertain = !error?.status || (error.status >= 500 && error.code !== 'PUBLICATION_VERIFICATION_UNAVAILABLE');
+        let message = errorText(error);
+        if (uncertain) message = 'Hasil penyimpanan belum dapat dipastikan. Coba lagi dengan isian yang sama untuk memeriksa permintaan ini.';
+        else if (!link && error.code === 'PUBLICATION_TARGET_MISMATCH') message = 'Target asal berubah atau belum lengkap. Periksa catatan slot sebelum menutupnya.';
+        errorNotice.textContent = message;
+        errorNotice.hidden = false;
+        return;
+      }
+      if (state.publicationResolution !== operation) return;
+      state.publicationResolution = null;
+      $('#publication-resolution-dialog').close();
+      form.reset();
+      $('#publication-blockers-title').focus();
+      const session = state.csrf;
+      const updated = await loadIntegrations({ verification: state.integrationVerification }).catch(() => false);
+      const dashboard = updated && await refresh().catch(() => false);
+      if (session !== state.csrf) return;
+      const result = $('#publication-resolution-result');
+      const success = operation.lateLink
+        ? 'Publikasi terlambat dikaitkan tanpa mengirim ulang. Rekonsiliasi status dilanjutkan melalui pemeriksaan GET.'
+        : publicationActions[operation.action].success;
+      result.textContent = success
+        + (updated && dashboard ? '' : ' Tampilan terkini belum lengkap. Muat ulang konfigurasi.');
+      result.hidden = false;
+    }, 'Memeriksa…', form);
+  });
+
   function modelReasonText(reason) {
     return ({
       TEXT_MODALITY_UNSUPPORTED: 'Model tidak menerima dan menghasilkan teks.',
@@ -1033,9 +1344,11 @@
   }
   async function loadIntegrations({ verification = null } = {}) {
     const request = state.integrationLoad = (state.integrationLoad || 0) + 1;
+    const publications = loadPublicationResolution(request, state.closedSlotSearchId || '');
     state.integrations = null;
     state.integrationVerification = null;
     syncIntegrationControls();
+    renderProviderHolds();
     hide('#integration-account-preview');
     for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia';
     $('#integration-check-active').disabled = true;
@@ -1056,6 +1369,7 @@
     if (request !== state.integrationLoad) return false;
     const configuration = result.configuration || {};
     state.integrations = result;
+    renderProviderHolds(result.providerHolds, configuration);
     if (state.modelValidation && state.modelValidation.version !== configuration.version) {
       state.modelValidation = null;
       renderModelValidation('UNVERIFIED', 'Konfigurasi berubah. Verifikasi model kembali sebelum menyimpan.');
@@ -1102,7 +1416,8 @@
     const history = Array.isArray(result.history) ? result.history : [];
     renderIntegrationHistory(history, 'account');
     renderIntegrationHistory(history, 'model');
-    return true;
+    await publications;
+    return request === state.integrationLoad;
   }
 
   $('#integration-account-form').addEventListener('input', () => hide('#integration-account-preview'));
@@ -1283,7 +1598,16 @@
       let logoutError = null;
       try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
       catch (error) { logoutError = error; }
-      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false); }
+      finally {
+        state.publicationResolution = null;
+        $('#publication-resolution-dialog').close();
+        $('#publication-resolution-form').reset();
+        hide('#publication-resolution-result');
+        renderPublicationResolution();
+        $('#publication-blocker-count').textContent = 'Muat konfigurasi untuk melihat slot yang perlu diperiksa.';
+        renderProviderHolds();
+        state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false);
+      }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');
   });

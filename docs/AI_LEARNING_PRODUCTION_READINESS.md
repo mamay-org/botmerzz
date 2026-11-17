@@ -2,9 +2,9 @@
 
 > **Historical VPS/GHCR assessment — superseded.** The technical evidence below records an earlier VPS deployment review and is retained unchanged as historical context. Its target, workflows, credentials, database state, commands, and readiness decisions do not describe the current homelab deployment. The current target and operator instructions are in [Deployment](DEPLOYMENT.md); no live LXC 10027 deployment or ingress verification is claimed here.
 
-## Automatic in-place release preparation — latest
+## Historical in-place release assessment — superseded
 
-The operator chose the existing VPS, Compose project, app service and MySQL volume for both production and testing, with automatic deployment after successful `main` CI and `STAGING_DEPLOY_ENABLED=true`. Temporary app/scheduler downtime and reduced test isolation are accepted. This decision supersedes earlier proposals that every release require a manual GitHub Environment approval; it does not authorize a deployment during this preparation. No GitHub variable or production configuration was changed, and live GitHub branch protection, queued workflows and effective variable values remain unverified.
+The earlier VPS review considered using the existing VPS, Compose project, app service and MySQL volume for production and testing, with deployment after successful `main` CI. That proposal has since been superseded by the homelab deployment configuration on `main`; it is not a current deployment decision and does not authorize deployment or activation of the legacy staging workflow. No GitHub variable or production configuration was changed during that review, and its observations are time-sensitive.
 
 The repository workflow still publishes a digest-pinned image only after successful push CI. CI now provisions disposable MySQL schemas and explicitly executes the migration 018 recovery and Learning upgrade tests that previously skipped. The deploy job checks that its commit is still the current `main` head after admission to the existing non-cancelling concurrency group and fails closed if GitHub cannot be checked. The branch can still advance between that check and app replacement; the check is not atomic with the remote host. Review any older queued runs before the first authorized release.
 

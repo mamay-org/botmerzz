@@ -33,6 +33,7 @@ test('failed notification uses safe diagnostic descriptions and bounded referenc
   assert.match(text, /tidak memenuhi aturan validasi/);
   assert.ok(text.length <= 1200);
   assert.ok(text.endsWith(`Slot ID: ${slotId}`));
+  assert.match(formatSlotNotice({ status: 'failed', slotId, diagnosticCode: 'tebar_not_configured' }), /Penyedia publikasi belum dikonfigurasi/);
 });
 test('daily success rate excludes unconfirmed outcomes and does not claim a next time while paused', () => {
   const text = formatDailyReport({ date: '2026-11-08', published: 4, failed: 1, unknown: 2, categories: { topup: 4 }, automationEnabled: false, nextAt: '2026-11-09T01:00:00Z', affectedSlotIds: [slotId] });
@@ -41,6 +42,13 @@ test('daily success rate excludes unconfirmed outcomes and does not claim a next
   assert.match(text, /Top-up: 4/);
   assert.doesNotMatch(text, /Posting Berikutnya/);
   assert.ok(text.endsWith(`Slot ID: ${slotId}`));
+});
+test('daily report separates admin-closed unknown outcomes from confirmed failures', () => {
+  const text = formatDailyReport({ published: 2, failed: 1, unknown: 1, adminClosedUnknown: 3 });
+  assert.match(text, /Gagal: 1 posting/);
+  assert.match(text, /Belum pasti: 1 posting/);
+  assert.match(text, /Ditutup admin, belum terverifikasi: 3 posting/);
+  assert.match(text, /Success Rate: 67%/);
 });
 test('published caption preserves 500 emoji and pending does not promise automatic reconciliation', () => {
   const caption = '😀'.repeat(500);

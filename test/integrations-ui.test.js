@@ -24,6 +24,14 @@ test('integration tab exposes linked accessible controls and mobile layout', () 
   assert.match(ai, /name="model"/);
   assert.match(html, /id="integration-account-error"[^>]*role="alert"/);
   assert.match(css, /\.integration-summary\{display:grid;grid-template-columns:1fr/);
+  assert.match(integrations, /id="publication-closed-blockers-title"[^>]*>Publikasi terlambat ditemukan/);
+  assert.match(integrations, /id="publication-closed-blockers"/);
+  assert.match(integrations, /id="publication-closed-search-form"[^>]*role="search"/);
+  assert.match(integrations, /id="publication-closed-search-reset"[^>]*>Tampilkan 100 terbaru/);
+  assert.match(integrations, /tidak menerbitkan ulang post/i);
+  assert.match(app, /Periksa ulang status Tebar/);
+  assert.match(app, /akun Threads asal/);
+  assert.match(css, /\.publication-follow-up\{border-color:/);
 });
 
 test('account validation and identity confirmation precede versioned activation', () => {
@@ -141,7 +149,7 @@ test('integration refresh rejects stale responses, clears failed state and prese
   node('#integration-model-form').elements = { model: { value: '' } };
   const requests = [];
   const state = { integrations: null, integrationVerification: null };
-  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, renderModelValidation() {}, updateOpenRouterActions() {}, hide() {} };
+  const context = { state, $: node, api: (path) => path === '/api/dashboard' ? Promise.resolve({ automation: { enabled: true } }) : new Promise((resolve, reject) => requests.push({ resolve, reject })), renderIntegrationHistory() {}, renderModelValidation() {}, updateOpenRouterActions() {}, hide() {}, loadPublicationResolution: async () => true, renderProviderHolds() {} };
   vm.createContext(context);
   const source = section('  function syncIntegrationControls()', "  $('#integration-account-form').addEventListener");
   vm.runInContext(source + '\nthis.loadIntegrations = loadIntegrations;', context);

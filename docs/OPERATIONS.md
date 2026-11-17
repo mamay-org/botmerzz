@@ -14,7 +14,7 @@ The dashboard accepts whole hours and minutes, with a one-minute minimum and a 6
 
 ## Recovery
 
-If readiness fails, inspect database health and application logs first. Restarting the app is safe because schedule claims and publication idempotency are stored in MySQL. The poller skips work missed by more than 15 minutes. A slot with an uncertain outcome and no provider post ID blocks later publishing; do not replay it. Verify it in Tebar and the target Threads account, then resolve the slot through a reviewed operator procedure before resuming automation.
+If readiness fails, inspect database health and application logs first. Restarting the app is safe because schedule claims and publication idempotency are stored in MySQL. The poller skips work missed by more than 15 minutes. A slot with an uncertain outcome and no provider post ID blocks later publishing; do not replay it. Verify it in Tebar and the exact original Threads account, then use the audited dashboard workflow in the [Publication Resolution Runbook](publication-resolution-runbook.md). A manual closure is not provider-confirmed failure; keep automation off until account reconciliation is complete.
 
 ## Emergency pause
 

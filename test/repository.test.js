@@ -145,3 +145,18 @@ test('repository contains atomic scheduling, webhook dedupe, and timezone-safe s
   assert.match(source,/status='sending' AND created_at<DATE_SUB/);
   assert.match(source,/SELECT automation_enabled,settings_json FROM settings WHERE id=1 FOR UPDATE/);
 });
+
+test('daily summary counts admin-closed unknown separately and excludes it from failures and unknown',async()=>{
+  const rows=[
+    {id:'published',status:'published',pillar:'topup'},
+    {id:'failed',status:'failed',pillar:null,error_code:'provider_error'},
+    {id:'unknown',status:'unknown',pillar:null},
+    {id:'closed',status:'admin_closed_unknown',pillar:null,error_code:'network_error'},
+  ];
+  const pool={execute:async(sql)=>{
+    assert.match(sql,/COALESCE\(completed_at,scheduled_at\)/);
+    return [rows];
+  }};
+  const summary=await createRepository(pool).getDailySummaryCounts('2026-11-15','Asia/Kuala_Lumpur');
+  assert.deepEqual(summary,{published:1,failed:1,unknown:1,adminClosedUnknown:1,skipped:0,categories:{topup:1},failures:[{code:'provider_error',count:1}],affectedSlotIds:['failed','unknown','closed']});
+});

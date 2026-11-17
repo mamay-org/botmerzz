@@ -12,17 +12,55 @@ const SAFE_ERROR_CODES = new Set([
   'rate_limited', 'network_error', 'invalid_response', 'provider_error',
   'generation_failed', 'content_validation_failed', 'onboarding_incomplete',
   'automation_paused', 'cancel_failed', 'post_not_editable', 'unknown_outcome',
-  'post_published',
+  'post_published', 'permission_missing', 'profile_not_found',
 ]);
 const SAFE_DIAGNOSTIC_CODES = new Set([
   'invalid_settings', 'approved_content_invalid', 'onboarding_incomplete', 'content_validation_failed',
+  'tebar_not_configured',
   'ai_not_configured', 'ai_invalid_request', 'ai_unauthorized', 'ai_rate_limited',
   'ai_provider_error', 'ai_network_error', 'ai_invalid_response', 'ai_request_failed',
   'content_service_error', 'stale_generation', 'stale_facts',
 ]);
+const PROVIDER_HOLD_CODES = new Set(['unauthorized', 'permission_missing', 'account_expired', 'account_disconnected', 'account_not_found', 'profile_not_found']);
+const SAFE_TRANSPORT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED', 'ERR_BAD_REQUEST', 'ERR_BAD_RESPONSE']);
+const STALE_PUBLISHING_AFTER_MS = 120_000;
 
 function safeCode(value) {
   return SAFE_ERROR_CODES.has(value) ? value : 'system_error';
+}
+
+function isOpenRouterNotConfigured(error) {
+  return error?.code === 'ai_not_configured'
+    || error?.code === 'OPENROUTER_NOT_CONFIGURED'
+    || error?.code === 'not_configured' && error?.message === 'AI_NOT_CONFIGURED';
+}
+
+function isTebarNotConfigured(error) {
+  return error?.unknownOutcome !== true && (error?.code === 'TEBAR_NOT_CONFIGURED'
+    || error?.code === 'not_configured' && (error?.message === 'TEBAR_NOT_CONFIGURED' || error?.provider === 'tebar'));
+}
+
+function safeProviderFailure(provider, error = {}) {
+  const code = SAFE_ERROR_CODES.has(error.code) ? error.code
+    : SAFE_DIAGNOSTIC_CODES.has(error.code) ? error.code : 'provider_error';
+  const rawStatus = error.httpStatus ?? error.status;
+  const httpStatus = Number.isSafeInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : null;
+  const transportCode = SAFE_TRANSPORT_CODES.has(error.transportCode) ? error.transportCode : null;
+  return { provider, code, httpStatus, transportCode, timedOut: error.timedOut === true };
+}
+
+async function persistProviderHold(repository, logger, hold, correlationId, alreadyRecorded = false) {
+  if (!alreadyRecorded) {
+    if (typeof repository.recordProviderHold !== 'function') return false;
+    await repository.recordProviderHold(hold);
+  }
+  try {
+    logger?.warn?.('automation.provider_held', {
+      correlationId, provider: hold.provider, profileId: hold.profileId || null,
+      accountId: hold.accountId || null, reasonCode: hold.reasonCode, slotId: hold.slotId,
+    });
+  } catch { /* Logging is secondary to the durable hold. */ }
+  return true;
 }
 
 function providerSlotStatus(post, expectedAccountId) {
@@ -49,6 +87,12 @@ function confirmedCompletedAt(status, post, expectedAccountId, observedAt) {
   }
   const observedTime = new Date(observedAt);
   return Number.isFinite(observedTime.getTime()) ? observedTime.toISOString() : null;
+}
+
+function slotMatchesOriginalTarget(slot, profileId, accountId) {
+  const targets = slot?.requestPayload?.targets;
+  return slot?.profileId === profileId && slot?.accountId === accountId
+    && Array.isArray(targets) && targets.length === 1 && targets[0]?.account_id === accountId;
 }
 
 async function providerOutcomeStatus(repository, slot, post, expectedAccountId) {
@@ -110,8 +154,20 @@ async function cancelIfSessionRevoked({ repository, publisher, slot, post, statu
   }
 }
 
-async function reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts, logger, correlationId = randomUUID(), clock = () => new Date() }) {
-  const slots = await repository.listUnsettledSlots();
+async function reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts, logger, slotIds, profileId, accountId, correlationId = randomUUID(), clock = () => new Date() }) {
+  const hasTargetScope = typeof profileId === 'string' && profileId.length > 0 && typeof accountId === 'string' && accountId.length > 0;
+  if (typeof repository.recoverStalePublishing === 'function') {
+    const recoveryScope = Array.isArray(slotIds) ? { slotIds } : {};
+    const recovered = await repository.recoverStalePublishing({ now: clock(), staleAfterMs: STALE_PUBLISHING_AFTER_MS, ...recoveryScope });
+    for (const slotId of recovered || []) {
+      try { logger?.warn?.('publication.worker_interrupted', { correlationId, slotId, outcome: 'unknown_outcome' }); } catch { /* Observability must not change publication state. */ }
+      await sendNotice(notifier, 'unknown_outcome', { repository, slotId, time: clock() });
+    }
+  }
+  const listedSlots = await repository.listUnsettledSlots(hasTargetScope ? { profileId, accountId } : undefined);
+  const selectedIds = Array.isArray(slotIds) ? new Set(slotIds.map(String)) : null;
+  const slots = listedSlots.filter((slot) => (!selectedIds || selectedIds.has(String(slot.id)))
+    && (!hasTargetScope || slotMatchesOriginalTarget(slot, profileId, accountId)));
   let checked = 0;
   for (const slot of slots) {
     if (!slot.providerPostId && (!slot.requestPayload || !slot.idempotencyKey)) continue;
@@ -124,6 +180,8 @@ async function reconcileUnsettled({ repository, publisher, publisherForProfile, 
       const slotPublisher = publisherForProfile ? await publisherForProfile(slot.profileId) : publisher;
       const post = await slotPublisher.getPost(slot.providerPostId);
       const expectedAccountId = slot.accountId || slot.requestPayload?.targets?.[0]?.account_id;
+      if (post?.id !== slot.providerPostId || !expectedAccountId
+        || !post.targets?.some((target) => target.accountId === expectedAccountId && String(target.platform || '').toLowerCase() === 'threads')) continue;
       const status = await providerOutcomeStatus(repository, slot, post, expectedAccountId);
       const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
       const completedAt = terminal ? confirmedCompletedAt(status, post, expectedAccountId, clock()) : null;
@@ -152,6 +210,30 @@ async function reconcileUnsettled({ repository, publisher, publisherForProfile, 
   return checked;
 }
 
+async function reconcileSwitch({ repository, publisherForProfile, profileId, accountId, notifier, logger, clock = () => new Date() } = {}) {
+  if (!repository || typeof publisherForProfile !== 'function' || !profileId || !accountId) return 0;
+  const slots = await repository.listUnsettledSlots({ profileId, accountId });
+  for (const slot of slots) {
+    if (!slotMatchesOriginalTarget(slot, profileId, accountId)
+      || !slot.providerPostId || !['scheduled', 'draft'].includes(slot.providerStatus)) continue;
+    try {
+      const publisher = await publisherForProfile(profileId);
+      const post = await publisher.getPost(slot.providerPostId);
+      const hasExpectedTarget = (value) => value?.targets?.some((target) => target?.accountId === accountId
+        && String(target.platform || '').toLowerCase() === 'threads');
+      if (post?.id !== slot.providerPostId || !['scheduled', 'draft'].includes(post.status) || !hasExpectedTarget(post)) continue;
+      const canceled = await publisher.cancelPost(slot.providerPostId);
+      if (canceled?.id !== slot.providerPostId || canceled.status !== 'canceled' || !hasExpectedTarget(canceled)) continue;
+      await repository.recordCancellation(slot.providerPostId, { status: 'canceled' });
+      await repository.updateSlot(slot.id, { status: 'canceled', providerStatus: 'canceled', completedAt: clock().toISOString() });
+    } catch { /* Preserve uncertain state; operator can retry reconciliation. */ }
+  }
+  // Keep ambiguous rows in the unscoped blocker query used by switch resume,
+  // but only recover/reconcile stale rows with an exact immutable target.
+  const recoverableSlotIds = slots.filter(slot => slotMatchesOriginalTarget(slot, profileId, accountId)).map(slot => slot.id);
+  return reconcileUnsettled({ repository, publisherForProfile, notifier, logger, profileId, accountId, slotIds: recoverableSlotIds, clock });
+}
+
 async function runDispatcher({
   repository,
   content,
@@ -170,21 +252,42 @@ async function runDispatcher({
     throw new TypeError('repository, publisher, and content dependencies are required');
   }
   const now = clock();
-  const result = { claimed: 0, published: 0, skipped: 0, failed: 0, unknown: 0, reconciled: 0, summarySent: false };
+  const result = { claimed: 0, published: 0, skipped: 0, failed: 0, unknown: 0, reconciled: 0, providerHeld: 0, summarySent: false };
 
   let state = await repository.getRuntimeState();
+  const profileId = state.profileId || state.settings?.profileId || null;
+  const targetScope = typeof profileId === 'string' && profileId && typeof state.accountId === 'string' && state.accountId
+    ? { profileId, accountId: state.accountId } : undefined;
   if (typeof notifier?.flush === 'function') {
     try { await notifier.flush(); } catch { /* Notification retries must not block publishing safety checks. */ }
   }
-  result.reconciled = await reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts: result, logger, correlationId, clock });
+  result.reconciled = await reconcileUnsettled({ repository, publisher, publisherForProfile, notifier, counts: result, logger, ...targetScope, correlationId, clock });
   await maybeSendDailySummary({ repository, notifier, now, counts: result });
   if (!state?.automationEnabled || state.onboardingComplete !== true || !state.accountId) return result;
 
   // A provider request with no definitive state blocks new posts until an
   // operator can reconcile it. This is deliberately fail-closed.
-  if ((await repository.listUnsettledSlots()).length > 0) {
+  if ((await repository.listUnsettledSlots(targetScope)).length > 0) {
     result.unknown++;
     return result;
+  }
+
+  if (typeof repository.listActiveProviderHolds === 'function') {
+    const holds = await repository.listActiveProviderHolds({
+      profileId: state.profileId || state.settings?.profileId || null,
+      accountId: state.accountId,
+    });
+    if (holds.length) {
+      result.providerHeld = holds.length;
+      try {
+        logger?.warn?.('automation.provider_hold_active', {
+          profileId: state.profileId || state.settings?.profileId || null,
+          accountId: state.accountId,
+          holds: holds.map((hold) => ({ provider: hold.provider, reasonCode: SAFE_ERROR_CODES.has(hold.reasonCode) ? hold.reasonCode : 'provider_hold' })),
+        });
+      } catch { /* Logging is secondary to the hold. */ }
+      return result;
+    }
   }
 
   let schedule = { ...(state.settings?.schedule || {}) };
@@ -230,16 +333,37 @@ async function runDispatcher({
       result.skipped++;
       return result;
     }
-    publisher = await publisherForProfile(slot.profileId);
+    try { publisher = await publisherForProfile(slot.profileId); }
+    catch (error) {
+      if (!isTebarNotConfigured(error)) throw error;
+      const profileId = slot.profileId;
+      const accountId = slot.accountId;
+      await persistProviderHold(repository, logger, {
+        provider: 'tebar', profileId, accountId, reasonCode: 'not_configured', slotId: slot.id,
+      }, correlationId);
+      try { logger?.warn?.('publication.provider_failed', { correlationId, slotId: slot.id, profileId, accountId, provider: 'tebar', code: 'not_configured' }); }
+      catch { /* Provider diagnostics must not alter the post result. */ }
+      await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'provider_error', completedAt: clock().toISOString() });
+      await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error', diagnosticCode: 'tebar_not_configured' } });
+      await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id, diagnosticCode: 'tebar_not_configured' });
+      result.failed++;
+      return result;
+    }
     state = { ...state, accountId: slot.accountId, profileId: slot.profileId };
   }
+  let generated;
   if (generatorForModel && slot.status !== 'ready') {
     if (!slot.model) {
       await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
       result.failed++;
       return result;
     }
-    contentGenerator = await generatorForModel(slot.model);
+    try { contentGenerator = await generatorForModel(slot.model); }
+    catch (error) {
+      if (!isOpenRouterNotConfigured(error)) throw error;
+      generated = { status: 'skipped', reason: 'GENERATION_FAILED', diagnosticCode: 'ai_not_configured', attempts: 0,
+        providerFailure: { provider: 'openrouter', code: 'ai_not_configured' } };
+    }
   }
   schedule = { ...(state.settings?.schedule || {}) };
 
@@ -250,7 +374,6 @@ async function runDispatcher({
     return result;
   }
 
-  let generated;
   let payload;
   let idempotencyKey;
   const isPrepared = slot.status === 'ready' && slot.requestPayload && typeof slot.idempotencyKey === 'string';
@@ -263,7 +386,7 @@ async function runDispatcher({
     await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', errorCode: 'unknown_outcome' });
     result.unknown++;
     return result;
-  } else {
+  } else if (!generated) {
     try {
       generated = await content({
         ...state,
@@ -289,6 +412,22 @@ async function runDispatcher({
       && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
       result.skipped++;
       return result;
+    }
+    if (generated?.providerFailure) {
+      try {
+        logger?.warn?.('publication.provider_failed', {
+          correlationId, slotId: slot.id,
+          ...safeProviderFailure(generated.providerFailure.provider === 'openrouter' ? 'openrouter' : 'ai', generated.providerFailure),
+        });
+      } catch { /* Provider diagnostics must not alter the post result. */ }
+    }
+    const openRouterHoldReason = diagnosticCode === 'ai_not_configured' ? 'ai_not_configured'
+      : diagnosticCode === 'ai_unauthorized' ? 'unauthorized' : null;
+    if (openRouterHoldReason) {
+      await persistProviderHold(repository, logger, {
+        provider: 'openrouter', profileId: null, accountId: null,
+        reasonCode: openRouterHoldReason, slotId: slot.id,
+      }, correlationId);
     }
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: code, completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code, diagnosticCode, attempts: Math.min(2, generated?.attempts || 0) } });
@@ -330,6 +469,11 @@ async function runDispatcher({
   }
 
   const started = await repository.startPublishing(slot.id, { now: clock() });
+  if (started === 'provider_hold') {
+    result.providerHeld++;
+    try { await repository.appendActivity({ event: 'publication_held', slotId: slot.id, details: { code: 'provider_hold' } }); } catch { /* The durable hold remains authoritative. */ }
+    return result;
+  }
   if (started === 'stale_facts') {
     await repository.updateSlot(slot.id, { status: 'failed', errorCode: 'generation_failed', completedAt: clock().toISOString() });
     await repository.appendActivity({ event: 'ai_generation_failed', slotId: slot.id, details: { code: 'generation_failed', diagnosticCode: 'stale_facts', attempts: 0 } });
@@ -360,11 +504,17 @@ async function runDispatcher({
     result.skipped++;
     return result;
   }
+  if (typeof repository.withPublicationFence !== 'function') {
+    result.skipped++;
+    return result;
+  }
 
   let attempt = 0;
   let acceptedPost = null;
+  let acceptedInitialUpdate = null;
   let retryableFailure = null;
-  while (attempt < Math.max(1, Math.min(2, maxPublishAttempts))) {
+  const maxAttempts = Math.max(1, Math.min(2, maxPublishAttempts));
+  while (attempt < maxAttempts) {
     if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
       && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
       if (retryableFailure) {
@@ -381,95 +531,181 @@ async function runDispatcher({
       return result;
     }
     attempt++;
-    try {
+    let providerCallStarted = false;
+    let callbackOutcome = null;
+    const publishAttempt = async (recordOutcome) => {
+      providerCallStarted = true;
       try { logger?.info('publication.sending', { correlationId, slotId: slot.id, sessionId: slot.automationSessionId, configVersion: slot.configVersion, profileId: slot.profileId, accountId: slot.accountId, attempt }); } catch { /* Do not log request bodies or credentials. */ }
-      acceptedPost = await publisher.publishNow(payload, idempotencyKey);
-      break;
-    } catch (error) {
-      const providerPostId = typeof error?.providerPostId === 'string' ? error.providerPostId : null;
-      if (providerPostId) {
-        try {
-          const post = await publisher.getPost(providerPostId);
-          const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
-          const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
-          const saved = await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
-          if (saved === false) { result.unknown++; return result; }
-          const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId: state.accountId });
-          const finalPost = cancellation.post;
-          const finalStatus = cancellation.status;
-          if (finalPost !== post || cancellation.cancellationStatus) {
-            const finalCompletedAt = ['published', 'failed', 'canceled', 'partial'].includes(finalStatus) ? confirmedCompletedAt(finalStatus, finalPost, state.accountId, clock()) : null;
-            const savedFinal = await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
-            if (savedFinal === false) { result.unknown++; return result; }
-          }
-          if (cancellation.cancellationStatus) {
-            try { await repository.recordCancellation(providerPostId, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); } catch { /* The provider state remains durable on the slot. */ }
-          }
-          if (finalStatus === 'published') { result.published++; await sendNotice(notifier, 'post_published', { repository, slotId: slot.id, completedAt: confirmedCompletedAt('published', finalPost, state.accountId, clock()), caption: generated.text, pillar: generated.pillar, postUrl: finalPost.targets?.find((target) => target.accountId === state.accountId && target.status === 'published' && String(target.platform).toLowerCase() === 'threads')?.permalink }); }
-          else if (finalStatus === 'failed' || finalStatus === 'partial') { result.failed++; try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* Provider outcome is already durable. */ } await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id }); }
-          else if (finalStatus === 'canceled') result.skipped++;
-          else { result.unknown++; await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id, time: clock() }); }
-          return result;
-        } catch {
-          try { await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: 'unknown_outcome' }); } catch { /* Preserve the original publishing row for reconciliation. */ }
-          try { await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: 'unknown_outcome' } }); } catch { /* Slot state remains the primary record. */ }
-          await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
-          result.unknown++;
-          return result;
+      let providerError;
+      let providerThrew = false;
+      try { callbackOutcome = { kind: 'accepted', post: await publisher.publishNow(payload, idempotencyKey) }; }
+      catch (error) { providerError = error; providerThrew = true; }
+      if (providerThrew) {
+        const providerPostId = typeof providerError?.providerPostId === 'string' ? providerError.providerPostId : null;
+        if (providerPostId) {
+          const patch = { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: 'unknown_outcome' };
+          callbackOutcome = { kind: 'provider_id_error', error: providerError, providerPostId, patch };
+          if (await recordOutcome(patch) === false) callbackOutcome = { kind: 'fence_lost' };
+          return callbackOutcome;
         }
+        if (providerError?.unknownOutcome) {
+          const patch = { status: 'unknown', providerStatus: 'unknown', errorCode: safeCode(providerError.code) };
+          callbackOutcome = { kind: 'unknown_error', error: providerError, patch };
+          if (await recordOutcome(patch) === false) callbackOutcome = { kind: 'fence_lost' };
+          return callbackOutcome;
+        }
+        if (providerError?.retryable && attempt < maxAttempts) {
+          const patch = { status: 'publishing', providerStatus: 'failed', errorCode: safeCode(providerError.code), completedAt: null };
+          callbackOutcome = { kind: 'retryable_error', error: providerError, patch };
+          if (await recordOutcome(patch) === false) callbackOutcome = { kind: 'fence_lost' };
+          return callbackOutcome;
+        }
+        const providerHold = PROVIDER_HOLD_CODES.has(providerError?.code) ? {
+          provider: 'tebar', profileId: slot.profileId || state.profileId || null,
+          accountId: slot.accountId || state.accountId || null, reasonCode: providerError.code, slotId: slot.id,
+        } : null;
+        const patch = { status: 'failed', providerStatus: 'failed', errorCode: safeCode(providerError?.code), completedAt: clock().toISOString() };
+        callbackOutcome = { kind: 'failed_error', error: providerError, patch, providerHold, providerHoldRecorded: Boolean(providerHold && recordOutcome.supportsProviderHolds) };
+        if (await recordOutcome(patch, providerHold ? { providerHold } : undefined) === false) callbackOutcome = { kind: 'fence_lost' };
+        return callbackOutcome;
       }
-      if (error?.unknownOutcome) {
-        await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: safeCode(error.code) });
-        await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: safeCode(error.code) } });
+      const post = callbackOutcome.post;
+      const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
+      const terminal = ['published', 'failed', 'partial', 'canceled'].includes(status);
+      const initialUpdate = {
+        status,
+        providerStatus: post.status,
+        providerPostId: post.id,
+        errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null,
+        completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null,
+      };
+      callbackOutcome = { kind: 'accepted', post, status, initialUpdate, patch: initialUpdate };
+      if (await recordOutcome(initialUpdate) === false) callbackOutcome = { kind: 'fence_lost' };
+      return callbackOutcome;
+    };
+    let publicationOutcome;
+    try {
+      publicationOutcome = await repository.withPublicationFence(slot.id, publishAttempt);
+    } catch (error) {
+      if (!providerCallStarted) throw error;
+      const providerPostId = callbackOutcome?.patch?.providerPostId || callbackOutcome?.post?.id || null;
+      try {
+        await repository.updateSlot(slot.id, {
+          status: 'unknown', providerStatus: 'unknown', ...(providerPostId ? { providerPostId } : {}), errorCode: 'unknown_outcome',
+        });
+      } catch { /* Keep the exact prepared request for later provider reconciliation. */ }
+      try { await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: 'unknown_outcome' } }); } catch { /* Slot state remains the primary record. */ }
+      await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
+      result.unknown++;
+      return result;
+    }
+    if (publicationOutcome?.kind === 'fence_lost') {
+      result.unknown++;
+      return result;
+    }
+    if (publicationOutcome === false) {
+      if (retryableFailure) {
+        const code = safeCode(retryableFailure.code);
+        const saved = await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: code, completedAt: clock().toISOString() });
+        if (saved !== false) {
+          await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code } });
+          await sendNotice(notifier, code, { repository, slotId: slot.id });
+          result.failed++;
+        } else result.skipped++;
+      } else result.skipped++;
+      return result;
+    }
+    if (publicationOutcome?.kind === 'provider_id_error') {
+      const { providerPostId } = publicationOutcome;
+      try {
+        const post = await publisher.getPost(providerPostId);
+        const status = await providerOutcomeStatus(repository, slot, post, state.accountId);
+        const terminal = ['published', 'failed', 'canceled', 'partial'].includes(status);
+        const saved = await repository.updateSlot(slot.id, { status, providerStatus: post.status, providerPostId, errorCode: status === 'failed' || status === 'partial' ? 'provider_error' : null, completedAt: terminal ? confirmedCompletedAt(status, post, state.accountId, clock()) : null });
+        if (saved === false) { result.unknown++; return result; }
+        const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post, status, expectedAccountId: state.accountId });
+        const finalPost = cancellation.post;
+        const finalStatus = cancellation.status;
+        if (finalPost !== post || cancellation.cancellationStatus) {
+          const finalCompletedAt = ['published', 'failed', 'canceled', 'partial'].includes(finalStatus) ? confirmedCompletedAt(finalStatus, finalPost, state.accountId, clock()) : null;
+          const savedFinal = await repository.updateSlot(slot.id, { status: finalStatus, providerStatus: finalPost.status, providerPostId, errorCode: finalStatus === 'failed' || finalStatus === 'partial' ? 'provider_error' : null, completedAt: finalCompletedAt, ...(cancellation.cancellationStatus ? { cancellationStatus: cancellation.cancellationStatus } : {}) });
+          if (savedFinal === false) { result.unknown++; return result; }
+        }
+        if (cancellation.cancellationStatus) {
+          try { await repository.recordCancellation(providerPostId, { status: cancellation.cancellationStatus, errorCode: cancellation.cancellationStatus === 'canceled' ? null : 'post_not_editable' }); } catch { /* The provider state remains durable on the slot. */ }
+        }
+        if (finalStatus === 'published') { result.published++; await sendNotice(notifier, 'post_published', { repository, slotId: slot.id, completedAt: confirmedCompletedAt('published', finalPost, state.accountId, clock()), caption: generated.text, pillar: generated.pillar, postUrl: finalPost.targets?.find((target) => target.accountId === state.accountId && target.status === 'published' && String(target.platform).toLowerCase() === 'threads')?.permalink }); }
+        else if (finalStatus === 'failed' || finalStatus === 'partial') { result.failed++; try { await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: 'provider_error' } }); } catch { /* Provider outcome is already durable. */ } await sendNotice(notifier, 'provider_error', { repository, slotId: slot.id }); }
+        else if (finalStatus === 'canceled') result.skipped++;
+        else { result.unknown++; await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id, time: clock() }); }
+        return result;
+      } catch {
+        try { await repository.updateSlot(slot.id, { status: 'unknown', providerStatus: 'unknown', providerPostId, errorCode: 'unknown_outcome' }); } catch { /* Preserve the original provider ID for reconciliation. */ }
+        try { await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: 'unknown_outcome' } }); } catch { /* Slot state remains the primary record. */ }
         await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
         result.unknown++;
         return result;
       }
-      if (error?.retryable && attempt < Math.max(1, Math.min(2, maxPublishAttempts))) {
-        retryableFailure = error;
-        if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
-          && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
-          await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
-          await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
-          await sendNotice(notifier, safeCode(error?.code), { repository, slotId: slot.id });
-          result.failed++;
-          return result;
-        }
-        continue;
+    }
+    if (publicationOutcome?.kind === 'unknown_error') {
+      const error = publicationOutcome.error;
+      try {
+        logger?.warn?.('publication.provider_failed', {
+          correlationId, slotId: slot.id, profileId: slot.profileId || state.profileId || null,
+          accountId: slot.accountId || state.accountId || null, ...safeProviderFailure('tebar', error),
+        });
+      } catch { /* Provider diagnostics must not alter the uncertain post state. */ }
+      await repository.appendActivity({ event: 'publish_outcome_unknown', slotId: slot.id, details: { code: safeCode(error.code) } });
+      await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
+      result.unknown++;
+      return result;
+    }
+    if (publicationOutcome?.kind === 'retryable_error') {
+      retryableFailure = publicationOutcome.error;
+      if (slot.automationSessionId && typeof repository.isAutomationSessionActive === 'function'
+        && !await repository.isAutomationSessionActive(slot.automationSessionId)) {
+        const code = safeCode(retryableFailure.code);
+        await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: code, completedAt: clock().toISOString() });
+        await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code } });
+        await sendNotice(notifier, code, { repository, slotId: slot.id });
+        result.failed++;
+        return result;
       }
-      await repository.updateSlot(slot.id, { status: 'failed', providerStatus: 'failed', errorCode: safeCode(error?.code), completedAt: clock().toISOString() });
+      continue;
+    }
+    if (publicationOutcome?.kind === 'failed_error') {
+      const error = publicationOutcome.error;
+      const providerFailure = safeProviderFailure('tebar', error);
+      try {
+        logger?.warn?.('publication.provider_failed', {
+          correlationId, slotId: slot.id, profileId: slot.profileId || state.profileId || null,
+          accountId: slot.accountId || state.accountId || null, ...providerFailure,
+        });
+      } catch { /* Provider diagnostics must not alter the post result. */ }
+      if (PROVIDER_HOLD_CODES.has(error?.code)) {
+        await persistProviderHold(repository, logger, {
+          provider: 'tebar', profileId: slot.profileId || state.profileId || null,
+          accountId: slot.accountId || state.accountId || null,
+          reasonCode: error.code, slotId: slot.id,
+        }, correlationId, publicationOutcome.providerHoldRecorded);
+      }
       await repository.appendActivity({ event: 'publish_failed', slotId: slot.id, details: { code: safeCode(error?.code) } });
       await sendNotice(notifier, safeCode(error?.code), { repository, slotId: slot.id });
       result.failed++;
       return result;
     }
-  }
-  if (acceptedPost) {
-    const initialStatus = await providerOutcomeStatus(repository, slot, acceptedPost, state.accountId);
-    const initialTerminal = ['published', 'failed', 'canceled', 'partial'].includes(initialStatus);
-    const initialUpdate = {
-      status: initialStatus,
-      providerStatus: acceptedPost.status,
-      providerPostId: acceptedPost.id,
-      errorCode: initialStatus === 'failed' || initialStatus === 'partial' ? 'provider_error' : null,
-      completedAt: initialTerminal ? confirmedCompletedAt(initialStatus, acceptedPost, state.accountId, clock()) : null,
-    };
-    try {
-      // Persist the provider ID before checking the session so a concurrent pause
-      // can find and cancel an accepted but not yet published post.
-      const saved = await repository.updateSlot(slot.id, initialUpdate);
-      if (saved === false) { result.unknown++; return result; }
-    } catch {
-      // Tebar accepted the publish. Database failure must never fall through to a publish retry.
-      try {
-        await repository.updateSlot(slot.id, { ...initialUpdate, status: 'unknown', providerStatus: acceptedPost.status, errorCode: 'unknown_outcome' });
-      } catch {
-        // The previously persisted payload and idempotency key remain the recovery evidence.
-      }
-      await sendNotice(notifier, 'unknown_outcome', { repository, slotId: slot.id });
+    if (publicationOutcome?.kind === 'accepted') {
+      acceptedPost = publicationOutcome.post;
+      acceptedInitialUpdate = publicationOutcome.initialUpdate;
+      break;
+    }
+    if (publicationOutcome) {
       result.unknown++;
       return result;
     }
+  }
+  if (acceptedPost) {
+    const initialStatus = acceptedInitialUpdate.status;
     const cancellation = await cancelIfSessionRevoked({ repository, publisher, slot, post: acceptedPost, status: initialStatus, expectedAccountId: state.accountId });
     const post = cancellation.post;
     const status = cancellation.status;
@@ -535,11 +771,17 @@ async function maybeSendDailySummary({ repository, notifier, now, counts }) {
   }
 }
 
-async function pauseAutomation({ repository, publisher, notifier, accountId, adminId } = {}) {
+async function pauseAutomation({ repository, publisher, notifier, profileId, accountId, adminId } = {}) {
   if (!repository || !publisher) throw new TypeError('repository and publisher dependencies are required');
   await repository.setAutomationEnabled(false, adminId);
   await repository.appendActivity({ event: 'automation_paused', details: { actor: adminId ? 'admin' : 'system' } });
-  const known = new Set((await repository.listUnsettledSlots()).map((slot) => slot.providerPostId).filter(Boolean));
+  const targetScope = typeof profileId === 'string' && profileId && typeof accountId === 'string' && accountId
+    ? { profileId, accountId } : undefined;
+  const knownSlots = await repository.listUnsettledSlots(targetScope);
+  const known = new Set(knownSlots.filter((slot) => !targetScope
+    || slot.profileId === profileId && slot.accountId === accountId
+      && (!slot.requestPayload || slot.requestPayload.targets?.length === 1 && slot.requestPayload.targets[0]?.account_id === accountId))
+    .map((slot) => slot.providerPostId).filter(Boolean));
   const outcomes = [];
   let cursor;
   try {
@@ -568,4 +810,4 @@ async function pauseAutomation({ repository, publisher, notifier, accountId, adm
   return { enabled: false, outcomes };
 }
 
-module.exports = { runDispatcher, pauseAutomation, reconcileUnsettled, maybeSendDailySummary, safeCode };
+module.exports = { runDispatcher, pauseAutomation, reconcileUnsettled, reconcileSwitch, maybeSendDailySummary, safeCode };

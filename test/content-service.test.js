@@ -103,9 +103,10 @@ test('a repeated full caption in published history is rejected', async () => {
 });
 
 test('provider failures are normalized and do not expose provider response', async () => {
-  const result = await generatePost(base, { generate: async () => { throw Object.assign(new Error('secret-provider-body'), { code: 'network_error' }); } });
+  const result = await generatePost(base, { generate: async () => { throw Object.assign(new Error('secret-provider-body'), { provider: 'openrouter', code: 'network_error', transportCode: 'ETIMEDOUT', status: null, timedOut: true }); } });
   assert.equal(result.status, 'skipped');
   assert.equal(result.diagnosticCode, 'ai_network_error');
+  assert.deepEqual(result.providerFailure, { provider: 'openrouter', code: 'network_error', httpStatus: null, transportCode: 'ETIMEDOUT', timedOut: true });
   assert.doesNotMatch(JSON.stringify(result), /secret-provider-body/);
 });
 

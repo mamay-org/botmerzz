@@ -2,17 +2,68 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const http=require('node:http');
-const {validId,validModel,snapshot}=require('../src/configuration');
+const {validId,validModel,snapshot,createConfigurationService}=require('../src/configuration');
 const {createConfigurationValidators}=require('../src/configuration-providers');
 const {createServer}=require('../src/server');
 
 const config={tebar:{apiKey:'test-only'},openRouter:{apiKey:'test-only',generatorSampling:{temperature:0.4}}};
+function configurationPool({status='ACTIVE',unsettledCount=0,automationEnabled=1}={}){
+  const calls=[];
+  const connection={
+    beginTransaction:async()=>{},commit:async()=>{},rollback:async()=>{},release:()=>{},
+    query:async sql=>{
+      if(sql.includes('SELECT settings_json'))return [[{settings_json:JSON.stringify({profileId:'old-profile',targetAccountId:'old-account',onboardingComplete:true,automationSessionId:'old-session'}),automation_enabled:automationEnabled}]];
+      if(sql.includes('SELECT * FROM integration_config'))return [[{version:status==='BLOCKED_RECONCILIATION'?2:1,profile_id:'old-profile',account_id:'old-account',model:'vendor/model',status,pending_profile_id:status==='BLOCKED_RECONCILIATION'?'next-profile':null,pending_account_id:status==='BLOCKED_RECONCILIATION'?'next-account':null,pending_model:status==='BLOCKED_RECONCILIATION'?'vendor/model':null}]];
+      return [[]];
+    },
+    execute:async(sql,params=[])=>{
+      calls.push({sql,params});
+      if(sql.includes('SELECT COUNT(*) AS count FROM slots')){
+        const scoped=sql.includes('tebar_profile_id=?')&&params[0]==='old-profile'&&params[1]==='old-account';
+        return [[{count:scoped?unsettledCount:unsettledCount+1}],[]];
+      }
+      return [{affectedRows:1},[]];
+    },
+  };
+  return {calls,pool:{getConnection:async()=>connection,execute:connection.execute}};
+}
 test('configuration input and snapshots fail closed on malformed values',()=>{
   assert.equal(validId('profile_123'),true);assert.equal(validId('x/../z'),false);
   assert.equal(validModel('google/gemini-2.5-flash:free'),true);assert.equal(validModel('https://bad.test'),false);
   assert.throws(()=>snapshot({version:1,status:'ACTIVE',profile_id:'x',account_id:null,model:'x/y'}),e=>e.code==='CONFIG_UNAVAILABLE');
   assert.throws(()=>snapshot({version:1,status:'BLOCKED_RECONCILIATION',profile_id:'x',account_id:'y',model:'x/y'}),e=>e.code==='CONFIG_UNAVAILABLE');
   assert.ok(Object.isFrozen(snapshot({version:1,status:'ACTIVE',profile_id:'x',account_id:'y',model:'x/y'})));
+});
+test('account switch scopes blockers to the outgoing target and cancels only its session or exact target',async()=>{
+  const {calls,pool}=configurationPool();
+  const service=createConfigurationService({pool,config});
+  const switched=await service.switchAccount({profileId:'next-profile',accountId:'next-account',expectedVersion:1});
+  assert.equal(switched.status,'ACTIVE');
+  const cancel=calls.find(call=>call.sql.startsWith("UPDATE slots SET status='canceled'"));
+  assert.match(cancel.sql,/automation_session_id=\?/);
+  assert.match(cancel.sql,/tebar_profile_id=\? AND tebar_account_id=\?/);
+  assert.deepEqual(cancel.params,['old-session','old-profile','old-account']);
+  const blockers=calls.find(call=>call.sql.includes('SELECT COUNT(*) AS count FROM slots'));
+  assert.match(blockers.sql,/tebar_profile_id=\?/);
+  assert.deepEqual(blockers.params,['old-profile','old-account']);
+});
+test('account switch does not treat a stale automation session as active',async()=>{
+  const {calls,pool}=configurationPool({automationEnabled:0});
+  const service=createConfigurationService({pool,config});
+  await service.switchAccount({profileId:'next-profile',accountId:'next-account',expectedVersion:1});
+  const cancel=calls.find(call=>call.sql.startsWith("UPDATE slots SET status='canceled'"));
+  assert.doesNotMatch(cancel.sql,/automation_session_id=\?/);
+  assert.deepEqual(cancel.params,['old-profile','old-account']);
+});
+test('resuming an account switch remains blocked by unsettled work on the outgoing account',async()=>{
+  const {calls,pool}=configurationPool({status:'BLOCKED_RECONCILIATION',unsettledCount:1});
+  const service=createConfigurationService({pool,config});
+  const result=await service.resumeSwitch({expectedVersion:2});
+  assert.equal(result.status,'BLOCKED_RECONCILIATION');
+  const blockers=calls.find(call=>call.sql.includes('SELECT COUNT(*) AS count FROM slots'));
+  assert.match(blockers.sql,/tebar_profile_id=\?/);
+  assert.deepEqual(blockers.params,['old-profile','old-account']);
+  assert.equal(calls.some(call=>call.sql.startsWith('UPDATE settings SET settings_json=?')),false);
 });
 test('account verification rejects mismatch, non-Threads, inactive and suspended targets',async()=>{
   let target={id:'acct',profileId:'profile',platform:'threads',status:'active',planSuspended:false,username:'tester'};
@@ -35,7 +86,7 @@ test('Tebar adapter preserves unknown suspension state instead of treating it as
 });
 test('model validation checks metadata, application token and sampling parameters, and provider errors',async()=>{
   let metadata={id:'vendor/model:free',name:'Test',architecture:{input_modalities:['text'],output_modalities:['text']},supported_parameters:['max_tokens','temperature']};
-  const client={request:async()=>({data:{data:metadata}})};
+  const client={request:async options=>options.url.endsWith('/key')?({data:{data:{label:'sk-or-...890'}}}):({data:{data:metadata}})};
   const validator=createConfigurationValidators({config,http:client});
   assert.deepEqual(await validator.validateModel('vendor/model:free'),{id:'vendor/model:free',name:'Test',provider:'vendor',status:'AVAILABLE',reason:null});
   metadata={...metadata,supported_parameters:['temperature']};
@@ -44,6 +95,19 @@ test('model validation checks metadata, application token and sampling parameter
   await assert.rejects(validator.validateModel('vendor/model:free'),e=>e.code==='MODEL_INCOMPATIBLE');
   const down=createConfigurationValidators({config,http:{request:async()=>{throw Object.assign(new Error('secret'),{response:{status:429}});}}});
   await assert.rejects(down.validateModel('vendor/model:free'),e=>e.code==='OPENROUTER_RATE_LIMITED'&&!e.message.includes('secret'));
+});
+test('successful model validation verifies the authenticated OpenRouter key before using catalog metadata',async()=>{
+  const requests=[];const model={id:'vendor/model',name:'Test',architecture:{input_modalities:['text'],output_modalities:['text']},supported_parameters:['max_tokens','temperature']};
+  const validator=createConfigurationValidators({config,http:{request:async options=>{
+    requests.push(options);
+    if(options.url==='https://openrouter.ai/api/v1/key')return {data:{data:{label:'sk-or-secret-prefix'}}};
+    return {data:{data:model}};
+  }}});
+  const result=await validator.validateModel('vendor/model');
+  assert.deepEqual(result,{id:'vendor/model',name:'Test',provider:'vendor',status:'AVAILABLE',reason:null});
+  assert.deepEqual(requests.map(request=>request.url),['https://openrouter.ai/api/v1/key','https://openrouter.ai/api/v1/model/vendor/model']);
+  assert.ok(requests.every(request=>request.method==='GET'&&request.headers.Authorization==='Bearer test-only'));
+  assert.doesNotMatch(JSON.stringify(result),/sk-or-secret-prefix/);
 });
 test('model catalog returns searchable safe metadata with compatibility and a short cache',async()=>{
   let now=1000,calls=0,request;

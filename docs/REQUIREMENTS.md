@@ -53,7 +53,7 @@ Build a staging-ready dashboard and automation service for publishing approved, 
 
 - Client supplies the game whitelist, approved/forbidden claims, Malaysian Malay examples, valid service summaries, account attributes allowed for marketing, homepage/tracked links, and private Telegram group. Publishing is 24/7; legacy active-day/hour values do not gate it.
 - An authorized person connects the selected Threads account through Tebar's official authorization flow and verifies its username in the dashboard.
-- Tebar API access and the VPS Docker/Compose runtime and scheduler are verified by the account owner. Confirm account publishing quota, API rate limits, and expected OpenRouter cost for the selected interval before enabling automation.
+- Tebar API access and the approved Docker Compose runtime (currently Proxmox homelab LXC 10027) and scheduler are verified by the account owner. Confirm account publishing quota, API rate limits, and expected OpenRouter cost for the selected interval before enabling automation.
 - Staging API key, database credentials, OpenRouter key, Telegram token/chat ID, and approved test profile are supplied through the deployment environment. No such credentials are checked into this repository.
 - Client approves the initial guardrails and service facts before automation can be enabled.
 

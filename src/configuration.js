@@ -30,6 +30,21 @@ function checkVersion(value, row) {
   if (!Number.isSafeInteger(value) || value < 1) throw error('INVALID_VERSION');
   if (value !== Number(row.version)) throw error('CONFIG_CONFLICT', 409);
 }
+function unsettledTargetScope(profileId, accountId) {
+  if (!validId(profileId) || !validId(accountId)) return { sql: '', params: [] };
+  return {
+    sql: ` AND (
+      tebar_profile_id IS NULL OR tebar_account_id IS NULL
+      OR (tebar_profile_id=? AND tebar_account_id=?)
+      OR (request_payload IS NOT NULL AND (
+        COALESCE(JSON_LENGTH(JSON_EXTRACT(request_payload,'$.targets')),0)<>1
+        OR JSON_UNQUOTE(JSON_EXTRACT(request_payload,'$.targets[0].account_id')) IS NULL
+        OR JSON_UNQUOTE(JSON_EXTRACT(request_payload,'$.targets[0].account_id'))<>tebar_account_id
+      ))
+    )`,
+    params: [profileId, accountId],
+  };
+}
 
 function createConfigurationService({ pool, config }) {
   if (!pool || !config) throw new TypeError('pool and config are required');
@@ -37,7 +52,7 @@ function createConfigurationService({ pool, config }) {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
-      const [[settingsRow]] = await connection.query('SELECT settings_json FROM settings WHERE id=1 FOR UPDATE');
+      const [[settingsRow]] = await connection.query('SELECT settings_json,automation_enabled FROM settings WHERE id=1 FOR UPDATE');
       if (!settingsRow) throw error('CONFIG_UNAVAILABLE', 503);
       const [[configRow]] = await connection.query('SELECT * FROM integration_config WHERE id=1 FOR UPDATE');
       const result = await work(connection, settingsRow, configRow);
@@ -108,10 +123,29 @@ function createConfigurationService({ pool, config }) {
       const current = snapshot(row); checkVersion(expectedVersion, row);
       if (['SWITCHING','BLOCKED_RECONCILIATION'].includes(current.status)) throw error('CONFIG_SWITCH_IN_PROGRESS', 409);
       const settings = parseSettings(settingsRow); const nextModel = current.model;
+      const oldAutomationSessionId = settingsRow.automation_enabled ? settings.automationSessionId : null;
       settings.onboardingComplete = false; delete settings.nextSlotAt; delete settings.activationFirstPostAt; delete settings.automationSessionId;
       await c.execute('UPDATE settings SET settings_json=?,automation_enabled=FALSE WHERE id=1', [JSON.stringify(settings)]);
-      await c.execute("UPDATE slots SET status='canceled',error_code='account_reconfigured',completed_at=UTC_TIMESTAMP(3) WHERE status IN ('pending','generating','ready')");
-      const [[unsettled]] = await c.execute("SELECT COUNT(*) AS count FROM slots WHERE status IN ('publishing','unknown') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft'))");
+      const cancellationScope = [];
+      const cancellationParams = [];
+      if (typeof oldAutomationSessionId === 'string' && oldAutomationSessionId) {
+        cancellationScope.push('automation_session_id=?'); cancellationParams.push(oldAutomationSessionId);
+      }
+      if (validId(current.profileId) && validId(current.accountId)) {
+        cancellationScope.push(`(tebar_profile_id=? AND tebar_account_id=? AND (request_payload IS NULL OR (
+          COALESCE(JSON_LENGTH(JSON_EXTRACT(request_payload,'$.targets')),0)=1
+          AND JSON_UNQUOTE(JSON_EXTRACT(request_payload,'$.targets[0].account_id'))=tebar_account_id
+        )))`);
+        cancellationParams.push(current.profileId, current.accountId);
+      }
+      if (cancellationScope.length) {
+        await c.execute(`UPDATE slots SET status='canceled',error_code='account_reconfigured',completed_at=UTC_TIMESTAMP(3)
+          WHERE status IN ('pending','generating','ready') AND (${cancellationScope.join(' OR ')})`, cancellationParams);
+      }
+      const scope = unsettledTargetScope(current.profileId, current.accountId);
+      const [[unsettled]] = await c.execute(`SELECT COUNT(*) AS count FROM slots
+        WHERE (status IN ('publishing','unknown') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')))
+        ${scope.sql}`, scope.params);
       const blocked = Number(unsettled.count) > 0; const version = current.version + 1;
       if (blocked) {
         await c.execute("UPDATE integration_config SET version=?,status='BLOCKED_RECONCILIATION',pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1", [version,profileId,accountId,nextModel,actorId || null]);
@@ -129,7 +163,10 @@ function createConfigurationService({ pool, config }) {
     return locked(async (c, settingsRow, row) => {
       const current=snapshot(row); checkVersion(expectedVersion,row);
       if (!['SWITCHING','BLOCKED_RECONCILIATION'].includes(current.status)) throw error('NO_SWITCH_PENDING',409);
-      const [[unsettled]]=await c.execute("SELECT COUNT(*) AS count FROM slots WHERE status IN ('publishing','unknown') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft'))");
+      const scope=unsettledTargetScope(current.profileId,current.accountId);
+      const [[unsettled]]=await c.execute(`SELECT COUNT(*) AS count FROM slots
+        WHERE (status IN ('publishing','unknown') OR (provider_post_id IS NOT NULL AND provider_status IN ('scheduled','draft')))
+        ${scope.sql}`,scope.params);
       if (Number(unsettled.count)>0) return current;
       const settings=parseSettings(settingsRow); settings.profileId=current.pendingProfileId; settings.targetAccountId=current.pendingAccountId; settings.onboardingComplete=false;
       delete settings.nextSlotAt; delete settings.activationFirstPostAt; delete settings.automationSessionId;
