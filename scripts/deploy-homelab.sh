@@ -162,6 +162,7 @@ if [[ "$DOCKER_ENDPOINT" != unix://* ]]; then
 fi
 
 INITIAL_BOOTSTRAP=true
+ACTIVE_TARGET=""
 if [[ -L "$ACTIVE_LINK" ]]; then
   ACTIVE_TARGET="$(readlink "$ACTIVE_LINK")"
   if [[ ! "$ACTIVE_TARGET" =~ ^releases/[a-f0-9]{40}$ || ! -f "$APP_DIR/$ACTIVE_TARGET/metadata.json" ]]; then
@@ -171,6 +172,7 @@ if [[ -L "$ACTIVE_LINK" ]]; then
 elif [[ -e "$ACTIVE_LINK" ]]; then
   fail "active release path exists but is not a symlink."
 fi
+PRE_DEPLOY_ACTIVE_TARGET="$ACTIVE_TARGET"
 
 if [[ "$INITIAL_BOOTSTRAP" == true ]]; then
   for key in \
@@ -218,6 +220,15 @@ SOURCE_MARKER="$SOURCE_DIR/.botmerzz-commit"
 SOURCE_STAGING=""
 RELEASE_DIR="$APP_DIR/releases/$COMMIT_SHA"
 RELEASE_STAGING=""
+CANDIDATE_APP_ATTEMPTED=false
+DEPLOYMENT_PROMOTED=false
+PREVIOUS_RELEASE_FILE="$APP_DIR/previous-release"
+PREVIOUS_RELEASE_TMP=""
+PREVIOUS_RELEASE_RESTORE_TMP=""
+PREVIOUS_RELEASE_UPDATE_STARTED=false
+PREVIOUS_RELEASE_EXISTED=false
+PREVIOUS_RELEASE_VALUE=""
+PREVIOUS_SHA=""
 
 cleanup_staging() {
   if [[ -n "$SOURCE_STAGING" && -d "$SOURCE_STAGING" && "$SOURCE_STAGING" == "$APP_DIR/source/.${COMMIT_SHA}."* ]]; then
@@ -227,7 +238,47 @@ cleanup_staging() {
     rm -rf -- "$RELEASE_STAGING"
   fi
 }
-trap cleanup_staging EXIT
+
+cleanup_deployment() {
+  local exit_status=$?
+  local active_target=""
+  if [[ -L "$ACTIVE_LINK" ]]; then
+    active_target="$(readlink "$ACTIVE_LINK" 2>/dev/null || true)"
+  fi
+  if [[ "$active_target" == "releases/$COMMIT_SHA" && "$PRE_DEPLOY_ACTIVE_TARGET" != "$active_target" ]]; then
+    DEPLOYMENT_PROMOTED=true
+  fi
+  if [[ "$CANDIDATE_APP_ATTEMPTED" == true && "$DEPLOYMENT_PROMOTED" != true ]]; then
+    if ! compose stop app >/dev/null 2>&1; then
+      printf 'Deployment warning: failed to stop the unpromoted app candidate; inspect LXC 10027 before recovery.\n' >&2
+    fi
+  fi
+  if [[ "$PREVIOUS_RELEASE_UPDATE_STARTED" == true && "$DEPLOYMENT_PROMOTED" != true ]]; then
+    if [[ "$PREVIOUS_RELEASE_EXISTED" == true ]]; then
+      PREVIOUS_RELEASE_RESTORE_TMP="$(mktemp "$APP_DIR/.previous-release-restore.${COMMIT_SHA}.XXXXXX" 2>/dev/null || true)"
+      if [[ -n "$PREVIOUS_RELEASE_RESTORE_TMP" ]] &&
+         printf '%s\n' "$PREVIOUS_RELEASE_VALUE" > "$PREVIOUS_RELEASE_RESTORE_TMP" &&
+         mv -f "$PREVIOUS_RELEASE_RESTORE_TMP" "$PREVIOUS_RELEASE_FILE"; then
+        PREVIOUS_RELEASE_RESTORE_TMP=""
+      else
+        printf 'Deployment warning: failed to restore the previous-release pointer; inspect it before recovery.\n' >&2
+      fi
+    elif [[ -f "$PREVIOUS_RELEASE_FILE" && ! -L "$PREVIOUS_RELEASE_FILE" ]] &&
+         [[ "$(cat "$PREVIOUS_RELEASE_FILE" 2>/dev/null || true)" == "$PREVIOUS_SHA" ]]; then
+      rm -f -- "$PREVIOUS_RELEASE_FILE" ||
+        printf 'Deployment warning: failed to remove the uncommitted previous-release pointer.\n' >&2
+    fi
+  fi
+  if [[ -n "$PREVIOUS_RELEASE_TMP" && -f "$PREVIOUS_RELEASE_TMP" ]]; then
+    rm -f -- "$PREVIOUS_RELEASE_TMP" || true
+  fi
+  if [[ -n "$PREVIOUS_RELEASE_RESTORE_TMP" && -f "$PREVIOUS_RELEASE_RESTORE_TMP" ]]; then
+    rm -f -- "$PREVIOUS_RELEASE_RESTORE_TMP" || true
+  fi
+  cleanup_staging
+  return "$exit_status"
+}
+trap cleanup_deployment EXIT
 
 if [[ -d "$SOURCE_DIR" ]]; then
   [[ -f "$SOURCE_MARKER" ]] && [[ "$(cat "$SOURCE_MARKER")" == "$COMMIT_SHA" ]] ||
@@ -286,6 +337,7 @@ fi
 
 compose up -d --wait --wait-timeout 120 db || fail "MySQL did not become healthy."
 compose run --rm --no-deps app npm run migrate || fail "application migrations failed; app remains stopped for operator recovery."
+CANDIDATE_APP_ATTEMPTED=true
 compose up -d --no-deps --wait --wait-timeout 120 app || fail "application container did not become healthy."
 
 HEALTH_RETRIES="${BOTMERZZ_HEALTH_RETRIES:-15}"
@@ -346,12 +398,24 @@ if [[ -f "$VOLUME_MARKER" ]]; then
   mv -f "$VOLUME_MARKER.tmp" "$VOLUME_MARKER"
 fi
 
-PREVIOUS_SHA=""
 if [[ -L "$ACTIVE_LINK" ]]; then
   PREVIOUS_TARGET="$(readlink "$ACTIVE_LINK")"
   PREVIOUS_SHA="${PREVIOUS_TARGET#releases/}"
-  printf '%s\n' "$PREVIOUS_SHA" > "$APP_DIR/previous-release.tmp"
-  mv -f "$APP_DIR/previous-release.tmp" "$APP_DIR/previous-release"
+  if [[ -e "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
+    if [[ ! -f "$PREVIOUS_RELEASE_FILE" || -L "$PREVIOUS_RELEASE_FILE" ]]; then
+      fail "previous-release pointer exists but is not a regular file."
+    fi
+    PREVIOUS_RELEASE_EXISTED=true
+    PREVIOUS_RELEASE_VALUE="$(cat "$PREVIOUS_RELEASE_FILE")"
+    if [[ ! "$PREVIOUS_RELEASE_VALUE" =~ ^[a-f0-9]{40}$ ]]; then
+      fail "previous-release pointer contains an invalid commit SHA."
+    fi
+  fi
+  PREVIOUS_RELEASE_TMP="$(mktemp "$APP_DIR/.previous-release.${COMMIT_SHA}.XXXXXX")"
+  printf '%s\n' "$PREVIOUS_SHA" > "$PREVIOUS_RELEASE_TMP"
+  PREVIOUS_RELEASE_UPDATE_STARTED=true
+  mv -f "$PREVIOUS_RELEASE_TMP" "$PREVIOUS_RELEASE_FILE"
+  PREVIOUS_RELEASE_TMP=""
 fi
 
 NEXT_ACTIVE_LINK="$APP_DIR/.active-$COMMIT_SHA-$$"
@@ -361,6 +425,7 @@ if mv --version >/dev/null 2>&1; then
 else
   mv -fh "$NEXT_ACTIVE_LINK" "$ACTIVE_LINK"
 fi
+DEPLOYMENT_PROMOTED=true
 
 printf 'Deployment succeeded for commit %s.\n' "$COMMIT_SHA"
 printf 'Scheduler and Learning flags were verified in the running app environment.\n'

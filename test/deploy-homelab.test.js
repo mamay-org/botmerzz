@@ -38,6 +38,7 @@ function commitSource(fixture, content = 'FROM node:22-bookworm-slim\n') {
 function createFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'botmerzz-deploy-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const systemMv = execFileSync('which', ['mv'], { encoding: 'utf8' }).trim();
   const fixture = {
     root,
     workspace: path.join(root, 'workspace'),
@@ -108,8 +109,18 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$CURL_LOG"
 exit "\${FAKE_CURL_STATUS:-0}"
 `);
+  fs.writeFileSync(path.join(fixture.bin, 'mv'), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${FAKE_ACTIVE_PROMOTION_STATUS:-0}" != 0 ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" == "$BOTMERZZ_APP_DIR"/.active-* ]]; then exit "$FAKE_ACTIVE_PROMOTION_STATUS"; fi
+  done
+fi
+exec ${JSON.stringify(systemMv)} "$@"
+`);
   fs.chmodSync(path.join(fixture.bin, 'docker'), 0o755);
   fs.chmodSync(path.join(fixture.bin, 'curl'), 0o755);
+  fs.chmodSync(path.join(fixture.bin, 'mv'), 0o755);
   fixture.sha = commitSource(fixture);
   return fixture;
 }
@@ -208,7 +219,7 @@ test('fresh deployment builds the exact commit locally, migrates, verifies readi
   assert.doesNotMatch(commands, /down -v|volume rm|image prune|image rm|ghcr\.io|ssh /i);
 });
 
-test('successful release switches to its SHA and retains the previous release reference; failed health never promotes', t => {
+test('successful release promotes its SHA; failed health stops the unpromoted candidate and preserves release pointers', t => {
   const fixture = createFixture(t);
   const first = deploy(fixture, fixture.sha);
   assert.equal(first.status, 0, first.stderr || first.stdout);
@@ -226,7 +237,51 @@ test('successful release switches to its SHA and retains the previous release re
   assert.match(failed.stderr, /health check failed/i);
   assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${promotedSha}`);
   assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), previousSha);
-  assert.doesNotMatch(logText(fixture.dockerLog), /image prune|image rm|down -v|volume rm/i);
+  const failedDeploymentCommands = logText(fixture.dockerLog);
+  const lastCandidateStart = failedDeploymentCommands.lastIndexOf('up -d --no-deps --wait --wait-timeout 120 app');
+  const lastAppStop = failedDeploymentCommands.lastIndexOf(' stop app');
+  assert.ok(lastAppStop > lastCandidateStart, 'a failed candidate must be stopped before the deployment exits');
+  assert.doesNotMatch(failedDeploymentCommands, /image prune|image rm|down -v|volume rm/i);
+});
+
+test('failed active-pointer promotion stops the candidate and restores previous-release', t => {
+  const fixture = createFixture(t);
+  const first = deploy(fixture, fixture.sha);
+  assert.equal(first.status, 0, first.stderr || first.stdout);
+  const olderSha = fixture.sha;
+
+  fixture.sha = commitSource(fixture, 'FROM node:22-bookworm-slim\n# promoted release\n');
+  const second = deploy(fixture, fixture.sha, { FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true' });
+  assert.equal(second.status, 0, second.stderr || second.stdout);
+  const activeSha = fixture.sha;
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), olderSha);
+
+  fixture.sha = commitSource(fixture, 'FROM node:22-bookworm-slim\n# pointer promotion fails\n');
+  const failed = deploy(fixture, fixture.sha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true', FAKE_ACTIVE_PROMOTION_STATUS: '1',
+  });
+  assert.notEqual(failed.status, 0);
+  assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${activeSha}`);
+  assert.equal(fs.readFileSync(path.join(fixture.appDir, 'previous-release'), 'utf8').trim(), olderSha);
+  const commands = logText(fixture.dockerLog);
+  assert.ok(commands.lastIndexOf(' stop app') > commands.lastIndexOf('up -d --no-deps --wait --wait-timeout 120 app'));
+});
+
+test('failed same-SHA promotion stops the candidate and restores the pre-deployment pointer state', t => {
+  const fixture = createFixture(t);
+  const first = deploy(fixture, fixture.sha);
+  assert.equal(first.status, 0, first.stderr || first.stdout);
+  const activeSha = fixture.sha;
+  assert.equal(fs.existsSync(path.join(fixture.appDir, 'previous-release')), false);
+
+  const failed = deploy(fixture, activeSha, {
+    FAKE_APP_RUNNING: 'true', FAKE_VOLUME_EXISTS: 'true', FAKE_ACTIVE_PROMOTION_STATUS: '1',
+  });
+  assert.notEqual(failed.status, 0);
+  assert.equal(fs.readlinkSync(path.join(fixture.appDir, 'active')), `releases/${activeSha}`);
+  assert.equal(fs.existsSync(path.join(fixture.appDir, 'previous-release')), false);
+  const commands = logText(fixture.dockerLog);
+  assert.ok(commands.lastIndexOf(' stop app') > commands.lastIndexOf('up -d --no-deps --wait --wait-timeout 120 app'));
 });
 
 test('failed migration leaves the app stopped and active release unchanged', t => {

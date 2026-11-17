@@ -343,10 +343,10 @@ Setiap layanan baru di homelab **wajib** dipetakan dengan aturan baku:
 1. **Isolasi Bridge Network Antar-LXC:**
    Docker network `web-gateway` hanya beroperasi di dalam kernel namespace LXC 10080. Container di LXC lain tidak dapat di-attach ke network ini. Komunikasi antar-LXC wajib menggunakan rute IP LAN fisik (`192.168.0.0/24`).
 2. **Mounting Docker Socket (`/var/run/docker.sock:ro`):**
-   Meskipun menggunakan mode read-only (`:ro`), akses socket memungkinkan Traefik membaca semua label dan metadata container. Pastikan dashboard Traefik tidak pernah diekspos ke publik.
+   Mode mount `:ro` hanya membatasi perubahan filesystem pada socket; itu tidak membatasi operasi melalui Docker API. Proses Traefik yang dapat mengakses socket berpotensi mengendalikan Docker Engine dan container lain pada LXC 10080. Sebelum mengandalkan konfigurasi ini, pastikan kebutuhan Docker provider dan risiko tersebut telah ditinjau. Jika discovery label Docker tidak diperlukan, nonaktifkan Docker provider dan hapus mount socket. Jika masih diperlukan, gunakan socket proxy dengan allowlist endpoint baca-saja yang sesuai. Akses socket saat ini belum diverifikasi di LXC.
 3. **Traefik Dashboard Insecure Mode (`:8080`):**
    Flag `--api.insecure=true` mengaktifkan web GUI tanpa autentikasi pada port `8080`.
-   - **Aturan Akses:** Hanya boleh diakses via LAN internal (`192.168.0.0/24`) atau koneksi privat (Tailscale/WireGuard).
+   - **Aturan Akses:** Batasi port dashboard dengan firewall LXC ke LAN internal (`192.168.0.0/24`) atau koneksi privat (Tailscale/WireGuard). Pemetaan port Compose `8080:8080` sendiri tidak menjamin akses LAN saja.
    - **Larangan Keras:** DILARANG membuat Public Hostname di Cloudflare Zero Trust yang mengarah ke port `8080`.
 4. **Mekanisme Inotify di Linux LXC:**
    Opsi `--providers.file.watch=true` menggunakan Linux *inotify kernel events*.

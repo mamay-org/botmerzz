@@ -1,5 +1,42 @@
+SET @merzz_expected_legacy_status_check = '(statusin(''pending'',''generating'',''ready'',''publishing'',''published'',''partial'',''failed'',''unknown'',''canceled'',''skipped''))';
+SET @merzz_expected_new_status_check = '(statusin(''pending'',''generating'',''ready'',''publishing'',''published'',''partial'',''failed'',''unknown'',''canceled'',''skipped'',''admin_closed_unknown''))';
 SET @merzz_status_check = 'ADD CONSTRAINT slots_status_allowed CHECK (status IN (''pending'', ''generating'', ''ready'', ''publishing'', ''published'', ''partial'', ''failed'', ''unknown'', ''canceled'', ''skipped'', ''admin_closed_unknown''))';
-SET @merzz_ddl = IF((SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='slots' AND constraint_name='slots_status_allowed' AND constraint_type='CHECK') > 0, 'SELECT 1', CONCAT('ALTER TABLE slots ', IF((SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='slots' AND constraint_name='slots_chk_1' AND constraint_type='CHECK') > 0, 'DROP CHECK slots_chk_1, ', ''), @merzz_status_check));
+SET @merzz_new_status_check_count = (
+  SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS tc
+  JOIN information_schema.CHECK_CONSTRAINTS cc
+    ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME
+  WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME='slots' AND tc.CONSTRAINT_NAME='slots_status_allowed'
+    AND tc.CONSTRAINT_TYPE='CHECK'
+    AND REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cc.CHECK_CLAUSE), '`', ''), '_utf8mb4', ''), ' ', ''), CHAR(92), '') = @merzz_expected_new_status_check
+);
+SET @merzz_legacy_status_checks = (
+  SELECT GROUP_CONCAT(CONCAT('DROP CHECK `', REPLACE(tc.CONSTRAINT_NAME, '`', '``'), '`') ORDER BY tc.CONSTRAINT_NAME SEPARATOR ', ')
+  FROM information_schema.TABLE_CONSTRAINTS tc
+  JOIN information_schema.CHECK_CONSTRAINTS cc
+    ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME
+  WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME='slots' AND tc.CONSTRAINT_TYPE='CHECK'
+    AND REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cc.CHECK_CLAUSE), '`', ''), '_utf8mb4', ''), ' ', ''), CHAR(92), '') = @merzz_expected_legacy_status_check
+);
+SET @merzz_unexpected_status_check_count = (
+  SELECT COUNT(*) FROM (
+    SELECT REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cc.CHECK_CLAUSE), '`', ''), '_utf8mb4', ''), ' ', ''), CHAR(92), '') AS normalized_clause
+    FROM information_schema.TABLE_CONSTRAINTS tc
+    JOIN information_schema.CHECK_CONSTRAINTS cc
+      ON cc.CONSTRAINT_SCHEMA=tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME=tc.CONSTRAINT_NAME
+    WHERE tc.CONSTRAINT_SCHEMA=DATABASE() AND tc.TABLE_NAME='slots' AND tc.CONSTRAINT_TYPE='CHECK'
+  ) slot_checks
+  WHERE LOCATE('status', normalized_clause) > 0
+    AND normalized_clause NOT IN (@merzz_expected_legacy_status_check, @merzz_expected_new_status_check)
+);
+SET @merzz_ddl = IF(@merzz_unexpected_status_check_count > 0,
+  'SELECT merzz_migration_020_unrecognized_slots_status_check',
+  IF(@merzz_new_status_check_count > 0 AND @merzz_legacy_status_checks IS NULL,
+    'SELECT 1',
+    CONCAT('ALTER TABLE slots ', COALESCE(@merzz_legacy_status_checks, ''),
+      IF(@merzz_legacy_status_checks IS NOT NULL AND @merzz_new_status_check_count = 0, ', ', ''),
+      IF(@merzz_new_status_check_count = 0, @merzz_status_check, ''))
+  )
+);
 PREPARE merzz_migration_stmt FROM @merzz_ddl;
 EXECUTE merzz_migration_stmt;
 DEALLOCATE PREPARE merzz_migration_stmt;

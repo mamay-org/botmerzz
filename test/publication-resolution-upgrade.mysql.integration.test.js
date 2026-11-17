@@ -69,6 +69,20 @@ test('migration 020 upgrades an isolated migration 019 schema and recovers when 
       error => error.code === 'ER_CHECK_CONSTRAINT_VIOLATED');
 
     await fs.copyFile(path.join(migrationDir, '020_manual_publication_resolution.sql'), path.join(directory, '020_manual_publication_resolution.sql'));
+    await pool.query('ALTER TABLE slots DROP CHECK slots_chk_1');
+    await pool.query(`ALTER TABLE slots ADD CONSTRAINT unexpected_slots_status_guard
+      CHECK (status <> 'admin_closed_unknown')`);
+    await assert.rejects(runMigrations(pool, { migrationsDir: directory }), error => error.message === 'MIGRATION_FAILED',
+      'migration 020 must stop when an unrecognized status check could block the new terminal state');
+    const [[rejectedStatusCheck]] = await pool.execute(`SELECT COUNT(*) AS count FROM information_schema.TABLE_CONSTRAINTS
+      WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='slots' AND CONSTRAINT_NAME='slots_status_allowed' AND CONSTRAINT_TYPE='CHECK'`);
+    assert.equal(Number(rejectedStatusCheck.count), 0, 'an incompatible status check must be detected before altering slots');
+    const [[unrecordedMigration]] = await pool.execute("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='020_manual_publication_resolution.sql'");
+    assert.equal(Number(unrecordedMigration.count), 0, 'a rejected status-check migration must remain retryable');
+
+    await pool.query('ALTER TABLE slots DROP CHECK unexpected_slots_status_guard');
+    await pool.query(`ALTER TABLE slots ADD CONSTRAINT legacy_slots_status_guard
+      CHECK (status IN ('pending', 'generating', 'ready', 'publishing', 'published', 'partial', 'failed', 'unknown', 'canceled', 'skipped'))`);
     assert.deepEqual(await runMigrations(pool, { migrationsDir: directory }), ['020_manual_publication_resolution.sql']);
     assert.deepEqual(await runMigrations(pool, { migrationsDir: directory }), []);
 
