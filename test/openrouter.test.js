@@ -15,6 +15,17 @@ test('forwards only explicitly configured bounded sampling parameters', async ()
   await assert.rejects(api.generate({ system: 'system', user: 'user', temperature: 3 }), { code: 'invalid_request' });
 });
 
+test('OpenRouter forwards AbortSignal for bounded offline evaluations', async () => {
+  const controller = new AbortController(); let received;
+  const api = createOpenRouterClient({ apiKey:'test-key',model:'test/model',http:{request:async(input)=>{
+    received=input.signal;
+    return {data:{choices:[{finish_reason:'stop',message:{content:'ok'}}]}};
+  }}});
+  assert.equal(await api.generate({system:'system',user:'user',signal:controller.signal}),'ok');
+  assert.equal(received,controller.signal);
+  await assert.rejects(api.generate({system:'system',user:'user',signal:{aborted:false}}),{code:'invalid_request'});
+});
+
 test("generation sends the configured model and prompts and returns only assistant content", async () => {
   const api = createOpenRouterClient({ apiKey: "sk-or-secret", model: "test/model", http: { request: async (request) => {
     assert.equal(request.method, "POST");
@@ -55,4 +66,18 @@ test("OpenRouter transport failures discard request secrets and response bodies"
     return true;
   });
   assert.equal(calls, 1);
+});
+
+test('OpenRouter records safe HTTP and transport diagnostics without retaining provider error text', async () => {
+  const api = createOpenRouterClient({ apiKey: 'sk-or-secret', model: 'model', http: { request: async () => {
+    throw Object.assign(new Error('sk-or-secret timeout'), { code: 'ETIMEDOUT', config: { headers: { Authorization: 'sk-or-secret' } } });
+  } } });
+  await assert.rejects(api.generate({ system: 'system', user: 'user' }), (error) => {
+    assert.equal(error.code, 'network_error');
+    assert.equal(error.status, null);
+    assert.equal(error.transportCode, 'ETIMEDOUT');
+    assert.equal(error.timedOut, true);
+    assert.doesNotMatch(inspect(error), /sk-or-secret|timeout|Authorization/);
+    return true;
+  });
 });

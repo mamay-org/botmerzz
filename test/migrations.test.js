@@ -18,6 +18,7 @@ function fakePool({ locked = true, failStatement, unlockFails = false } = {}) {
         return [[{ released: 1 }]];
       }
       if (sql.startsWith("SELECT version")) return [[...applied].map((version) => ({ version }))];
+      if (sql.includes('information_schema.STATISTICS')) return [[]];
       if (failStatement && sql.includes(failStatement)) throw new Error("database secret-value");
       return [{ affectedRows: 1 }];
     },

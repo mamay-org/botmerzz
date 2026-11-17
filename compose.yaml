@@ -30,11 +30,18 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-3000}
       BASE_URL: ${BASE_URL:-http://localhost:${HOST_PORT:-3000}}
       TIMEZONE: ${TIMEZONE:-Asia/Kuala_Lumpur}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
+      LEARNING_CAPTURE_ENABLED: ${LEARNING_CAPTURE_ENABLED:-false}
+      LEARNING_ACTIVATION_ENABLED: ${LEARNING_ACTIVATION_ENABLED:-false}
+      LEARNING_RETRIEVAL_ENABLED: ${LEARNING_RETRIEVAL_ENABLED:-false}
+      LEARNING_PROMPT_INTEGRATION_ENABLED: ${LEARNING_PROMPT_INTEGRATION_ENABLED:-false}
+      LEARNING_SHADOW_ENABLED: ${LEARNING_SHADOW_ENABLED:-false}
+      LEARNING_RETENTION_ENABLED: ${LEARNING_RETENTION_ENABLED:-false}
+      LEARNING_RETENTION_DAYS: ${LEARNING_RETENTION_DAYS:-}
       SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-60}
       DB_HOST: db
       DB_PORT: 3306
@@ -57,7 +64,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${HOST_PORT:-3000}:${PORT:-3000}"
+      - "192.168.0.27:3000:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s

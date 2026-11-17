@@ -189,9 +189,9 @@ function validateSettings(input = {}) {
     else guardrails[field] = [...new Set(values.map((value) => value.trim()))];
   }
   const hookVocabulary = input.guardrails?.hookVocabulary ?? [];
-  if (!Array.isArray(hookVocabulary) || hookVocabulary.length > 100
+  if (!Array.isArray(hookVocabulary) || hookVocabulary.length > 300
     || hookVocabulary.some((value) => typeof value !== 'string' || !value.trim() || value.length > 500)) {
-    errors['guardrails.hookVocabulary'] = 'Use up to 100 suggested words or phrases, with up to 500 characters each.';
+    errors['guardrails.hookVocabulary'] = 'Use up to 300 suggested words or phrases, with up to 500 characters each.';
   } else {
     const seenVocabulary = new Set();
     guardrails.hookVocabulary = hookVocabulary.map((value) => value.normalize('NFKC').trim()).filter((value) => {

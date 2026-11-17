@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS generation_learning_snapshots (
+  attempt_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  slot_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  model_id VARCHAR(128) NULL,
+  configuration_version VARCHAR(64) NULL,
+  product_category VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  content_topic VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  learning_activation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  learning_retrieval_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  prompt_integration_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  facts_version_json JSON NOT NULL,
+  applied_rules_json JSON NOT NULL,
+  omitted_rules_json JSON NOT NULL,
+  retrieval_context_json JSON NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX generation_learning_slot_created (slot_id, created_at),
+  INDEX generation_learning_created_attempt (created_at, attempt_id),
+  FOREIGN KEY (attempt_id) REFERENCES generation_attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

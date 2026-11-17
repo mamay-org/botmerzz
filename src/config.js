@@ -31,6 +31,20 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   const trustProxy = env.TRUST_PROXY === "true";
   if (env.SCHEDULER_ENABLED !== undefined && !["true", "false"].includes(env.SCHEDULER_ENABLED)) errors.push("SCHEDULER_ENABLED");
   const schedulerEnabled = env.SCHEDULER_ENABLED === "true";
+  if (env.LEARNING_CAPTURE_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_CAPTURE_ENABLED)) errors.push("LEARNING_CAPTURE_ENABLED");
+  if (env.LEARNING_RETENTION_ENABLED !== undefined && !["true", "false"].includes(env.LEARNING_RETENTION_ENABLED)) errors.push("LEARNING_RETENTION_ENABLED");
+  const learningFlags = {
+    activation: 'LEARNING_ACTIVATION_ENABLED',
+    retrieval: 'LEARNING_RETRIEVAL_ENABLED',
+    promptIntegration: 'LEARNING_PROMPT_INTEGRATION_ENABLED',
+    shadow: 'LEARNING_SHADOW_ENABLED',
+  };
+  for (const key of Object.values(learningFlags)) {
+    if (env[key] !== undefined && !['true', 'false'].includes(env[key])) errors.push(key);
+  }
+  const learningRetentionEnabled = env.LEARNING_RETENTION_ENABLED === 'true';
+  if (learningRetentionEnabled && !env.LEARNING_RETENTION_DAYS) errors.push('LEARNING_RETENTION_DAYS');
+  const learningRetentionDays = !env.LEARNING_RETENTION_DAYS ? null : integer('LEARNING_RETENTION_DAYS', 30, 1, 3650);
   const schedulerIntervalSeconds = integer("SCHEDULER_INTERVAL_SECONDS", 60, 15, 3600);
   const timezone = env.TIMEZONE ?? "Asia/Kuala_Lumpur";
   try {
@@ -64,7 +78,11 @@ function loadEnv(env = process.env, { requireDatabase = true, nodeVersion = proc
   if (errors.length) throw new Error(`Invalid configuration: ${[...new Set(errors)].join(", ")}`);
   return {
     nodeEnv, port, baseUrl: new URL(baseUrl).origin, timezone,
-    schedulerEnabled, schedulerIntervalSeconds, trustProxy,
+    schedulerEnabled, schedulerIntervalSeconds, trustProxy, learningCaptureEnabled: env.LEARNING_CAPTURE_ENABLED === "true", learningRetentionEnabled, learningRetentionDays,
+    learningActivationEnabled: env[learningFlags.activation] === 'true',
+    learningRetrievalEnabled: env[learningFlags.retrieval] === 'true',
+    learningPromptIntegrationEnabled: env[learningFlags.promptIntegration] === 'true',
+    learningShadowEnabled: env[learningFlags.shadow] === 'true',
     automationEnabled: false,
     db,
     tebar: {

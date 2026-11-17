@@ -85,3 +85,32 @@ test("Node versions older than 20.6 are refused", () => {
   }
   assert.equal(loadEnv(database, { nodeVersion: "20.6.0" }).timezone, "Asia/Kuala_Lumpur");
 });
+
+test('learning retention is disabled by default and requires an explicit bounded policy', () => {
+  const { loadEnv } = require('../src/config');
+  const options = {requireDatabase:false};
+  const base = {NODE_ENV:'test'};
+  assert.equal(loadEnv(base, options).learningRetentionEnabled,false);
+  assert.throws(() => loadEnv({...base,LEARNING_RETENTION_ENABLED:'true'},options),/LEARNING_RETENTION_DAYS/);
+  assert.throws(() => loadEnv({...base,LEARNING_RETENTION_ENABLED:'true',LEARNING_RETENTION_DAYS:'0'},options),/LEARNING_RETENTION_DAYS/);
+  assert.equal(loadEnv({...base,LEARNING_RETENTION_ENABLED:'true',LEARNING_RETENTION_DAYS:'30'},options).learningRetentionDays,30);
+});
+
+test('learning execution and shadow feature controls default off and validate independently', () => {
+  const options = {requireDatabase:false};
+  const base = {NODE_ENV:'test'};
+  const defaults = loadEnv(base, options);
+  assert.equal(defaults.learningActivationEnabled, false);
+  assert.equal(defaults.learningRetrievalEnabled, false);
+  assert.equal(defaults.learningPromptIntegrationEnabled, false);
+  assert.equal(defaults.learningShadowEnabled, false);
+  assert.deepEqual(loadEnv({...base,LEARNING_ACTIVATION_ENABLED:'true'},options), {
+    ...defaults, learningActivationEnabled:true,
+  });
+  assert.equal(loadEnv({...base,LEARNING_RETRIEVAL_ENABLED:'true'},options).learningRetrievalEnabled, true);
+  assert.equal(loadEnv({...base,LEARNING_PROMPT_INTEGRATION_ENABLED:'true'},options).learningPromptIntegrationEnabled, true);
+  assert.equal(loadEnv({...base,LEARNING_SHADOW_ENABLED:'true'},options).learningShadowEnabled, true);
+  for (const key of ['LEARNING_ACTIVATION_ENABLED','LEARNING_RETRIEVAL_ENABLED','LEARNING_PROMPT_INTEGRATION_ENABLED','LEARNING_SHADOW_ENABLED']) {
+    assert.throws(() => loadEnv({...base,[key]:'yes'},options), new RegExp(key));
+  }
+});

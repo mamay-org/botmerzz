@@ -64,16 +64,6 @@ function createConfigurationValidators({ config, http = axios, tebarFactory = cr
       provider: provider.slice(0, 100), status, reason,
     };
   }
-  async function validateModel(model) {
-    if (!validModel(model)) throw failure('INVALID_MODEL');
-    const [author, slug]=model.split('/');
-    const data=(await request(`model/${encodeURIComponent(author)}/${encodeURIComponent(slug)}`, { modelLookup:true }))?.data;
-    if (!data || data.id !== model) throw failure('MODEL_NOT_FOUND',422);
-    const result = modelMetadata(data);
-    if (result.status === 'INCOMPATIBLE') throw failure('MODEL_INCOMPATIBLE',422);
-    if (result.status === 'UNVERIFIED') throw failure('MODEL_METADATA_UNVERIFIED',503);
-    return result;
-  }
   async function listModels() {
     if (modelCatalog && clock() < modelCatalogExpiresAt) return modelCatalog.map(item => ({ ...item }));
     if (!modelCatalogRequest) modelCatalogRequest = (async () => {
@@ -87,6 +77,22 @@ function createConfigurationValidators({ config, http = axios, tebarFactory = cr
     try { return (await modelCatalogRequest).map(item => ({ ...item })); }
     finally { modelCatalogRequest = null; }
   }
-  return { validateAccount, validateModel, listModels };
+  async function validateOpenRouterCredentials() {
+    const data = (await request('key'))?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw failure('OPENROUTER_UNAVAILABLE', 503);
+    return { verified: true };
+  }
+  async function validateModel(model) {
+    if (!validModel(model)) throw failure('INVALID_MODEL');
+    await validateOpenRouterCredentials();
+    const [author, slug]=model.split('/');
+    const data=(await request(`model/${encodeURIComponent(author)}/${encodeURIComponent(slug)}`, { modelLookup:true }))?.data;
+    if (!data || data.id !== model) throw failure('MODEL_NOT_FOUND',422);
+    const result = modelMetadata(data);
+    if (result.status === 'INCOMPATIBLE') throw failure('MODEL_INCOMPATIBLE',422);
+    if (result.status === 'UNVERIFIED') throw failure('MODEL_METADATA_UNVERIFIED',503);
+    return result;
+  }
+  return { validateAccount, validateModel, validateOpenRouterCredentials, listModels };
 }
 module.exports = { createConfigurationValidators };

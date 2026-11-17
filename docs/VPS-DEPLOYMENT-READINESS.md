@@ -1,5 +1,7 @@
 # Laporan Kesiapan Deployment VPS BotMerzz
 
+> **Historical audit notice:** This report is a snapshot of the legacy VPS/GHCR proposal, not current BotMerzz deployment approval. The current target is the existing Proxmox app in LXC `10027`; use [HOMELAB-SSOT](HOMELAB-SSOT.md) and [publication-resolution runbook](publication-resolution-runbook.md). No deployment, workflow activation, or push is authorized by this report or by the publication-resolution work.
+
 **Tanggal audit:** 6 November 2026
 **Cakupan:** codebase, Docker Compose, MySQL, AI guardrails, Tebar, scheduler, Telegram, CI/CD, dan pengujian lokal. Tidak ada koneksi SSH/VPS, permintaan API provider, atau publikasi Threads sungguhan.
 

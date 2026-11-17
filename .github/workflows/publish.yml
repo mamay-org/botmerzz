@@ -109,6 +109,13 @@ jobs:
           chmod 600 "${HOME}/.ssh/known_hosts"
           ssh-keygen -F "${STAGING_SSH_HOST}" -f "${HOME}/.ssh/known_hosts" >/dev/null
 
+      # This runs after the deploy job has acquired its concurrency slot.
+      # Older CI runs must not replace a newer main revision.
+      - name: Refuse stale main revision
+        env:
+          RELEASE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-release-head.js
+
       - name: Deploy digest to staging VPS
         shell: bash
         env:

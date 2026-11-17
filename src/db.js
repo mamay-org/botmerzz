@@ -29,4 +29,31 @@ function createPool(config) {
   return pool;
 }
 
-module.exports = { createPool };
+async function endOptionalPoolBounded(pool, timeoutMs = 1000) {
+  if (!pool || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) return true;
+  let timer;
+  const close = Promise.resolve().then(() => pool.end()).then(() => true, () => true);
+  const completed = await Promise.race([close, new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); })]);
+  clearTimeout(timer);
+  if (completed) return true;
+
+  // mysql2 3.24.6 Pool.end() calls _realEnd() on every connection and can wait
+  // indefinitely for a stalled active query. Connection.destroy() aliases its
+  // graceful close(), so signal a fatal connection error to settle command
+  // callbacks, then destroy the underlying socket. Optional pools only use this.
+  const connections = pool.pool?._allConnections;
+  if (connections && Number.isInteger(connections.length)) {
+    for (let i = connections.length - 1; i >= 0; i--) {
+      const connection = connections.get(i);
+      try {
+        if (typeof connection?._handleFatalError === 'function') {
+          connection._handleFatalError(Object.assign(new Error('OPTIONAL_POOL_SHUTDOWN'), { code: 'PROTOCOL_CONNECTION_LOST' }));
+          connection.stream?.destroy();
+        } else connection?.destroy?.();
+      } catch { /* Continue releasing other optional connections. */ }
+    }
+  }
+  return false;
+}
+
+module.exports = { createPool, endOptionalPoolBounded };

@@ -11,10 +11,13 @@ const { registerDashboardRoutes } = require('./http/routes/dashboard');
 const { registerAutomationRoutes } = require('./http/routes/automation');
 const { registerWebhookRoutes } = require('./http/routes/webhooks');
 const { registerIntegrationRoutes } = require('./http/routes/integrations');
+const { registerPublicationResolutionRoutes } = require('./http/routes/publication-resolution');
+const { registerLearningRoutes } = require('./http/routes/learning');
+const { registerLearningEvaluationRoutes } = require('./http/routes/learning-evaluation');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 const PUBLIC_SERVER_ERRORS = new Set([
-  'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
+  'PUBLICATION_VERIFICATION_UNAVAILABLE', 'CONFIG_UNAVAILABLE', 'TEBAR_NOT_CONFIGURED', 'TEBAR_UNAUTHORIZED', 'TEBAR_RATE_LIMITED', 'TEBAR_UNAVAILABLE',
   'OPENROUTER_NOT_CONFIGURED', 'OPENROUTER_RATE_LIMITED', 'OPENROUTER_UNAUTHORIZED', 'OPENROUTER_UNAVAILABLE', 'MODEL_METADATA_UNVERIFIED',
 ]);
 
@@ -60,6 +63,9 @@ function createServer({ config, repository, auth, services = {} }) {
       if (services.pool) await services.pool.query('SELECT 1');
       else if (repository.healthCheck) await repository.healthCheck();
       else await repository.getSettings();
+      if (config.schedulerEnabled === true && services.schedulerStatus?.().enabled !== true) {
+        return res.status(503).json({ status: 'not_ready' });
+      }
       return res.json({ status: 'ready' });
     } catch {
       return res.status(503).json({ status: 'not_ready' });
@@ -67,7 +73,10 @@ function createServer({ config, repository, auth, services = {} }) {
   });
 
   registerSessionAdminRoutes(app, { repository, auth, middleware });
-  registerIntegrationRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerPublicationResolutionRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerIntegrationRoutes(app, { repository, services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerLearningRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
+  registerLearningEvaluationRoutes(app, { services, authenticated: middleware.authenticated, mutation: middleware.mutation });
   registerTemplateRoutes(app, {
     repository,
     authenticated: middleware.authenticated,

@@ -1,0 +1,65 @@
+CREATE TABLE IF NOT EXISTS learning_feedback (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  slot_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  caption_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  reviewer_id BIGINT UNSIGNED NOT NULL,
+  feedback_type VARCHAR(16) NOT NULL,
+  ratings_json JSON NOT NULL,
+  explanation VARCHAR(1000) NOT NULL DEFAULT '',
+  rubric_version VARCHAR(16) NOT NULL DEFAULT '1',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY feedback_reviewer_caption (slot_id, caption_hash, reviewer_id),
+  FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE RESTRICT,
+  FOREIGN KEY (reviewer_id) REFERENCES admins(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS learning_candidates (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  slot_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  feedback_id BIGINT UNSIGNED NULL,
+  event_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+  source VARCHAR(32) NOT NULL,
+  stage VARCHAR(32) NULL,
+  failure_code VARCHAR(64) NULL,
+  category VARCHAR(64) NOT NULL,
+  scope VARCHAR(32) NOT NULL DEFAULT 'global',
+  explanation VARCHAR(1000) NOT NULL DEFAULT '',
+  caption_excerpt VARCHAR(500) NOT NULL DEFAULT '',
+  model_id VARCHAR(128) NULL,
+  config_version VARCHAR(64) NULL,
+  instruction VARCHAR(1000) NOT NULL DEFAULT '',
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  version INT UNSIGNED NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX candidate_status_created (status, created_at),
+  FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE RESTRICT,
+  FOREIGN KEY (feedback_id) REFERENCES learning_feedback(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS learning_rules (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  candidate_id BIGINT UNSIGNED NOT NULL UNIQUE,
+  rule_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
+  instruction VARCHAR(1000) NOT NULL,
+  scope VARCHAR(32) NOT NULL,
+  version INT UNSIGNED NOT NULL DEFAULT 1,
+  active BOOLEAN NOT NULL DEFAULT FALSE,
+  approved_by BIGINT UNSIGNED NOT NULL,
+  approved_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX rules_active_scope (active, scope),
+  FOREIGN KEY (candidate_id) REFERENCES learning_candidates(id) ON DELETE RESTRICT,
+  FOREIGN KEY (approved_by) REFERENCES admins(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS learning_reviews (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  candidate_id BIGINT UNSIGNED NOT NULL,
+  actor_id BIGINT UNSIGNED NOT NULL,
+  action VARCHAR(24) NOT NULL,
+  entity_version INT UNSIGNED NOT NULL,
+  reason VARCHAR(1000) NOT NULL DEFAULT '',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX reviews_created (created_at),
+  FOREIGN KEY (candidate_id) REFERENCES learning_candidates(id) ON DELETE RESTRICT,
+  FOREIGN KEY (actor_id) REFERENCES admins(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

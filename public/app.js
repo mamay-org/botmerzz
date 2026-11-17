@@ -73,7 +73,7 @@
   if (typeof document === 'undefined') return;
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false };
+  const state = { csrf: '', data: null, templates: [], integrations: null, integrationVerification: null, modelCatalog: null, modelCatalogRequest: 0, modelSelection: null, modelValidation: null, modelDraftDirty: false, modelOptionMatches: [], modelActiveOption: -1, dashboardLoad: 0, onboardingComplete: null, onboardingExpanded: false, learningCapabilities: null };
   let templateDialogState = null;
   const builtinVoiceTemplates = [
     { id: 'voice-friendly', name: 'Ramah, santai, informatif', description: 'Gaya dasar Kedai Merzz untuk gamer.', voice: 'Ramah, santai seperti gamer, natural, dan tetap informatif. Gunakan bahasa Melayu Malaysia dengan istilah game yang umum.' },
@@ -144,6 +144,7 @@
     ORIGIN_REJECTED: 'Permintaan ditolak karena asal halaman tidak cocok. Muat ulang dashboard lalu coba lagi.',
     RATE_LIMITED: 'Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.',
     SCHEDULER_DISABLED: 'Scheduler belum aktif di server. Minta administrator menyalakan scheduler sebelum mengaktifkan otomasi.',
+    AUTOMATION_PROVIDER_HOLD: 'Otomasi tertahan karena akses provider. Buka Integrasi untuk melihat penyebab dan cara pemulihan.',
     ONBOARDING_INCOMPLETE: 'Lengkapi brand, hashtag, tautan top-up dan jual akun, koneksi Threads, serta penyedia AI sebelum mengaktifkan otomasi.',
     AUTH_REQUIRED: 'Sesi login berakhir. Silakan masuk kembali.', CSRF_REJECTED: 'Sesi keamanan kedaluwarsa. Muat ulang halaman lalu coba lagi.',
     CONFIG_CONFLICT: 'Konfigurasi sudah berubah. Muat ulang konfigurasi dan periksa lagi; isian Anda tetap tersimpan di form.',
@@ -163,6 +164,13 @@
     CONFIG_VERSION_NOT_RESTORABLE: 'Versi ini tidak dapat dipulihkan karena informasinya belum lengkap.',
     CONFIG_UNAVAILABLE: 'Konfigurasi belum dapat dibaca. Coba lagi atau hubungi administrator server.',
     CONFIG_NOT_LOADED: 'Muat ulang konfigurasi sebelum melanjutkan.',
+    PUBLICATION_NOT_FOUND: 'Slot tidak ditemukan. Muat ulang konfigurasi untuk melihat daftar terbaru.',
+    PUBLICATION_STATE_CONFLICT: 'Status slot sudah berubah. Muat ulang konfigurasi dan periksa kembali.',
+    PUBLICATION_REQUEST_CONFLICT: 'ID permintaan sudah dipakai dengan data berbeda. Batalkan dialog dan periksa kembali slot.',
+    PUBLICATION_TARGET_MISMATCH: 'Tebar tidak mengonfirmasi post yang terbit di akun Threads asal. Periksa kembali ID post dan akun.',
+    PROVIDER_POST_ALREADY_LINKED: 'ID post Tebar sudah terkait dengan slot lain. Periksa riwayat sebelum melanjutkan.',
+    PUBLICATION_VERIFICATION_UNAVAILABLE: 'Verifikasi post Tebar belum tersedia. Periksa koneksi provider lalu coba lagi.',
+    PUBLICATION_RECONCILIATION_UNAVAILABLE: 'Pemeriksaan status Tebar belum berhasil. ID post tetap tersimpan; coba lagi nanti.',
   };
   const fieldLabels = {
     'brand.name': 'nama brand', 'brand.voice': 'gaya komunikasi', 'brand.contentDirection': 'arahan konten AI',
@@ -190,6 +198,14 @@
     const code = error?.code || error?.message;
     if (code === 'LOGIN_RATE_LIMITED') return formatLoginWait(error.retryAfterSeconds);
     if (errors[code]) return errors[code];
+    if (code === 'ACTIVATION_UNAVAILABLE') return 'Aktivasi belum tersedia karena pemeriksaan konflik belum siap.';
+    if (code === 'RULE_CONFLICT' && Array.isArray(error.conflicts) && error.conflicts.length) {
+      return `Aktivasi disekat: ${error.conflicts.map((item) => `${activationConflictLabel(item.code)}${item.ruleId ? ` (aturan ${item.ruleId})` : ''}`).join(', ')}.`;
+    }
+    if (code === 'FEEDBACK_ALREADY_EXISTS') return 'Anda sudah menilai versi konten ini.';
+    if (code === 'CAPTION_NOT_FOUND') return 'Konten untuk ID slot ini tidak ditemukan.';
+    if (code === 'DUPLICATE_RULE') return 'Instruksi dan lingkup tersebut sudah ada.';
+    if (code === 'REVIEW_CONFLICT') return 'Data telah berubah. Muat ulang sebelum melanjutkan.';
     if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code)) return 'Permintaan belum berhasil. Periksa kembali data atau coba lagi.';
     return code || 'Permintaan gagal. Silakan coba lagi.';
   };
@@ -266,12 +282,18 @@
     publishing: 'Sedang diterbitkan', published: 'Berhasil diterbitkan',
     failed: 'Gagal', skipped: 'Dilewati', canceled: 'Dibatalkan',
     partial: 'Sebagian berhasil', unknown: 'Belum diketahui', scheduled: 'Terjadwal',
+    admin_closed_unknown: 'Ditutup admin tanpa verifikasi',
   };
   const activityLabels = {
     post_published: 'Posting berhasil diterbitkan', publish_accepted: 'Posting diterima penyedia',
     publish_failed: 'Penerbitan gagal', publish_outcome_unknown: 'Status penerbitan belum diketahui',
     ai_generation_failed: 'Pembuatan konten AI gagal', automation_paused: 'Otomasi dijeda',
     slot_skipped: 'Jadwal posting dilewati', post_cancellation: 'Pembatalan posting',
+    'publication.close_unverified': 'Slot ditutup admin tanpa verifikasi',
+    'publication.link_provider_post': 'ID post Tebar dikaitkan oleh admin',
+    publication_close_unverified: 'Slot ditutup admin tanpa verifikasi',
+    publication_link_provider_post: 'ID post Tebar dikaitkan oleh admin',
+    provider_hold_created: 'Akses provider perlu diperiksa',
   };
   function addPasswordToggle(input) {
     if (!input?.parentNode || input.dataset.visibilityToggle === 'ready') return;
@@ -300,6 +322,7 @@
       error.code = payload.error;
       error.fields = payload.fields || {};
       error.status = response.status;
+      error.conflicts = Array.isArray(payload.conflicts) ? payload.conflicts : [];
       error.retryAfterSeconds = parseRetryAfterSeconds(payload.retryAfterSeconds, response.headers?.get?.('Retry-After'));
       throw error;
     }
@@ -502,7 +525,7 @@
       editorControl('Arahan konten AI', 'contentDirection', data.contentDirection, { multiline: true, hint: 'Acuan utama untuk topik dan sudut konten; tetap mengikuti batas AI.' }),
       editorControl('Wawasan pelanggan', 'audienceNotes', data.audienceNotes, { multiline: true }),
       editorControl('Game top-up dalam whitelist', 'gameWhitelist', data.gameWhitelist, { multiline: true, hint: 'Simpan hanya game yang sudah ada di whitelist.' }),
-      editorControl('Kosakata hook yang disarankan', 'hookVocabulary', data.hookVocabulary, { multiline: true, hint: 'Opsional. Satu kata atau frasa per baris; hanya panduan, bukan allowlist.' }),
+      editorControl('Kosakata hook yang disarankan', 'hookVocabulary', data.hookVocabulary, { multiline: true, hint: 'Opsional. Maksimal 300 kata atau frasa; satu per baris. Batas kolom 7.000 karakter; hanya panduan, bukan allowlist.' }),
       editorControl('Tautan top-up', 'trackedTopup', data.trackedTopup), editorControl('Tautan akun', 'trackedAccount', data.trackedAccount),
       editorControl('Klaim dilarang', 'forbiddenClaims', data.forbiddenClaims, { multiline: true }), editorControl('Klaim disetujui', 'approvedClaims', data.approvedClaims, { multiline: true }),
     );
@@ -579,6 +602,7 @@
     }
   }
   function loadTabData(name) {
+    if (name === 'learning') loadLearning().catch((error) => show('#learning-error', errorText(error)));
     if (name === 'admins') loadAdmins().catch((error) => show('#global-error', errorText(error)));
     if (name === 'templates') loadTemplates().catch((error) => show('#global-error', errorText(error)));
     if (name === 'integrations' || name === 'ai') loadIntegrations().catch((error) => show('#global-error', integrationError(error)));
@@ -703,9 +727,22 @@
       const pillar = document.createElement('td'); pillar.textContent = post.pillar === 'account' ? 'Akun ML' : post.pillar === 'topup' ? 'Top-up' : '—';
       const statusCell = document.createElement('td'); const badge = document.createElement('span'); badge.className = `status-label ${post.status || ''}`; badge.textContent = statusLabels[post.status] || 'Belum diketahui'; statusCell.append(badge);
       const caption = document.createElement('td'); caption.textContent = post.caption || post.errorCode || '—';
-      tr.append(time, pillar, statusCell, caption); return tr;
+      const feedback = document.createElement('td');
+      if (post.status === 'published' && (post.id || post.slotId)) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button quiet'; button.textContent = 'Beri rating';
+        button.setAttribute('aria-label', `Beri rating untuk posting ${post.id || post.slotId}`);
+        button.addEventListener('click', () => {
+          const slotInput = $('#learning-feedback-form').elements.slotId;
+          slotInput.value = String(post.id || post.slotId);
+          activateTab('learning');
+          loadTabData('learning');
+          requestAnimationFrame(() => { $('#learning-feedback-form').scrollIntoView({behavior:'smooth',block:'center'}); slotInput.focus({preventScroll:true}); });
+        });
+        feedback.append(button);
+      } else feedback.textContent = '—';
+      tr.append(time, pillar, statusCell, caption, feedback); return tr;
     });
-    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 4; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
+    if (!rows.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 5; cell.textContent = 'Belum ada riwayat posting.'; row.append(cell); rows.push(row); }
     body.replaceChildren(...rows);
   }
 
@@ -791,6 +828,303 @@
     if (error?.code === 'CONFIG_NOT_LOADED') return 'Muat ulang konfigurasi sebelum melanjutkan.';
     return errorText(error);
   }
+  const publicationActions = {
+    'close-unverified': {
+      title: 'Close as Unverified — Not Found',
+      guidance: 'Postingan masih mungkin muncul terlambat. Tutup slot hanya setelah riwayat Tebar dan Threads pada akun asal diperiksa. BotMerzz akan melewati slot ini tanpa mengirim ulang.',
+      confirmation: 'Saya telah memeriksa akun asal dan memahami bahwa postingan masih mungkin muncul terlambat.',
+      submit: 'Tutup tanpa verifikasi',
+      success: 'Slot ditutup tanpa verifikasi. Jika pergantian akun masih menunggu, periksa slot lain lalu pilih Lanjutkan pemeriksaan.',
+    },
+    'link-provider-post': {
+      title: 'Kaitkan ID post Tebar',
+      guidance: 'Cocokkan caption dan waktu publikasi terlebih dahulu. Server akan meminta Tebar mengonfirmasi bahwa ID ini sudah terbit pada profile dan akun Threads asal.',
+      confirmation: 'Saya telah mencocokkan ID post dengan caption, waktu, dan akun asal slot ini.',
+      submit: 'Verifikasi dan kaitkan ID',
+      success: 'ID post Tebar dikaitkan. Periksa status slot dan lanjutkan pergantian akun jika semua slot sudah selesai.',
+    },
+  };
+
+  function publicationNode(tag, content, className) {
+    const node = document.createElement(tag);
+    if (content !== undefined) node.textContent = content;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function publicationDate(value) {
+    const time = value && new Date(value);
+    return time && Number.isFinite(time.getTime())
+      ? time.toLocaleString('id-ID', { timeZone: 'Asia/Kuala_Lumpur', timeZoneName: 'short' })
+      : 'Tidak tersedia';
+  }
+
+  function renderProviderHolds(holds = [], configuration = {}) {
+    const renderHolds = (selector, entries) => {
+      const target = $(selector);
+      target.replaceChildren(...entries.map(({ provider, profileId, accountId, reasonCode }) => {
+        if (provider === 'openrouter') return publicationNode('p', `OpenRouter ditahan untuk seluruh akun (${reasonCode}). Perbaiki akses OpenRouter, lalu pilih Verifikasi Model dan Muat ulang model di tab AI.`);
+        const active = profileId === configuration.profileId && accountId === configuration.accountId;
+        const recovery = active ? 'Perbaiki akses akun lalu pilih Periksa akun aktif.' : 'Verifikasi pasangan ini sebelum menggunakannya kembali.';
+        return publicationNode('p', `Tebar ditahan untuk profile ${profileId}, akun ${accountId} (${reasonCode}). ${recovery}`);
+      }));
+      target.hidden = entries.length === 0;
+    };
+    const relevant = Array.isArray(holds) ? holds.filter((hold) => ['openrouter', 'tebar'].includes(hold?.provider)) : [];
+    renderHolds('#integration-provider-holds', relevant);
+    renderHolds('#ai-provider-holds', relevant.filter((hold) => hold.provider === 'openrouter'));
+  }
+
+  function openPublicationResolution(slot, action, lateLink = false) {
+    const form = $('#publication-resolution-form');
+    const link = action === 'link-provider-post';
+    const copy = lateLink ? {
+      title: 'Kaitkan publikasi yang muncul terlambat',
+      guidance: 'Slot ini sudah ditutup. Jika post kemudian ditemukan di Tebar, masukkan ID post dan pastikan post sudah terbit pada akun Threads asal. Server hanya melakukan pemeriksaan GET; tindakan ini tidak menerbitkan ulang post.',
+      confirmation: 'Saya telah mencocokkan ID post, caption, waktu, dan akun Threads asal serta memahami post tidak akan dikirim ulang.',
+      submit: 'Verifikasi tanpa mengirim ulang',
+    } : publicationActions[action];
+    form.reset();
+    state.publicationResolution = { slotId: slot.id, action, lateLink };
+    $('#publication-resolution-title').textContent = copy.title;
+    $('#publication-resolution-target').textContent = `Slot ${slot.id} · Profile ${slot.profileId || '—'} · Akun ${slot.accountId || '—'}`;
+    $('#publication-resolution-guidance').textContent = copy.guidance;
+    $('#publication-resolution-confirm-label').textContent = copy.confirmation;
+    $('#publication-resolution-submit').textContent = copy.submit;
+    $('#publication-resolution-error').hidden = true;
+    $('#publication-resolution-result').hidden = true;
+    $('#publication-provider-post-field').hidden = !link;
+    form.elements.providerPostId.required = link;
+    $('#publication-resolution-dialog').showModal();
+  }
+
+  function renderPublicationCard(slot, lateLink = false) {
+    const card = publicationNode('article', undefined, 'integration-history-item publication-card stack');
+    const title = publicationNode('h3', `Slot ${slot.id}`);
+    const fields = publicationNode('dl', undefined, 'integration-summary');
+    for (const [label, value] of [
+      ['Profile asal', slot.profileId], ['Akun Threads asal', slot.accountId],
+      ['Waktu percobaan', publicationDate(slot.publishStartedAt)], ['Waktu terjadwal', publicationDate(slot.scheduledAt)],
+      ['Status slot', statusLabels[slot.status] || slot.status], ['Status Tebar', slot.providerStatus],
+      ['Kode error', slot.errorCode], ['ID post Tebar', slot.providerPostId],
+    ]) {
+      const field = publicationNode('div');
+      field.append(publicationNode('dt', label), publicationNode('dd', value || '—'));
+      fields.append(field);
+    }
+    card.append(title, fields, publicationNode('p', slot.caption || 'Caption tidak tersedia.', 'publication-text'));
+    if (lateLink) {
+      if (slot.lateLinkEligible !== true || !slot.profileId || !slot.accountId) {
+        card.append(publicationNode('p', 'Target asal belum lengkap atau tidak cocok dengan riwayat slot. Periksa catatan publikasi dan pasangan akun asal di server.', 'muted'));
+        return card;
+      }
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const button = publicationNode('button', 'Kaitkan ID post tanpa mengirim ulang', 'button quiet');
+      button.type = 'button';
+      button.setAttribute('aria-haspopup', 'dialog');
+      button.addEventListener('click', () => openPublicationResolution(slot, 'link-provider-post', true));
+      actions.append(button);
+      card.append(publicationNode('p', 'Slot ini sudah ditutup tanpa verifikasi. Post yang ditemukan kemudian dapat ditautkan setelah pemeriksaan.', 'muted'), actions);
+    } else if (slot.status === 'unknown' && slot.providerPostId == null) {
+      if (slot.resolutionEligible === false) {
+        card.append(publicationNode('p', 'Slot ini belum memenuhi syarat untuk keputusan admin. Periksa status dan catatan publikasi di server.', 'muted'));
+        return card;
+      }
+      const targetValid = slot.resolutionTargetValid !== false && Boolean(slot.profileId && slot.accountId);
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const availableActions = targetValid ? Object.keys(publicationActions) : ['close-unverified'];
+      for (const action of availableActions) {
+        const button = publicationNode('button', publicationActions[action].title, 'button quiet');
+        button.type = 'button';
+        button.setAttribute('aria-haspopup', 'dialog');
+        button.addEventListener('click', () => openPublicationResolution(slot, action));
+        actions.append(button);
+      }
+      if (!targetValid) card.append(publicationNode('p', 'Target asal belum lengkap atau tidak cocok dengan riwayat slot. Slot hanya dapat ditutup sebagai tidak terverifikasi setelah pemeriksaan dan pencatatan bukti; ID post tidak dapat dikaitkan.', 'muted'));
+      card.append(actions);
+    } else if (slot.status === 'unknown' && typeof slot.providerPostId === 'string' && slot.providerPostId) {
+      const actions = publicationNode('div', undefined, 'form-actions');
+      const button = publicationNode('button', 'Periksa ulang status Tebar', 'button quiet');
+      button.type = 'button';
+      button.addEventListener('click', () => reconcilePublicationSlot(slot, button));
+      actions.append(button);
+      card.append(publicationNode('p', `ID post sudah terkait. Pemeriksaan GET tetap memakai profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}. Jika status belum diketahui, pemeriksaan dapat dicoba lagi.`, 'muted'), actions);
+    } else {
+      card.append(publicationNode('p', 'Slot ini menunggu rekonsiliasi status dari Tebar. Periksa post pada akun asal sebelum melanjutkan.', 'muted'));
+    }
+    return card;
+  }
+
+  async function reconcilePublicationSlot(slot, button) {
+    return withPending(button, async () => {
+      const notice = $('#publication-resolution-result');
+      notice.hidden = true;
+      try {
+        const { reconciliation } = await api(`/api/publication-resolution/${encodeURIComponent(slot.id)}/reconcile`, { method: 'POST' });
+        const refreshed = await loadPublicationResolution(state.integrationLoad, state.closedSlotSearchId || '');
+        const scope = `profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}`;
+        notice.textContent = reconciliation?.pending === true || reconciliation?.status === 'unknown'
+          ? `Tebar belum memastikan status pada ${scope}. ID post tetap terkait; coba pemeriksaan GET lagi nanti.`
+          : `Pemeriksaan GET selesai pada ${scope}. Status slot: ${reconciliation?.status || 'diperbarui'}.`;
+        if (!refreshed) notice.textContent += ' Daftar slot belum dapat diperbarui.';
+        notice.hidden = false;
+      } catch (error) {
+        notice.textContent = `Pemeriksaan status belum berhasil pada profile ${slot.profileId || '—'} dan akun Threads asal ${slot.accountId || '—'}. ID post tetap terkait; coba lagi nanti. ${errorText(error)}`;
+        notice.hidden = false;
+      }
+    }, 'Memeriksa…');
+  }
+
+  function renderPublicationResolution({ slots = [], closedSlots = [], events = [] } = {}, closedSlotId = '') {
+    const cards = slots.map((slot) => renderPublicationCard(slot));
+    const closedCards = closedSlots.map((slot) => renderPublicationCard(slot, true));
+    $('#publication-blockers').replaceChildren(...cards);
+    $('#publication-blocker-count').textContent = cards.length
+      ? `${cards.length} slot perlu diperiksa.`
+      : 'Tidak ada slot yang masih menghambat rekonsiliasi publikasi.';
+    $('#publication-closed-blockers').replaceChildren(...closedCards);
+    $('#publication-closed-blocker-count').textContent = closedSlotId
+      ? closedCards.length ? `Slot ID ${closedSlotId} ditemukan. Publikasi terlambat dapat dikaitkan setelah verifikasi.` : `Slot ID ${closedSlotId} tidak ditemukan sebagai publikasi tertutup yang masih dapat ditindaklanjuti.`
+      : closedCards.length ? `${closedCards.length} slot terbaru telah ditutup; publikasi yang ditemukan kemudian dapat dikaitkan setelah verifikasi.` : 'Tidak ada publikasi terlambat dari slot yang ditutup dalam 100 slot terbaru.';
+    $('#publication-resolution-audit').hidden = events.length === 0;
+    $('#publication-resolution-history').replaceChildren(...events.map((event) => {
+      const row = publicationNode('article', undefined, 'integration-history-item publication-card stack');
+      const actor = event.actorEmail || event.actorId || '—';
+      const action = event.action === 'link_provider_post' ? 'Pengaitan ID post Tebar' : 'Penutupan tanpa verifikasi';
+      row.append(
+        publicationNode('h3', action),
+        publicationNode('strong', `Slot ${event.slotId} · ${statusLabels[event.previousStatus] || event.previousStatus} → ${statusLabels[event.newStatus] || event.newStatus}`),
+        publicationNode('p', `${publicationDate(event.createdAt)} · Admin ${actor}`),
+        publicationNode('p', `Alasan: ${event.reason}`, 'publication-text'),
+        publicationNode('p', `Bukti: ${event.evidenceSummary}`, 'publication-text'),
+      );
+      if (event.providerPostId) row.append(publicationNode('p', `ID post Tebar: ${event.providerPostId}`));
+      return row;
+    }));
+  }
+
+  async function loadPublicationResolution(integrationLoad, closedSlotId = '') {
+    state.publicationLoadRequest = (state.publicationLoadRequest || 0) + 1;
+    const request = state.publicationLoadRequest;
+    try {
+      const path = closedSlotId
+        ? `/api/publication-resolution/slots?slotId=${encodeURIComponent(closedSlotId)}`
+        : '/api/publication-resolution/slots';
+      const data = await api(path);
+      if (request !== state.publicationLoadRequest || integrationLoad !== state.integrationLoad) return false;
+      if (!Array.isArray(data.slots) || !Array.isArray(data.closedSlots) || !Array.isArray(data.events)) throw new Error('Invalid publication resolution response');
+      renderPublicationResolution(data, closedSlotId);
+      return true;
+    } catch {
+      if (request !== state.publicationLoadRequest || integrationLoad !== state.integrationLoad) return false;
+      renderPublicationResolution();
+      $('#publication-blocker-count').textContent = 'Daftar slot belum dapat dibaca. Pilih Muat ulang konfigurasi untuk mencoba kembali.';
+      if (closedSlotId) $('#publication-closed-blocker-count').textContent = `Pencarian Slot ID ${closedSlotId} belum dapat dimuat.`;
+      return false;
+    }
+  }
+
+  $('#publication-closed-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const slotId = form.elements.slotId.value.trim();
+    const error = $('#publication-closed-search-error');
+    error.hidden = true;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slotId)) {
+      error.textContent = 'Masukkan Slot ID lengkap dalam format UUID.';
+      error.hidden = false;
+      return;
+    }
+    state.closedSlotSearchId = slotId.toLowerCase();
+    return withPending(event.submitter || $('button[type="submit"]', form), async () => {
+      if (!await loadPublicationResolution(state.integrationLoad, state.closedSlotSearchId)) {
+        error.textContent = 'Pencarian Slot ID belum berhasil. Coba lagi.';
+        error.hidden = false;
+      }
+    }, 'Mencari…', form);
+  });
+  $('#publication-closed-search-reset').addEventListener('click', () => {
+    state.closedSlotSearchId = '';
+    $('#publication-closed-search-form').elements.slotId.value = '';
+    $('#publication-closed-search-error').hidden = true;
+    return loadPublicationResolution(state.integrationLoad);
+  });
+
+  $('#publication-resolution-cancel').addEventListener('click', () => $('#publication-resolution-dialog').close());
+  $('#publication-resolution-dialog').addEventListener('cancel', (event) => {
+    if ($('#publication-resolution-form').dataset.pending === 'true') event.preventDefault();
+  });
+  $('#publication-resolution-dialog').addEventListener('close', (event) => {
+    if (!event.currentTarget.open) state.publicationResolution = null;
+  });
+  $('#publication-resolution-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const operation = state.publicationResolution;
+    if (!operation) return;
+    const form = event.currentTarget;
+    const errorNotice = $('#publication-resolution-error');
+    errorNotice.hidden = true;
+    const reason = form.elements.reason.value.trim();
+    const evidenceSummary = form.elements.evidenceSummary.value.trim();
+    const providerPostId = form.elements.providerPostId.value.trim();
+    const link = operation.action === 'link-provider-post';
+    if (!form.elements.confirmed.checked || reason.length < 10 || reason.length > 1000
+      || evidenceSummary.length < 10 || evidenceSummary.length > 2000
+      || (link && !/^[A-Za-z0-9_-]{1,128}$/.test(providerPostId))) {
+      errorNotice.textContent = 'Isi alasan dan ringkasan bukti, periksa ID post jika diperlukan, lalu centang konfirmasi.';
+      errorNotice.hidden = false;
+      return;
+    }
+    const body = { reason, evidenceSummary, ...(link ? { providerPostId, confirmOriginalTarget: true } : { confirmDelayedPublication: true }) };
+    const fingerprint = JSON.stringify(body);
+    return withPending($('#publication-resolution-submit'), async () => {
+      if (typeof crypto.randomUUID !== 'function') {
+        errorNotice.textContent = 'Buka dashboard melalui HTTPS untuk menyimpan keputusan.';
+        errorNotice.hidden = false;
+        return;
+      }
+      if (fingerprint !== operation.fingerprint) {
+        operation.fingerprint = fingerprint;
+        operation.requestId = crypto.randomUUID();
+      }
+      try {
+        const slotId = encodeURIComponent(operation.slotId);
+        const payload = JSON.stringify({ requestId: operation.requestId, ...body });
+        const { resolution } = link
+          ? await api(`/api/publication-resolution/${slotId}/link-provider-post`, { method: 'POST', body: payload })
+          : await api(`/api/publication-resolution/${slotId}/close-unverified`, { method: 'POST', body: payload });
+        if (resolution?.requestId !== operation.requestId || resolution.slotId !== operation.slotId) {
+          throw new Error('Missing publication resolution receipt');
+        }
+      } catch (error) {
+        if (state.publicationResolution !== operation) return;
+        const uncertain = !error?.status || (error.status >= 500 && error.code !== 'PUBLICATION_VERIFICATION_UNAVAILABLE');
+        let message = errorText(error);
+        if (uncertain) message = 'Hasil penyimpanan belum dapat dipastikan. Coba lagi dengan isian yang sama untuk memeriksa permintaan ini.';
+        else if (!link && error.code === 'PUBLICATION_TARGET_MISMATCH') message = 'Target asal berubah atau belum lengkap. Periksa catatan slot sebelum menutupnya.';
+        errorNotice.textContent = message;
+        errorNotice.hidden = false;
+        return;
+      }
+      if (state.publicationResolution !== operation) return;
+      state.publicationResolution = null;
+      $('#publication-resolution-dialog').close();
+      form.reset();
+      $('#publication-blockers-title').focus();
+      const session = state.csrf;
+      const updated = await loadIntegrations({ verification: state.integrationVerification }).catch(() => false);
+      const dashboard = updated && await refresh().catch(() => false);
+      if (session !== state.csrf) return;
+      const result = $('#publication-resolution-result');
+      const success = operation.lateLink
+        ? 'Publikasi terlambat dikaitkan tanpa mengirim ulang. Rekonsiliasi status dilanjutkan melalui pemeriksaan GET.'
+        : publicationActions[operation.action].success;
+      result.textContent = success
+        + (updated && dashboard ? '' : ' Tampilan terkini belum lengkap. Muat ulang konfigurasi.');
+      result.hidden = false;
+    }, 'Memeriksa…', form);
+  });
+
   function modelReasonText(reason) {
     return ({
       TEXT_MODALITY_UNSUPPORTED: 'Model tidak menerima dan menghasilkan teks.',
@@ -1010,9 +1344,11 @@
   }
   async function loadIntegrations({ verification = null } = {}) {
     const request = state.integrationLoad = (state.integrationLoad || 0) + 1;
+    const publications = loadPublicationResolution(request, state.closedSlotSearchId || '');
     state.integrations = null;
     state.integrationVerification = null;
     syncIntegrationControls();
+    renderProviderHolds();
     hide('#integration-account-preview');
     for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia';
     $('#integration-check-active').disabled = true;
@@ -1033,6 +1369,7 @@
     if (request !== state.integrationLoad) return false;
     const configuration = result.configuration || {};
     state.integrations = result;
+    renderProviderHolds(result.providerHolds, configuration);
     if (state.modelValidation && state.modelValidation.version !== configuration.version) {
       state.modelValidation = null;
       renderModelValidation('UNVERIFIED', 'Konfigurasi berubah. Verifikasi model kembali sebelum menyimpan.');
@@ -1079,7 +1416,8 @@
     const history = Array.isArray(result.history) ? result.history : [];
     renderIntegrationHistory(history, 'account');
     renderIntegrationHistory(history, 'model');
-    return true;
+    await publications;
+    return request === state.integrationLoad;
   }
 
   $('#integration-account-form').addEventListener('input', () => hide('#integration-account-preview'));
@@ -1260,7 +1598,16 @@
       let logoutError = null;
       try { await api('/api/session/logout', { method: 'POST', body: '{}' }); }
       catch (error) { logoutError = error; }
-      finally { state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false); }
+      finally {
+        state.publicationResolution = null;
+        $('#publication-resolution-dialog').close();
+        $('#publication-resolution-form').reset();
+        hide('#publication-resolution-result');
+        renderPublicationResolution();
+        $('#publication-blocker-count').textContent = 'Muat konfigurasi untuk melihat slot yang perlu diperiksa.';
+        renderProviderHolds();
+        state.csrf = ''; state.integrations = null; state.integrationVerification = null; state.integrationLoad = (state.integrationLoad || 0) + 1; state.dashboardLoad += 1; state.data = null; state.onboardingComplete = null; state.onboardingExpanded = false; syncIntegrationControls(); $('#integration-check-active').disabled = true; $('#integration-reconcile').hidden = true; for (const selector of ['#integration-active-profile', '#integration-active-account', '#integration-provider-status', '#integration-switch-status', '#ai-active-model']) $(selector).textContent = 'Tidak tersedia'; renderIntegrationHistory([], 'account'); renderIntegrationHistory([], 'model'); hide('#integration-account-preview'); $('#integration-account-form').reset(); $('#integration-model-form').reset(); delete $('#integration-account-form').dataset.baseline; delete $('#integration-model-form').dataset.baseline; setAuthenticated(false);
+      }
       if (logoutError) show('#login-error', 'Sesi dashboard ditutup. Server belum mengonfirmasi proses keluar; masuk kembali untuk memperbarui sesi. ' + errorText(logoutError));
     }, 'Keluar…');
   });
@@ -1388,6 +1735,434 @@
         await refreshAfterMutation(refresh);
       } catch (error) { show('#global-error', errorText(error)); }
     }, 'Memproses…');
+  });
+
+  function learningNode(tag, text, className) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = text == null || text === '' ? '—' : String(text);
+    return element;
+  }
+  function learningDate(value) {
+    const date = new Date(value);
+    return value && !Number.isNaN(date.getTime()) ? date.toLocaleString('id-ID') : '—';
+  }
+  function learningEmpty(target, message) {
+    target.replaceChildren(learningNode('p', message, 'muted'));
+  }
+  function showLearningCandidateDetails(candidate) {
+    const target = $('#learning-candidate-dialog-content');
+    const fields = [
+      ['Status', candidate.status], ['Sumber dan kategori', `${candidate.source || '—'} · ${candidate.category || '—'}`],
+      ['Slot', candidate.slotId], ['Attempt', candidate.attemptId || 'Tidak diketahui'],
+      ['Evidence', candidate.evidenceStatus === 'available' ? 'Tersedia dan disaring' : `Tidak tersedia (${candidate.evidenceReason || 'alasan tidak diketahui'})`],
+      ['Konten asal', candidate.caption || 'Bukti caption asal tidak tersedia. Caption lain tidak digunakan sebagai pengganti.'],
+      ['Penjelasan', candidate.feedbackExplanation || candidate.explanation || 'Tidak tersedia'],
+      ['Rating manusia', Object.entries(candidate.ratings || {}).map(([key, value]) => `${key}: ${value}/5`).join(' · ') || 'Tidak ada dimensi yang dinilai'],
+      ['Usulan instruksi', candidate.instructionStatus === 'withheld'
+        ? 'Arahan kandidat disembunyikan untuk melindungi maklumat sensitif.'
+        : (candidate.instruction || 'Belum ada usulan instruksi')],
+    ];
+    target.replaceChildren(...fields.map(([label, value]) => {
+      const item = document.createElement('section'); item.className = 'learning-detail-field';
+      item.append(learningNode('strong', label), learningNode('p', value)); return item;
+    }));
+    const dialog = $('#learning-candidate-dialog');
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    $('#learning-candidate-dialog-close').focus();
+  }
+  function renderLearningCandidates(candidates, { append = false } = {}) {
+    const target = $('#learning-candidates');
+    if (!candidates.length) { if (!append) learningEmpty(target, 'Tidak ada kandidat untuk penapis ini.'); return; }
+    const existing = append ? [...target.children] : [];
+    const items = candidates.map((candidate) => {
+      const form = document.createElement('form'); form.className = 'learning-item stack';
+      form.append(learningNode('strong', `${candidate.category || 'Umpan balik'} · ${candidate.source || 'Sumber tidak diketahui'}`));
+      form.append(learningNode('p', `Slot: ${candidate.slotId || '—'} · ${learningDate(candidate.createdAt)} · ${candidate.status || 'pending'}`, 'muted'));
+      if (candidate.source === 'validation') form.append(learningNode('p', `Percobaan: ${candidate.attemptId || 'tidak diketahui'} · Bukti: ${candidate.evidenceStatus === 'available' ? 'tersedia (telah disaring)' : 'tidak tersedia'}${candidate.evidenceReason ? ` · ${candidate.evidenceReason}` : ''}`, 'muted'));
+      form.append(learningNode('p', `Konten: ${candidate.caption || 'Tidak tersedia'}`, 'learning-evidence'));
+      form.append(learningNode('p', `Penjelasan: ${candidate.explanation || 'Tidak tersedia'}`));
+      if (candidate.source === 'feedback') {
+        form.append(learningNode('p', `Rating ${candidate.feedbackType || candidate.category || 'feedback'}: ${Object.entries(candidate.ratings || {}).map(([key,value]) => `${key} ${value}/5`).join(' · ') || 'tiada rating dimensi'}`, 'muted'));
+      }
+      const detailsButton = learningButton('Lihat butiran', 'quiet', () => showLearningCandidateDetails(candidate));
+      detailsButton.setAttribute('aria-haspopup', 'dialog');
+      form.append(detailsButton);
+      if (candidate.status !== 'pending') return form;
+      const instructionLabel = learningNode('label', 'Usulan instruksi');
+      const instruction = document.createElement('textarea'); instruction.name = 'instruction'; instruction.rows = 3; instruction.maxLength = 500; instruction.value = candidate.instruction || ''; instruction.setAttribute('aria-describedby','learning-text-data-guidance'); instructionLabel.append(instruction);
+      if (candidate.instructionStatus === 'withheld') form.append(learningNode('p','Arahan lama disembunyikan. Sahkan kandungan baharu sebelum meluluskan.','field-hint'));
+      const scopeLabel = learningNode('label', 'Lingkup'); const scope = document.createElement('select'); scope.name = 'scope';
+      for (const [value, label] of [['', 'Pilih lingkup'], ['global', 'Global'], ['account', 'Akun ML'], ['topup', 'Top-up']]) { const option = learningNode('option', label); option.value = value; scope.append(option); }
+      scope.value = ''; scopeLabel.append(scope);
+      scopeLabel.append(learningNode('span', `Lingkup sumber: ${candidate.scope || 'tidak tersedia'}`, 'field-hint'));
+      const topicLabel = learningNode('label', 'Topik konten'); const topic = document.createElement('select'); topic.name = 'contentTopic';
+      for (const [value, label] of [['all','Semua topik'],['education','Edukasi'],['community','Komuniti'],['gamer_observation','Pemerhatian gamer'],['relatable_situation','Situasi relatable'],['brand_awareness','Kesedaran jenama'],['trust','Kepercayaan']]) { const option = learningNode('option',label); option.value = value; topic.append(option); }
+      topicLabel.append(topic);
+      const reasonLabel = learningNode('label', 'Alasan keputusan'); const reason = document.createElement('input'); reason.name = 'reason'; reason.maxLength = 300; reason.setAttribute('aria-describedby','learning-text-data-guidance'); reasonLabel.append(reason);
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      for (const [decision, label] of [['approved', 'Setujui'], ['rejected', 'Tolak'], ['false_positive', 'Tandai false positive']]) {
+        const button = learningNode('button', label, decision === 'approved' ? 'button primary' : 'button quiet'); button.type = 'button';
+        button.addEventListener('click', () => withPending(button, async () => {
+          if (decision === 'approved' && (!instruction.value.trim() || !scope.value)) { show('#learning-error', 'Isi instruksi dan pilih lingkup sebelum menyetujui.'); (!instruction.value.trim() ? instruction : scope).focus(); return; }
+          const actionLabel = decision === 'approved' ? 'Setujui kandidat ini' : decision === 'rejected' ? 'Tolak kandidat ini' : 'Tandai kandidat ini sebagai false positive';
+          if (!confirmAction(`${actionLabel}? Keputusan akan disimpan dalam riwayat review.`)) return;
+          try {
+            await api(`/api/learning/candidates/${encodeURIComponent(candidate.id)}/decision`, { method: 'POST', body: JSON.stringify({ version: candidate.version, decision, instruction: instruction.value.trim(), scope: scope.value, productCategory: scope.value === 'global' ? 'all' : scope.value, contentTopic: topic.value, reason: reason.value.trim() }) });
+            hide('#learning-error'); show('#global-success', 'Keputusan review tersimpan.'); await loadLearning();
+          } catch (error) { show('#learning-error', errorText(error)); }
+        }, 'Menyimpan…'));
+        actions.append(button);
+      }
+      form.append(instructionLabel, scopeLabel, topicLabel, reasonLabel, actions); return form;
+    });
+    target.replaceChildren(...existing, ...items);
+  }
+  function learningButton(label, className, handler, disabled = false) {
+    const button = learningNode('button', label, `button ${className}`); button.type = 'button'; button.disabled = disabled;
+    button.addEventListener('click', (event) => handler(event.currentTarget)); return button;
+  }
+  function learningSelect(labelText, name, options, selected) {
+    const label = learningNode('label', labelText); const select = document.createElement('select'); select.name = name;
+    for (const [value, labelValue] of options) { const option = learningNode('option', labelValue); option.value = value; select.append(option); }
+    select.value = selected; label.append(select); return {label,select};
+  }
+  function learningAction(button, action, progress = 'Memproses…') {
+    return withPending(button, async () => {
+      try { await action(); }
+      catch (error) { show('#learning-error', errorText(error)); }
+    }, progress);
+  }
+  function lifecycleReason() { return ''; }
+  const learningTopics = [['all','Semua topik'],['education','Edukasi'],['community','Komuniti'],['gamer_observation','Pemerhatian gamer'],['relatable_situation','Situasi relatable'],['brand_awareness','Kesedaran jenama'],['trust','Kepercayaan']];
+  function activationConflictLabel(code) {
+    if (code === 'active_rule_limit_reached') return 'batas maksimum 500 aturan aktif telah tercapai';
+    if (code === 'active_rule_population_exceeds_limit') return 'jumlah aturan aktif melebihi batas 500; pengambilan aturan dinonaktifkan';
+    return code;
+  }
+  function showActivationResult(target, preview) {
+    const details = preview.conflicts?.length
+      ? `Aktivasi disekat: ${preview.conflicts.map((item) => `${activationConflictLabel(item.code)}${item.ruleId ? ` (aturan ${item.ruleId})` : ''}`).join(', ')}.`
+      : `Tiada konflik deterministik ditemukan. Anggaran prompt: ${preview.estimatedPromptTokens || 0} token.`;
+    target.replaceChildren(learningNode('p', details, preview.conflicts?.length ? 'notice error' : 'notice info'));
+  }
+  async function renderRuleVersions(rule, panel) {
+    panel.replaceChildren(learningNode('p', 'Memuat versi dan audit…', 'muted'));
+    try {
+      const [{versions = []}, {actions = []}] = await Promise.all([
+        api(`/api/learning/rules/${encodeURIComponent(rule.id)}/versions`),
+        api(`/api/learning/rules/${encodeURIComponent(rule.id)}/history`),
+      ]);
+      const content = [];
+      for (const version of versions) {
+        const row = document.createElement('article'); row.className = 'learning-item stack';
+        row.append(learningNode('strong', `Versi ${version.version} · ${version.decision || 'pending'}${Number(rule.activeVersion) === Number(version.version) ? ' · digunakan' : ''}`));
+        row.append(learningNode('p', `Skop ${version.scope} · kategori ${version.productCategory} · topik ${version.contentTopic} · sumber kandidat ${version.source?.candidateId || 'legacy'}`, 'muted'));
+        const instructionText = version.instructionStatus === 'withheld'
+          ? 'Arahan versi disembunyikan untuk melindungi maklumat sensitif.'
+          : (version.instruction || 'Arahan versi tidak tersedia.');
+        row.append(learningNode('p', instructionText, 'learning-evidence'));
+        const controls = document.createElement('div'); controls.className = 'form-actions';
+        if (version.decision === 'pending') {
+          for (const decision of ['approved','rejected']) controls.append(learningButton(decision === 'approved' ? 'Luluskan versi' : 'Tolak versi', decision === 'approved' ? 'primary' : 'quiet', (button) => learningAction(button, async () => {
+            if (!confirmAction(`${decision === 'approved' ? 'Luluskan' : 'Tolak'} versi ${version.version} aturan ${rule.id}? Keputusan akan disimpan dalam riwayat.`)) return;
+            await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/versions/${encodeURIComponent(version.version)}/decision`, {method:'POST',body:JSON.stringify({decision,reason:lifecycleReason()})});
+            await loadLearning();
+          })));
+        } else if (version.decision === 'approved' && state.learningCapabilities?.activationEnabled === true && Number(rule.activeVersion) !== Number(version.version) && !rule.superseded) {
+          const rollback = Number(rule.activeVersion) > Number(version.version);
+          controls.append(learningButton(rollback ? 'Pulihkan versi ini' : 'Aktifkan versi ini', 'quiet', (button) => learningAction(button, async () => {
+            const preview = await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation-preview`, {method:'POST',body:JSON.stringify({version:version.version})});
+            if (!preview.preview?.canActivate) { showActivationResult(panel, preview.preview || {}); return; }
+            if (!confirmAction(`${rollback ? 'Pulihkan' : 'Aktifkan'} versi ${version.version}? Penggunaan prompt masih memerlukan flag server yang berasingan.`)) return;
+            const actionPath = rollback
+              ? `/api/learning/rules/${encodeURIComponent(rule.id)}/rollback`
+              : `/api/learning/rules/${encodeURIComponent(rule.id)}/activation`;
+            await api(actionPath,{method:'POST',body:JSON.stringify({version:version.version,reason:lifecycleReason()})});
+            await loadLearning();
+          })));
+        }
+        row.append(controls); content.push(row);
+      }
+      const audit = document.createElement('details'); const summary = learningNode('summary', `Audit tindakan (${actions.length})`); audit.append(summary);
+      if (actions.length) for (const action of actions) audit.append(learningNode('p', `${action.action} · versi ${action.version ?? '—'} · admin ${action.actorId} · ${learningDate(action.createdAt)} · ${action.reason || 'tanpa alasan'}`, 'muted'));
+      else audit.append(learningNode('p', 'Belum ada tindakan.', 'muted'));
+      content.push(audit);
+      panel.replaceChildren(...(content.length ? content : [learningNode('p','Riwayat versi belum tersedia.','muted')]));
+    } catch (error) { panel.replaceChildren(learningNode('p', `Riwayat tidak dapat dimuat: ${errorText(error)}`, 'notice error')); }
+  }
+  function renderLearningRules(rules) {
+    const target = $('#learning-rules');
+    if (!rules.length) { learningEmpty(target, 'Belum ada pembelajaran yang disetujui.'); renderShadowRuleOptions([]); return; }
+    const activationEnabled = state.learningCapabilities?.activationEnabled === true;
+    target.replaceChildren(...rules.map((rule) => {
+      const item = document.createElement('article'); item.className = 'learning-item stack';
+      const header = document.createElement('div'); header.className = 'learning-rule-header';
+      header.append(learningNode('strong', `Aturan ${rule.id} · ${rule.approvalStatus || 'status tidak diketahui'}${rule.superseded ? ' · diganti' : ''}`));
+      const instructionText = rule.instructionStatus === 'withheld'
+        ? 'Arahan aturan disembunyikan untuk melindungi maklumat sensitif.'
+        : (rule.instruction || 'Arahan aturan tidak tersedia.');
+      item.append(header, learningNode('p', instructionText, 'learning-evidence'));
+      item.append(learningNode('p', `Skop: ${rule.scope} · kategori: ${rule.productCategory} · topik: ${rule.contentTopic} · versi terkini: ${rule.version} · versi aktif: ${rule.activeVersion ?? 'tiada'} · ${rule.active ? 'Aktif' : 'Tidak aktif'}`, 'muted'));
+      const lifecycleStatus=document.createElement('div'); lifecycleStatus.setAttribute('role','status');
+      const actions = document.createElement('div'); actions.className = 'form-actions';
+      if (!rule.superseded && rule.active) actions.append(learningButton('Nyahaktifkan', 'quiet', (button) => learningAction(button, async () => {
+          if (!confirmAction(`Nyahaktifkan aturan ${rule.id} versi ${rule.activeVersion}?`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/deactivation`, {method:'POST',body:JSON.stringify({version:rule.activeVersion,reason:lifecycleReason()})}); await loadLearning();
+        }), !activationEnabled));
+      else if (rule.approvalStatus === 'approved' && !rule.superseded) actions.append(learningButton('Semak konflik & aktifkan', 'primary', (button) => learningAction(button, async () => {
+          const version = rule.approvalStatus === 'approved' ? rule.version : rule.activeVersion;
+          const {preview} = await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation-preview`, {method:'POST',body:JSON.stringify({version})});
+          showActivationResult(lifecycleStatus, preview);
+          if (!preview.canActivate) return;
+          if (!confirmAction(`Aktifkan aturan ${rule.id} versi ${version}? Prompt integration kekal mengikut flag server.`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/activation`, {method:'POST',body:JSON.stringify({version,reason:lifecycleReason()})}); await loadLearning();
+        }), !activationEnabled));
+      const historyPanel = document.createElement('div'); historyPanel.hidden = true;
+      actions.append(learningButton('Versi & audit', 'quiet', async (button) => {
+        historyPanel.hidden = !historyPanel.hidden;
+        button.setAttribute('aria-expanded', String(!historyPanel.hidden));
+        if (!historyPanel.hidden) await renderRuleVersions(rule,historyPanel);
+      }));
+      const revision = learningButton('Buat revisi', 'quiet', (button) => {
+        const form = document.createElement('form'); form.className = 'stack learning-revision-form';
+        const instructionLabel = learningNode('label','Instruksi revisi'); const instruction = document.createElement('textarea'); instruction.name='instruction'; instruction.maxLength=500; instruction.rows=3; instruction.value=rule.instruction || ''; instruction.setAttribute('aria-describedby','learning-text-data-guidance'); instructionLabel.append(instruction);
+        const scopeField = learningSelect('Skop','scope',[['global','Global'],['account','Akun ML'],['topup','Top-up']],rule.scope);
+        const topicField = learningSelect('Topik','contentTopic',learningTopics,rule.contentTopic || 'all');
+        const reasonLabel = learningNode('label','Sebab perubahan (pilihan)'); const reason = document.createElement('input'); reason.name='reason'; reason.maxLength=300; reason.setAttribute('aria-describedby','learning-text-data-guidance'); reasonLabel.append(reason);
+        const submit = learningNode('button','Simpan sebagai versi menunggu kelulusan','button primary'); submit.type='submit';
+        form.append(instructionLabel,scopeField.label,topicField.label,reasonLabel,submit);
+        form.addEventListener('submit',(event)=>{event.preventDefault(); learningAction(submit,async()=>{
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/revisions`,{method:'POST',body:JSON.stringify({expectedVersion:rule.version,instruction:instruction.value.trim(),scope:scopeField.select.value,productCategory:scopeField.select.value==='global'?'all':scopeField.select.value,contentTopic:topicField.select.value,reason:reason.value.trim()})});
+          await loadLearning();
+        },'Menyimpan…',form);});
+        item.insertBefore(form,historyPanel); form.scrollIntoView({behavior:'smooth',block:'nearest'}); button.disabled=true;
+      }, rule.superseded);
+      actions.append(revision);
+      if (rule.active) {
+        const supersedeForm = document.createElement('form'); supersedeForm.className='form-actions learning-supersede-form';
+        const replacementId = document.createElement('input'); replacementId.inputMode='numeric'; replacementId.maxLength=20; replacementId.placeholder='ID aturan pengganti'; replacementId.setAttribute('aria-label','ID aturan pengganti');
+        const replacementVersion = document.createElement('input'); replacementVersion.inputMode='numeric'; replacementVersion.maxLength=10; replacementVersion.placeholder='Versi'; replacementVersion.setAttribute('aria-label','Versi aturan pengganti');
+        const supersede = learningNode('button','Ganti aturan aktif','button quiet'); supersede.type='submit'; supersede.disabled=!activationEnabled;
+        supersedeForm.append(replacementId,replacementVersion,supersede);
+        supersedeForm.addEventListener('submit',(event)=>{event.preventDefault(); learningAction(supersede,async()=>{
+          if (!/^\d+$/.test(replacementId.value) || !/^\d+$/.test(replacementVersion.value)) throw Object.assign(new Error('Masukkan ID dan versi aturan pengganti.'),{code:'INVALID_SUPERSESSION'});
+          if (!confirmAction(`Ganti aturan ${rule.id} versi ${rule.activeVersion} dengan aturan ${replacementId.value}?`)) return;
+          await api(`/api/learning/rules/${encodeURIComponent(rule.id)}/supersession`,{method:'POST',body:JSON.stringify({version:rule.activeVersion,replacementRuleId:replacementId.value,replacementVersion:Number(replacementVersion.value),reason:lifecycleReason()})}); await loadLearning();
+        },'Memproses…',supersedeForm);});
+        item.append(supersedeForm);
+      }
+      item.append(lifecycleStatus,actions,historyPanel);
+      return item;
+    }));
+    renderShadowRuleOptions(rules);
+  }
+  function renderLearningReviews(reviews) {
+    const target = $('#learning-reviews');
+    if (!reviews.length) { learningEmpty(target, 'Belum ada riwayat review.'); return; }
+    target.replaceChildren(...reviews.map((review) => {
+      const item = document.createElement('div'); item.className = 'learning-item';
+      item.append(learningNode('strong', review.action), learningNode('p', `Kandidat: ${review.candidateId || '—'} · Admin: ${review.actorId || '—'} · ${learningDate(review.createdAt)}`, 'muted'), learningNode('p', review.reason || 'Tidak ada alasan tertulis.'));
+      return item;
+    }));
+  }
+  function percent(value) { return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : 'Belum cukup data'; }
+  function metricCard(name, summary, details) {
+    const card = document.createElement('article'); card.className='metric'; card.append(learningNode('span',name),learningNode('strong',summary),learningNode('small',details)); return card;
+  }
+  function complianceSummary(compliance) {
+    const rate=percent(compliance.firstPassApprovalRate);
+    if(compliance.status==='complete'&&Number.isFinite(compliance.firstPassApprovalRate))return rate;
+    if(compliance.status==='incomplete')return Number.isFinite(compliance.firstPassApprovalRate)?`Sementara · ${rate}`:'Data belum lengkap';
+    return 'Belum cukup data';
+  }
+  function metricDetails(label, lines) {
+    const details = document.createElement('details'); details.className = 'metric-details';
+    details.append(learningNode('summary', label));
+    const body = document.createElement('div'); body.className = 'metric-detail-lines';
+    for (const line of lines.filter(Boolean)) body.append(learningNode('small', line));
+    details.append(body); return details;
+  }
+  function renderLearningMetrics(result) {
+    const target=$('#learning-metrics');
+    if (!result) { learningEmpty(target,'Metrik tidak dapat dimuat. Cuba muat ulang.'); return; }
+    const compliance=result.compliance||{}; const quality=result.quality||{}; const effectiveness=result.effectiveness||{};
+    const firstPassDenominator=Number.isInteger(compliance.firstPassDenominator)?compliance.firstPassDenominator:'belum tersedia';
+    const complianceDetails=`Lulus ${compliance.firstPassSuccesses||0} / ${firstPassDenominator} percubaan pertama · populasi eligible ${compliance.eligibleFirstAttempts||0} · pengecualian teknikal ${compliance.technicalExclusions||0} · kontekstual ${compliance.contextualFailures||0} · tidak diketahui ${compliance.unknownOutcomes||0} · belum selesai ${compliance.incompleteOutcomes||0} · percubaan hilang ${compliance.missingAttempts||0} · liputan rekod ${percent(compliance.attemptRecordCoverage)} · liputan outcome terminal ${percent(compliance.terminalOutcomeCoverage)} · deterministik ${percent(compliance.deterministicStage?.passRate)} · Semantic Auditor ${percent(compliance.semanticStage?.passRate)} · ${compliance.statusText||'Belum cukup data'}`;
+    const qualityDetails=`Maklum balas ${quality.reviewedCaptions||0} / ${quality.eligibleCaptions||0} kandungan (${percent(quality.feedbackCoverage)}) · positif ${quality.positiveFeedbackSubmissions||0} · negatif ${quality.negativeFeedbackSubmissions||0} · ${quality.statusText||'Belum cukup data'}`;
+    const effectivenessDetails=`Perbandingan aturan ${effectiveness.comparisonCount||0} · ${effectiveness.statusText||'Belum cukup data'} · pemerhatian sahaja, tiada dakwaan sebab-akibat`;
+    const cards=[metricCard('Content Compliance',complianceSummary(compliance),complianceDetails),metricCard('Content Quality',percent(quality.feedbackCoverage),qualityDetails),metricCard('Learning Effectiveness',effectiveness.statusText||'Belum cukup data',effectivenessDetails)];
+    const failureLines=Object.entries(compliance.failureCategories||{}).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([code,count])=>`Kategori ${code}: ${count}`);
+    cards[0].append(metricDetails('Perincian outcome dan tahap validasi',[
+      `Lulus pertama ${compliance.firstPassSuccesses||0} / ${firstPassDenominator}; populasi eligible ${compliance.eligibleFirstAttempts||0}; pengecualian teknikal ${compliance.technicalExclusions||0}; outcome lulus atau gagal kontekstual yang dinilai ${compliance.evaluatedFirstAttempts||0}.`,
+      `Liputan rekod ${percent(compliance.attemptRecordCoverage)}; liputan terminal ${percent(compliance.terminalOutcomeCoverage)}; status ${compliance.statusText||'Belum cukup data'}.`,
+      `Validasi deterministik: ${compliance.deterministicStage?.passed||0} lulus, ${compliance.deterministicStage?.failed||0} gagal, ${percent(compliance.deterministicStage?.passRate)}.`,
+      `Semantic Auditor: ${compliance.semanticStage?.passed||0} lulus, ${compliance.semanticStage?.failed||0} gagal, ${percent(compliance.semanticStage?.passRate)}.`,
+      ...failureLines,
+    ]));
+    for (const dimension of Object.keys(quality.dimensions||{})) {
+      const data=quality.dimensions[dimension]; cards[1].append(learningNode('small',`${dimension}: ${data.average==null?'tiada rating':data.average.toFixed(2)} / 5 · ${data.captionSampleSize||0} kandungan dinilai · n=${data.count}${data.smallSample?' · sampel kecil':''}`));
+    }
+    cards[1].append(metricDetails('Perincian maklum balas manusia',[
+      `Kandungan layak ${quality.eligibleCaptions||0}; kandungan disemak ${quality.reviewedCaptions||0}; belum disemak ${quality.unreviewedCaptions||0}.`,
+      `Jumlah hantaran feedback ${quality.feedbackSubmissions||0}; feedback tanpa rating dimensi ${quality.unratedFeedback||0}; status ${quality.statusText||'Belum cukup data'}.`,
+      `Rubrik ${quality.rubricVersion||'—'}; sampel minimum ${quality.minimumCaptions||0}; tiada engagement atau conversion pihak luar disimpulkan.`,
+      ...(quality.trends||[]).slice(-6).map((trend)=>`${trend.month}: ${trend.reviewedCaptions}/${trend.eligibleCaptions} disemak · liputan ${percent(trend.feedbackCoverage)} · positif ${trend.positiveFeedbackSubmissions} · negatif ${trend.negativeFeedbackSubmissions}`),
+    ]));
+    for (const comparison of effectiveness.comparisons||[]) {
+      cards[2].append(learningNode('small',`Aturan ${comparison.ruleId} v${comparison.version}: percubaan beratribusi baseline=${comparison.baseline?.attributedAttempts||0}, selepas=${comparison.observed?.attributedAttempts||0}; sampel outcome percubaan pertama n=${comparison.baseline?.firstAttemptOutcomeSampleSize||0}/${comparison.observed?.firstAttemptOutcomeSampleSize||0}; kegagalan kontekstual ${comparison.failureRateDifference==null?'—':percent(comparison.failureRateDifference)} · kategori sumber ${comparison.relevantFailureCategory||'tiada'} (${comparison.relevantFailureRateDifference==null?'—':percent(comparison.relevantFailureRateDifference)}) · fakta berubah ${comparison.confounders?.factsChanged?'ya':'tidak diketahui'} · panduan berubah ${comparison.confounders?.guidelinesChanged?'ya':'tidak diketahui'} · validator berubah ${comparison.confounders?.validatorChanged?'ya':'tidak diketahui'} · model/konfigurasi berubah ${comparison.confounders?.modelOrConfigChanged?'ya':'tidak diketahui'} · ${comparison.statusText||'Belum cukup data'}`));
+      const armLines=(label,arm)=>[
+        `${label}: ${arm?.windowFrom||'—'} hingga ${arm?.windowTo||'—'}.`,
+        `Percubaan beratribusi ${arm?.attributedAttempts||0}; sampel outcome percubaan pertama ${arm?.firstAttemptOutcomeSampleSize||0}; lulus ${arm?.passed||0}; gagal kontekstual ${arm?.contextualFailed||0}; teknikal dikecualikan ${arm?.technicalExcluded||0}; tidak diketahui ${arm?.unknown||0}; belum selesai ${arm?.incomplete||0}.`,
+        `Kadar kegagalan kontekstual ${percent(arm?.contextualFailureRate)}; kategori relevan ${arm?.relevantFailureCategory||'—'}: ${arm?.relevantFailureCount??'—'} (${percent(arm?.relevantFailureRate)}).`,
+        `Feedback kualiti: ${arm?.quality?.reviewedCaptions||0}/${arm?.quality?.eligibleCaptions||0} kandungan; status ${arm?.quality?.statusText||'Belum cukup data'}.`,
+      ];
+      const confounders=comparison.confounders||{};
+      cards[2].append(metricDetails(`Perincian aturan ${comparison.ruleId} versi ${comparison.version}`,[
+        ...armLines('Baseline',comparison.baseline),...armLines('Pemerhatian',comparison.observed),
+        `Skop kategori/topik ${comparison.productCategory||'all'} / ${comparison.contentTopic||'all'}; co-applied rules ${comparison.coAppliedRules?.map((rule)=>`${rule.ruleId} v${rule.version}`).join(', ')||'tiada'}.`,
+        `Confounder: model/config ${confounders.modelOrConfigChanged?'berubah':'tiada perbezaan dikesan'}; fakta ${confounders.factsChanged?'berubah':'tiada perbezaan dikesan'}; panduan ${confounders.guidelinesChanged?'berubah':'tiada perbezaan dikesan'}; validator ${confounders.validatorChanged?'berubah/tidak diketahui':'konsisten'}.`,
+        `Penilaian: ${comparison.statusText||'Belum cukup data'}; hasil pemerhatian sahaja, bukan kesan sebab-akibat.`,
+      ]));
+    }
+    target.replaceChildren(...cards);
+  }
+  async function fetchLearningMetrics() {
+    const days=Number($('#learning-metric-range').elements.days.value);
+    if(![30,90,365].includes(days)) throw Object.assign(new Error('INVALID_ANALYTICS_WINDOW'),{code:'INVALID_ANALYTICS_WINDOW'});
+    const to=new Date();const from=new Date(to.getTime()-days*86400000);
+    return api(`/api/learning/metrics?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`);
+  }
+  let learningNextBeforeId = null;
+  let learningCandidateStatus = 'pending';
+  let learningCandidateSource = '';
+  let learningCandidateSearch = '';
+  function learningCandidateUrl(beforeId = null) {
+    const params = new URLSearchParams();
+    if (learningCandidateStatus) params.set('status', learningCandidateStatus);
+    if (learningCandidateSource) params.set('source', learningCandidateSource);
+    if (learningCandidateSearch) params.set('q', learningCandidateSearch);
+    if (beforeId) params.set('beforeId', beforeId);
+    return `/api/learning/candidates?${params.toString()}`;
+  }
+  function fetchLearningCandidates(beforeId = null) { return api(learningCandidateUrl(beforeId)); }
+  function renderShadowRuleOptions(rules) {
+    const select=$('#learning-shadow-form').elements.ruleIds;
+    const approved=(rules||[]).filter((rule)=>rule.approvalStatus==='approved'&&!rule.superseded);
+    select.replaceChildren(...approved.map((rule)=>{const option=learningNode('option',`Aturan ${rule.id} v${rule.version} · ${rule.productCategory}/${rule.contentTopic} · ${rule.active?'aktif':'tidak aktif'}`);option.value=String(rule.id);return option;}));
+    const button=$('#learning-shadow-form button[type="submit"]'); button.disabled=state.learningCapabilities?.shadowEnabled!==true||approved.length===0;
+  }
+  function renderShadowEvaluations(evaluations) {
+    const target=$('#learning-shadow-results');
+    if (!evaluations.length) { learningEmpty(target,'Belum ada perbandingan shadow.'); return; }
+    const dimensions=['hook','creativity','language','relevance','brandVoice','clarity','diversity','cta'];
+    target.replaceChildren(...evaluations.map((evaluation)=>{
+      const item=document.createElement('article');item.className='learning-item stack';
+      const evaluationId=String(evaluation.evaluationId||evaluation.id||'');
+      item.append(learningNode('strong',`Evaluation ${evaluationId} · ${evaluation.status} · model ${evaluation.modelId||'—'} · ${learningDate(evaluation.createdAt)}`));
+      item.append(learningNode('p',`${evaluation.completedSamples||0}/${evaluation.requestedSamples||0} pasangan · ${evaluation.providerCalls||0} panggilan provider · anggaran maks ${evaluation.estimatedMaxTokens||0} token${evaluation.failureCode?` · ${evaluation.failureCode}`:''}`, 'muted'));
+      for(const sample of evaluation.results||[]) {
+        item.append(learningNode('h3',`Sampel ${sample.sampleIndex}`));
+        for(const variant of ['baseline','learning']) {
+          const result=sample[variant]||{}; const block=document.createElement('section');block.className='shadow-variant';
+          block.append(learningNode('strong',variant==='baseline'?'Tanpa lesson':'Dengan lesson'),learningNode('p',`Hasil: ${result.outcome||'incomplete'} · deterministik ${result.deterministicOutcome||'—'} · auditor ${result.semanticOutcome||'—'}`,'muted'));
+          block.append(learningNode('p',result.validatedCaption||'Output tervalidasi tidak tersedia.','learning-evidence'));
+          if(result.outcome==='passed'&&evaluationId) {
+            const form=document.createElement('form');form.className='shadow-rating-form';
+            const type=learningSelect('Penilaian','feedbackType',[['positive','Positif'],['negative','Negatif']], 'positive');form.append(type.label);
+            const ratingFields=[];
+            for(const dimension of dimensions){const field=learningSelect(dimension,'rating',[['','Tidak dinilai'],['1','1 · buruk'],['2','2'],['3','3 · memadai'],['4','4'],['5','5 · sangat baik']],'');field.label.className='shadow-rating-field';form.append(field.label);ratingFields.push([dimension,field.select]);}
+            const explanationLabel=learningNode('label','Catatan (pilihan)');const explanation=document.createElement('input');explanation.maxLength=300;explanation.setAttribute('aria-describedby','learning-text-data-guidance');explanationLabel.append(explanation);form.append(explanationLabel);
+            const save=learningNode('button','Simpan rating','button quiet');save.type='submit';form.append(save);
+            form.addEventListener('submit',(event)=>{event.preventDefault();const ratings=Object.fromEntries(ratingFields.filter(([,field])=>field.value).map(([key,field])=>[key,Number(field.value)]));if(!Object.keys(ratings).length){show('#learning-error','Pilih sedikitnya satu dimensi.');return;}learningAction(save,async()=>{await api(`/api/learning/shadow-evaluations/${encodeURIComponent(evaluationId)}/reviews`,{method:'POST',body:JSON.stringify({sampleIndex:sample.sampleIndex,variant,feedbackType:type.select.value,ratings,explanation:explanation.value.trim()})});show('#global-success','Rating shadow tersimpan berasingan daripada maklum balas kandungan diterbitkan.');},'Menyimpan…',form);});
+            block.append(form);
+          }
+          item.append(block);
+        }
+      }
+      return item;
+    }));
+  }
+  async function loadLearning() {
+    const [capabilities,candidates,rules,reviews]=await Promise.all([
+      api('/api/learning/capabilities'),fetchLearningCandidates(),api('/api/learning/rules'),api('/api/learning/reviews'),
+    ]);
+    state.learningCapabilities=capabilities;
+    const capabilityText=`Capture ${capabilities.captureEnabled?'aktif':'tidak aktif'} · aktivasi ${capabilities.activationEnabled?'aktif':'tidak aktif'} · retrieval ${capabilities.retrievalEnabled?'aktif':'tidak aktif'} · prompt ${capabilities.promptIntegrationEnabled?'aktif':'tidak aktif'} · shadow ${capabilities.shadowEnabled?'aktif':'tidak aktif'}. Kemampuan eksekusi dikawal server.`;
+    $('#learning-capability-status').textContent=capabilityText;
+    renderLearningCandidates(candidates.candidates||[]);learningNextBeforeId=candidates.nextBeforeId;$('#learning-next').hidden=!learningNextBeforeId;
+    renderLearningRules(rules.rules||[]);renderLearningReviews(reviews.reviews||[]);
+    const [metricsResult,shadowResult]=await Promise.allSettled([fetchLearningMetrics(),api('/api/learning/shadow-evaluations?limit=10')]);
+    renderLearningMetrics(metricsResult.status==='fulfilled'?metricsResult.value:null);
+    renderShadowEvaluations(shadowResult.status==='fulfilled'?(shadowResult.value.evaluations||[]):[]);
+    if(shadowResult.status==='rejected') $('#learning-shadow-results').replaceChildren(learningNode('p',`Riwayat shadow tidak tersedia: ${errorText(shadowResult.reason)}`,'muted'));
+    hide('#learning-error');
+  }
+  $('#learning-candidate-filter').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    learningCandidateStatus = form.elements.status.value;
+    learningCandidateSource = form.elements.source.value;
+    learningCandidateSearch = form.elements.q.value.trim();
+    learningNextBeforeId = null;
+    return withPending($('button[type="submit"]', form), async () => {
+      try {
+        const response = await fetchLearningCandidates();
+        renderLearningCandidates(response.candidates || []);
+        learningNextBeforeId = response.nextBeforeId;
+        $('#learning-next').hidden = !learningNextBeforeId;
+        hide('#learning-error');
+      } catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Mencari…', form);
+  });
+  $('#learning-next').addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    return withPending(button, async () => {
+    try {
+      const response = await fetchLearningCandidates(learningNextBeforeId);
+      renderLearningCandidates(response.candidates || [], {append:true}); learningNextBeforeId = response.nextBeforeId; button.hidden = !learningNextBeforeId; hide('#learning-error');
+    } catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Memuat…');
+  });
+  $('#learning-candidate-dialog').addEventListener('keydown',(event)=>{
+    if(event.key!=='Tab')return;
+    const dialog=event.currentTarget;
+    const focusable=[...dialog.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+      .filter((element)=>element.getClientRects().length>0);
+    if(!focusable.length){event.preventDefault();dialog.focus();return;}
+    const first=focusable[0];const last=focusable[focusable.length-1];
+    if(event.shiftKey&&(document.activeElement===first||!dialog.contains(document.activeElement))){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&(document.activeElement===last||!dialog.contains(document.activeElement))){event.preventDefault();first.focus();}
+  });
+  $('#learning-candidate-dialog-close').addEventListener('click', () => $('#learning-candidate-dialog').close());
+  $('#learning-metric-range').addEventListener('submit',(event)=>{
+    event.preventDefault();const form=event.currentTarget;const button=$('button[type="submit"]',form);
+    return withPending(button,async()=>{try{renderLearningMetrics(await fetchLearningMetrics());}catch(error){renderLearningMetrics(null);show('#learning-error',errorText(error));}},'Memuat…',form);
+  });
+  $('#learning-refresh').addEventListener('click', (event) => withPending(event.currentTarget, () => loadLearning().catch((error) => show('#learning-error', errorText(error))), 'Memuat…'));
+  $('#learning-shadow-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form=event.currentTarget; const button=$('button[type="submit"]',form);
+    const ruleIds=[...form.elements.ruleIds.selectedOptions].map((option)=>option.value);
+    if(!ruleIds.length||ruleIds.length>5){show('#learning-error','Pilih antara 1 hingga 5 aturan yang diluluskan.');return;}
+    return learningAction(button,async()=>{
+      $('#learning-shadow-results').replaceChildren(learningNode('p','Perbandingan berpasangan sedang berjalan. Tiada slot penerbitan akan dibuat.','muted'));
+      const response=await api('/api/learning/shadow-evaluations',{method:'POST',body:JSON.stringify({ruleIds,samples:Number(form.elements.samples.value)})});
+      renderShadowEvaluations([response.evaluation]);
+      show('#global-success','Shadow evaluation selesai dan kekal terpisah daripada operasi penerbitan.');
+      hide('#learning-error');
+    },'Menilai…',form);
+  });
+  $('#learning-feedback-form').addEventListener('submit', (event) => {
+    event.preventDefault(); const form = event.currentTarget; const button = $('button[type="submit"]', form);
+    const ratings = {}; for (const key of ['hook', 'creativity', 'language', 'relevance', 'brandVoice', 'clarity', 'diversity', 'cta']) { if (form.elements[key].value) ratings[key] = Number(form.elements[key].value); }
+    if (!Object.keys(ratings).length) { show('#learning-error', 'Pilih sedikitnya satu penilaian kualitas.'); return; }
+    const payload = { slotId: form.elements.slotId.value.trim(), type: form.elements.type.value, ratings, explanation: form.elements.explanation.value.trim() };
+    return withPending(button, async () => {
+      try { await api('/api/learning/feedback', { method: 'POST', body: JSON.stringify(payload) }); form.reset(); hide('#learning-error'); show('#global-success', 'Umpan balik tersimpan untuk review.'); await loadLearning(); }
+      catch (error) { show('#learning-error', errorText(error)); }
+    }, 'Menyimpan…', form);
   });
 
   $('#refresh-button').addEventListener('click', () => refresh().catch((error) => show('#global-error', errorText(error))));

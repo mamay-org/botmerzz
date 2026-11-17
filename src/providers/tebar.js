@@ -4,10 +4,11 @@ const BASE_URL = "https://api.tebar.app/v1";
 const POST_STATES = new Set(["draft", "scheduled", "publishing", "published", "partial", "failed", "canceled"]);
 const TARGET_STATES = new Set(["pending", "publishing", "published", "failed", "canceled"]);
 const ERROR_CODES = new Set(["account_expired", "account_not_found", "account_disconnected", "post_not_editable", "idempotency_conflict", "profile_not_found", "rate_limited", "permission_missing", "caption_too_long", "invalid_metric", "invalid_range"]);
+const TRANSPORT_CODES = new Set(["ECONNABORTED", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "EPIPE", "ERR_NETWORK", "ERR_CANCELED", "ERR_BAD_REQUEST", "ERR_BAD_RESPONSE"]);
 
-function providerError(code, status = null, unknownOutcome = false) {
+function providerError(code, status = null, unknownOutcome = false, { transportCode = null, timedOut = false } = {}) {
   return Object.assign(new Error(`Tebar request failed: ${code}`), {
-    provider: "tebar", code, status, unknownOutcome,
+    provider: "tebar", code, status, unknownOutcome, transportCode, timedOut,
     retryable: !unknownOutcome && (status === 429 || status >= 500),
   });
 }
@@ -54,12 +55,14 @@ function createTebarClient({ apiKey, profileId, http = axios }) {
       return response.data;
     } catch (error) {
       const status = Number.isInteger(error.response?.status) ? error.response.status : null;
+      const transportCode = TRANSPORT_CODES.has(error?.code) ? error.code : null;
+      const timedOut = ["ECONNABORTED", "ETIMEDOUT"].includes(transportCode) || error?.name === "TimeoutError";
       const rawCode = error.response?.data?.error?.code;
       const code = ERROR_CODES.has(rawCode) ? rawCode
         : status === 401 || status === 403 ? "unauthorized"
           : status === 429 ? "rate_limited" : status === 409 ? "conflict"
             : status ? "provider_error" : "network_error";
-      throw providerError(code, status, method !== "GET" && (!status || status >= 500));
+      throw providerError(code, status, method !== "GET" && (!status || status >= 500), { transportCode, timedOut });
     }
   }
 

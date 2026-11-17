@@ -1,6 +1,18 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
+const enabled=process.env.NODE_ENV==='test'&&process.env.DB_NAME==='merzz_test'&&['localhost','127.0.0.1','::1'].includes(process.env.DB_HOST)&&process.env.ALLOW_DESTRUCTIVE_DB_TESTS==='true';
+
+async function deleteSlot(pool,id) {
+  await pool.execute('DELETE FROM generation_attempts WHERE slot_id=?',[id]);
+  await pool.execute('DELETE FROM generation_slot_claims WHERE slot_id=?',[id]);
+  await pool.execute('DELETE FROM slots WHERE id=?',[id]);
+}
+
+async function deleteSlots(pool) {
+  await pool.execute('DELETE FROM generation_attempts');
+  await pool.execute('DELETE FROM generation_slot_claims');
+  await pool.execute('DELETE FROM slots');
+}
 
 test('confirmed cancellation atomically settles provider state across repository restart', {skip:!enabled}, async()=>{
   const {randomUUID,createHash}=require('node:crypto');
@@ -16,7 +28,7 @@ test('confirmed cancellation atomically settles provider state across repository
     assert.equal(slot.status,'canceled');assert.equal(slot.provider_status,'canceled');assert.equal(slot.cancellation_status,'canceled');assert.ok(slot.completed_at);
     assert.equal((await createRepository(pool).listUnsettledSlots()).some(item=>item.id===id),false);
     assert.equal(await createRepository(pool).getNotificationStatus(noticeKey),'failed');
-  } finally { await pool.execute('DELETE FROM slots WHERE id=?',[id]);await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key=?',[createHash('sha256').update(`unknown_outcome:slot:${id}`).digest('hex')]);await pool.end(); }
+  } finally { await deleteSlot(pool,id);await pool.execute('DELETE FROM notification_outbox WHERE dedupe_key=?',[createHash('sha256').update(`unknown_outcome:slot:${id}`).digest('hex')]);await pool.end(); }
 });
 
 test('MySQL login throttles are shared and bound concurrent attempts across auth instances', {skip:!enabled}, async()=>{
@@ -56,10 +68,14 @@ test('MySQL login throttles are shared and bound concurrent attempts across auth
 });
 
 test('MySQL migrations and repository are reachable in integration environment',{skip:!enabled},async()=>{
+  const {randomBytes}=require('node:crypto');
   const {loadEnv}=require('../src/config');const {createPool}=require('../src/db');const {runMigrations}=require('../src/migrate');const {createRepository}=require('../src/repository');
-  const config=loadEnv();let pool=createPool(config);
+  const config=loadEnv();let pool=createPool(config);const priorAdminStates=[];const createdAdminIds=[];
   try {
     await runMigrations(pool);
+    // This explicitly guarded disposable database shares its outbox across test runs.
+    // Reset only this test queue so prior claims cannot change its FIFO assertion.
+    await pool.execute('DELETE FROM notification_outbox');
     await pool.execute("DELETE FROM schema_migrations WHERE version='002_notification_outbox.sql'");
     assert.deepEqual(await runMigrations(pool),['002_notification_outbox.sql']);
     await pool.execute("DELETE FROM schema_migrations WHERE version='003_multi_admin.sql'");
@@ -89,24 +105,29 @@ test('MySQL migrations and repository are reachable in integration environment',
     assert.deepEqual((await repo.getSettings()).hashtags,['#KedaiMerzz','#MobileLegends']);
     await repo.saveSettings({...await repo.getSettings(),hashtags:settings.hashtags,brand:settings.brand,guardrails:settings.guardrails},null);
     const facts=await repo.listFacts();assert.equal(typeof facts,'object');
-    const dedupeKey=require('node:crypto').randomBytes(32).toString('hex');
-    const longKey=require('node:crypto').randomBytes(32).toString('hex');
+    const dedupeKey=randomBytes(32).toString('hex');
+    const longKey=randomBytes(32).toString('hex');
+    const notificationMessage=`Integration test notification ${dedupeKey}`;
     assert.equal(await repo.enqueueNotification({dedupeKey:longKey,message:'x'.repeat(4000)}),true);
     const [[longRow]]=await pool.execute('SELECT CHAR_LENGTH(message) AS n FROM notification_outbox WHERE dedupe_key=?',[longKey]);
     assert.equal(Number(longRow.n),4000);
-    assert.equal(await repo.enqueueNotification({dedupeKey,message:'Integration test notification'}),true);
-    assert.equal(await repo.enqueueNotification({dedupeKey,message:'Integration test notification'}),false);
+    assert.equal(await repo.enqueueNotification({dedupeKey,message:notificationMessage}),true);
+    assert.equal(await repo.enqueueNotification({dedupeKey,message:notificationMessage}),false);
     const claimed=await repo.claimNotifications(10);
-    const notice=claimed.find((row)=>row.message==='Integration test notification');
+    const notice=claimed.find((row)=>row.message===notificationMessage);
     assert.ok(notice);
     await repo.markNotificationSent(notice.id);
     assert.equal(await repo.getNotificationStatus(dedupeKey),'sent');
     const {createHash,randomUUID}=require('node:crypto');
     const {hashPassword}=require('../src/auth');
-    await pool.execute('DELETE FROM admins');
+    const existingAdmins=await repo.listAdmins();
+    priorAdminStates.push(...existingAdmins.map(admin=>({id:admin.id,active:admin.active})));
+    await pool.execute('UPDATE admins SET active=0');
     const first=await repo.createAdmin({email:`first-${randomUUID()}@example.test`,passwordHash:await hashPassword('first secure password')});
+    createdAdminIds.push(first.id);
     const second=await repo.createAdmin({email:`second-${randomUUID()}@example.test`,passwordHash:await hashPassword('second secure password'),actorId:first.id});
-    assert.equal((await repo.listAdmins()).length,2);
+    createdAdminIds.push(second.id);
+    assert.equal((await repo.listAdmins()).length,existingAdmins.length+2);
     const savedTemplate=await repo.createTemplate({name:`Account-${randomUUID()}`,category:'account',data:{attributes:['Rank Mythic']},actorId:first.id});
     assert.deepEqual((await repo.listTemplates()).find(item=>item.id===savedTemplate.id).data,{attributes:['Rank Mythic']});
     assert.equal((await repo.updateTemplate(savedTemplate.id,{name:`Updated-${randomUUID()}`,actorId:second.id})).updatedBy,second.id);
@@ -117,13 +138,16 @@ test('MySQL migrations and repository are reachable in integration environment',
     const unchanged=await repo.updateAdmin(second.id,{email:second.email},first.id);
     assert.equal(unchanged.credentialsChanged,false);
     assert.ok(await repo.getSession(sessionToken));
+    const expiredSessionToken=randomUUID().replaceAll('-','').padEnd(64,'b').slice(0,64);
+    await repo.createSession({tokenHash:expiredSessionToken,adminId:second.id,csrfToken:'d'.repeat(64),expiresAt:new Date(Date.now()-1000)});
+    assert.equal(await repo.getSession(expiredSessionToken),null,'expired database sessions must not authenticate');
+    await repo.deleteSession(expiredSessionToken);
     const changed=await repo.updateAdmin(second.id,{email:`changed-${randomUUID()}@example.test`,passwordHash:await hashPassword('updated secure password')},first.id);
     assert.equal(changed.active,true);
     assert.equal(await repo.getSession(sessionToken),null);
     await repo.updateAdmin(second.id,{active:false},first.id);
     await assert.rejects(repo.updateAdmin(first.id,{active:false},first.id),error=>error.code==='LAST_ADMIN');
     assert.deepEqual((await repo.listAdmins()).filter(admin=>admin.active).map(admin=>admin.id),[first.id]);
-    await pool.execute('DELETE FROM admins');
     const profileId=`test-profile-${randomUUID()}`;const accountId=`test-account-${randomUUID()}`;const eventId=randomUUID();
     await repo.setProviderTarget({accountId,profileId});
     await repo.applyWebhookEvent({eventId,payloadHash:createHash('sha256').update(eventId).digest('hex'),type:'account.disconnected',profileId,data:{account:{id:accountId}},accountId,notificationCode:'account_disconnected'});
@@ -181,7 +205,7 @@ test('MySQL migrations and repository are reachable in integration environment',
     const [[afterStaleRead]]=await pool.execute('SELECT status,provider_status FROM slots WHERE id=?',[oldSlotId]);
     assert.equal(afterStaleRead.status,'published','stale reconciliation must not overwrite a terminal webhook');
     assert.equal(afterStaleRead.provider_status,'published');
-    await pool.execute('DELETE FROM slots WHERE id=?',[oldSlotId]);
+    await deleteSlot(pool,oldSlotId);
     const raceSlotId=randomUUID(); const racePostId=`race-post-${randomUUID()}`;
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_status,provider_post_id,request_payload,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,'canceled','canceled',?,?,?,?,1)",[raceSlotId,new Date(),racePostId,JSON.stringify({targets:[{account_id:accountId}]}),profileId,accountId]);
     const conflictEvent=randomUUID();
@@ -199,13 +223,13 @@ test('MySQL migrations and repository are reachable in integration environment',
     await reconcileUnsettled({repository:raceRepo,publisherForProfile:async profile=>({getPost:async()=>({id:racePostId,status:'published',targets:[{accountId,platform:'threads',status:'published'}]})})});
     const [[resolvedConflict]]=await pool.execute('SELECT status FROM slots WHERE id=?',[raceSlotId]);
     assert.equal(resolvedConflict.status,'published','provider confirmation resolves a cancellation/publication conflict');
-    await pool.execute('DELETE FROM slots WHERE id=?',[raceSlotId]);
+    await deleteSlot(pool,raceSlotId);
     const conflictingGetSlot=randomUUID();
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_status,provider_post_id) VALUES (?,?,'canceled','canceled',?)",[conflictingGetSlot,new Date(),`get-conflict-${randomUUID()}`]);
     await repo.updateSlot(conflictingGetSlot,{status:'published',providerStatus:'published'});
     const [[conflictingGet]]=await pool.execute('SELECT status,provider_status FROM slots WHERE id=?',[conflictingGetSlot]);
     assert.equal(conflictingGet.status,'unknown','conflicting publication from a stale provider response requires verification');
-    await pool.execute('DELETE FROM slots WHERE id=?',[conflictingGetSlot]);
+    await deleteSlot(pool,conflictingGetSlot);
     const concurrentSlotId=randomUUID(); const concurrentPostId=`concurrent-post-${randomUUID()}`;const concurrentEvent=randomUUID();
     await pool.execute("INSERT INTO slots (id,scheduled_at,status,provider_post_id,request_payload,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,'publishing',?,?,?,?,1)",[concurrentSlotId,new Date(),concurrentPostId,JSON.stringify({targets:[{account_id:accountId}]}),profileId,accountId]);
     await Promise.all([
@@ -215,7 +239,7 @@ test('MySQL migrations and repository are reachable in integration environment',
     const [[concurrentResult]]=await pool.execute('SELECT status,provider_status FROM slots WHERE id=?',[concurrentSlotId]);
     assert.equal(concurrentResult.status,'published','concurrent stale response cannot overwrite confirmed publication');
     assert.equal(concurrentResult.provider_status,'published');
-    await pool.execute('DELETE FROM slots WHERE id=?',[concurrentSlotId]);
+    await deleteSlot(pool,concurrentSlotId);
     await repo.setProviderTarget({profileId,accountId});
     const localDate=`${2100+Math.floor(Math.random()*7000)}-01-01`;
     assert.equal(await repo.claimDailySummary({localDate,timezone:'Asia/Kuala_Lumpur'}),true);
@@ -236,7 +260,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       assert.deepEqual(report.categories,{topup:1});
       assert.deepEqual(report.failures,[{code:'content_validation_failed',count:1}]);
       assert.deepEqual(new Set(report.affectedSlotIds),new Set(reportIds.slice(1)));
-    } finally { for(const id of reportIds) await pool.execute('DELETE FROM slots WHERE id=?',[id]); }
+    } finally { for(const id of reportIds) await deleteSlot(pool,id); }
 
     const mysqlDateSlotId=randomUUID();
     const expectedIsoCompletedAt='2026-11-07T01:29:30.083Z';
@@ -262,10 +286,10 @@ test('MySQL migrations and repository are reachable in integration environment',
         const [[reconciledCompletedAt]]=await pool.execute('SELECT completed_at FROM slots WHERE id=?',[reconciledSlotId]);
         assert.equal(new Date(reconciledCompletedAt.completed_at).toISOString(),expectedIsoCompletedAt,'reconciliation provider time reaches MySQL as UTC datetime');
       } finally {
-        await pool.execute('DELETE FROM slots WHERE id=?',[reconciledSlotId]);
+        await deleteSlot(pool,reconciledSlotId);
       }
     } finally {
-      await pool.execute('DELETE FROM slots WHERE id=?',[mysqlDateSlotId]);
+      await deleteSlot(pool,mysqlDateSlotId);
     }
 
     const [[previousSettings]]=await pool.execute('SELECT settings_json,knowledge_json,automation_enabled FROM settings WHERE id=1');
@@ -287,7 +311,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[testSettings.profileId,testSettings.targetAccountId]);
       // This is an explicitly isolated destructive-test database. Remove prior
       // integration-run slots so their cadence cannot affect the concurrency case.
-      await pool.execute('DELETE FROM slots');
+      await deleteSlots(pool);
       const scheduledAt=new Date(Date.now()-1000);
       const due=await repo.ensureDueSlot({scheduledAt,sessionId:testSettings.automationSessionId});
       testSlotId=due.id;
@@ -311,7 +335,7 @@ test('MySQL migrations and repository are reachable in integration environment',
       assert.deepEqual(reclaimed.requestPayload,payload);
       assert.equal(reclaimed.idempotencyKey,idempotencyKey);
 
-      await pool.execute('DELETE FROM slots');
+      await deleteSlots(pool);
       await pool.execute('UPDATE settings SET automation_enabled=FALSE,settings_json=JSON_REMOVE(settings_json,\'$.automationSessionId\',\'$.nextSlotAt\',\'$.activationFirstPostAt\') WHERE id=1');
       const oldSessionId=randomUUID();
       const oldPublishedAt=new Date(Date.now()-10*60*1000);
@@ -377,13 +401,20 @@ test('MySQL migrations and repository are reachable in integration environment',
 
       assert.equal((await afterRestart.setAutomationEnabled(false,null)).changed,true);
     } finally {
-      if (testSlotId) await pool.execute('DELETE FROM slots WHERE id=?',[testSlotId]);
+      if (testSlotId) await deleteSlot(pool,testSlotId);
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[
         priorSettingsJson,priorKnowledgeJson,previousSettings.automation_enabled,
       ]);
     }
   }
-  finally { await pool.end(); }
+  finally {
+    try {
+      for(const id of createdAdminIds)await pool.execute('UPDATE admins SET active=0 WHERE id=?',[id]);
+      for(const admin of priorAdminStates)await pool.execute('UPDATE admins SET active=? WHERE id=?',[admin.active?1:0,admin.id]);
+      await pool.execute('DELETE FROM notification_outbox');
+    }
+    finally { await pool.end(); }
+  }
 });
 
 test('MySQL checks prepared caption evidence atomically before publishing', { skip: !enabled }, async () => {
@@ -410,13 +441,13 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
   };
   const knowledge = { brand: settings.brand, guardrails: settings.guardrails };
   try {
-    await pool.execute('DELETE FROM slots');
+    await deleteSlots(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,1,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE'",[settings.profileId,settings.targetAccountId]);
     await pool.execute('DELETE FROM service_facts');
     const cases = ['valid', 'changed', 'inactive', 'expired', 'settings', 'legacy', 'legacy_hash'];
     for (const [index, scenario] of cases.entries()) {
-      await pool.execute('DELETE FROM slots');
+      await deleteSlots(pool);
       await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=? WHERE id=1', [JSON.stringify(settings), JSON.stringify(knowledge)]);
       await pool.execute("INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES ('topup',?,TRUE,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE summary_json=VALUES(summary_json),active=TRUE,updated_at=UTC_TIMESTAMP(3)", [JSON.stringify({ game: 'Mobile Legends', price: '30' })]);
       if (scenario === 'expired') await pool.execute("UPDATE service_facts SET updated_at=DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 25 HOUR) WHERE service='topup'");
@@ -440,7 +471,7 @@ test('MySQL checks prepared caption evidence atomically before publishing', { sk
       assert.equal(slot.status, ['valid', 'legacy_hash'].includes(scenario) ? 'publishing' : 'ready', scenario);
     }
   } finally {
-    await pool.execute('DELETE FROM slots');
+    await deleteSlots(pool);
     await pool.execute('DELETE FROM service_facts');
     for (const fact of previousFacts) await pool.execute('INSERT INTO service_facts (service,summary_json,active,updated_at) VALUES (?,?,?,?)', [fact.service, encode(fact.summary_json), fact.active, fact.updated_at]);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1', [encode(previous.settings_json), encode(previous.knowledge_json), previous.automation_enabled]);
@@ -460,7 +491,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
   const settings={schedule:{intervalHours:1,timezone:'Asia/Kuala_Lumpur'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};
   const knowledge={brand:settings.brand,guardrails:settings.guardrails};const id=randomUUID();const payload={content:'slot lama',targets:[{account_id:accountId}]};
   try{
-    await pool.execute('DELETE FROM slots');
+    await deleteSlots(pool);
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version,request_payload,idempotency_key,caption,pillar,fact_ids,fact_versions,content_safety_hash) VALUES (?,?,?,'ready',?,?,?,?,?,'slot lama','topup',?,?,?)",[id,new Date(),sessionId,profileId,accountId,version,JSON.stringify(payload),`key-${id}`,JSON.stringify([]),JSON.stringify([]),contentSafetyHash(settings)]);
@@ -475,7 +506,7 @@ test('MySQL fences a concurrent account switch against publication start', {skip
     if(started===true){assert.equal(switched.status,'BLOCKED_RECONCILIATION');assert.equal(slot.status,'publishing');}
     else {assert.equal(started,false);assert.equal(switched.status,'ACTIVE');assert.equal(slot.status,'canceled');}
   }finally{
-    await pool.execute('DELETE FROM slots');
+    await deleteSlots(pool);
     await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await pool.execute('DELETE FROM integration_config WHERE id=1');
@@ -497,7 +528,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
   const knowledge={brand:settings.brand,guardrails:settings.guardrails};const firstId=randomUUID();const secondId=randomUUID();const now=new Date();
   try{
     await runMigrations(firstPool);
-    await firstPool.execute('DELETE FROM slots');
+    await deleteSlots(firstPool);
     await firstPool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
     await firstPool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     await firstPool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?),(?,?,?,'pending',?,?,?)",[firstId,new Date(now.getTime()-2000),sessionId,profileId,accountId,version,secondId,new Date(now.getTime()-1000),sessionId,profileId,accountId,version]);
@@ -517,7 +548,7 @@ test('independent MySQL dispatchers serialize one-minute slot claims and preserv
     assert.deepEqual(JSON.parse(encode(waitingSlot.request_payload)),payload);
     assert.equal(waitingSlot.idempotency_key,`interval-${waitingId}`);
   }finally{
-    await firstPool.execute('DELETE FROM slots');
+    await deleteSlots(firstPool);
     await firstPool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await firstPool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);
     else await firstPool.execute('DELETE FROM integration_config WHERE id=1');
@@ -534,11 +565,11 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`cadence-profile-${randomUUID()}`;const accountId=`cadence-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+20_000_000;
   const repository=createRepository(pool);const base=new Date(Date.now()-60*60*1000);const settings={schedule:{intervalMinutes:60,timezone:'Asia/Kuala_Lumpur'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true};const knowledge={brand:settings.brand,guardrails:settings.guardrails};
   try{
-    await pool.execute('DELETE FROM slots');await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     const intervals=[1,5,15,30,60,90,135];
     for(const intervalMinutes of intervals){
-      await pool.execute('DELETE FROM slots');
+      await deleteSlots(pool);
       const settingsForInterval={...settings,schedule:{intervalMinutes,timezone:'Asia/Kuala_Lumpur'}};const expected=new Date(base.getTime()+intervalMinutes*60_000);settingsForInterval.nextSlotAt=expected.toISOString();
       await pool.execute('UPDATE settings SET settings_json=? WHERE id=1',[JSON.stringify(settingsForInterval)]);
       await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,completed_at) VALUES (?,?,?,'published',?)",[randomUUID(),new Date(base.getTime()-30*60*1000),sessionId,base]);
@@ -549,7 +580,7 @@ test('MySQL planner and publication cooldown preserve exact minute intervals', {
       const claimed=await repository.claimDueSlot({now:expected});assert.equal(claimed.id,planned.slot.id,`${intervalMinutes} minute cooldown allows due claim`);
     }
   }finally{
-    await pool.execute('DELETE FROM slots');await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
+    await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
   }
@@ -563,7 +594,7 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
   const encode=value=>typeof value==='string'?value:JSON.stringify(value);const profileId=`edit-profile-${randomUUID()}`;const accountId=`edit-account-${randomUUID()}`;const sessionId=randomUUID();const version=(Number(priorConfig?.version)||0)+30_000_000;
   const repository=createRepository(pool);const settings={schedule:{intervalMinutes:60,timezone:'UTC'},brand:{name:'Kedai Merzz',voice:'Santai'},guardrails:{approved:true,forbiddenClaims:[],approvedClaims:[]},targetAccountId:accountId,profileId,automationSessionId:sessionId,onboardingComplete:true,nextSlotAt:new Date(Date.now()+70*60_000).toISOString()};const knowledge={brand:settings.brand,guardrails:settings.guardrails};const slotId=randomUUID();const scheduledAt=new Date(Date.now()+10*60_000);
   try{
-    await pool.execute('DELETE FROM slots');await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
+    await deleteSlots(pool);await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=TRUE WHERE id=1',[JSON.stringify(settings),JSON.stringify(knowledge)]);
     await pool.execute("INSERT INTO integration_config (id,version,profile_id,account_id,model,status) VALUES (1,?,?,?,'test/model','ACTIVE') ON DUPLICATE KEY UPDATE version=VALUES(version),profile_id=VALUES(profile_id),account_id=VALUES(account_id),model=VALUES(model),status='ACTIVE',pending_profile_id=NULL,pending_account_id=NULL,pending_model=NULL",[version,profileId,accountId]);
     await pool.execute("INSERT INTO slots (id,scheduled_at,automation_session_id,status,tebar_profile_id,tebar_account_id,tebar_config_version) VALUES (?,?,?,'pending',?,?,?)",[slotId,scheduledAt,sessionId,profileId,accountId,version]);
     await repository.saveSettings({schedule:{hours:0,minutes:5,timezone:'UTC'},priceMode:'OFF',brand:settings.brand,guardrails:settings.guardrails,gameWhitelist:[],hashtags:['#KedaiMerzz'],trackedLinks:{}},null);
@@ -579,7 +610,7 @@ test('MySQL interval updates preserve the due slot and apply the new cadence aft
     const rescheduled=JSON.parse(encode(rescheduledSettings.settings_json));
     assert.equal(new Date(rescheduled.nextSlotAt).getTime(),scheduledAt.getTime()+5*60_000,'the new interval controls the slot after the preserved one');
   }finally{
-    await pool.execute('DELETE FROM slots');await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
+    await deleteSlots(pool);await pool.execute('DELETE FROM integration_config_history WHERE version>=?',[version]);
     if(priorConfig)await pool.execute('UPDATE integration_config SET version=?,profile_id=?,account_id=?,model=?,status=?,pending_profile_id=?,pending_account_id=?,pending_model=?,updated_by=? WHERE id=1',[priorConfig.version,priorConfig.profile_id,priorConfig.account_id,priorConfig.model,priorConfig.status,priorConfig.pending_profile_id,priorConfig.pending_account_id,priorConfig.pending_model,priorConfig.updated_by]);else await pool.execute('DELETE FROM integration_config WHERE id=1');
     await pool.execute('UPDATE settings SET settings_json=?,knowledge_json=?,automation_enabled=? WHERE id=1',[encode(priorSettings.settings_json),encode(priorSettings.knowledge_json),priorSettings.automation_enabled]);await pool.end();
   }

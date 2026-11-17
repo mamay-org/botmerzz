@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS validation_outcome_observations (
+  attempt_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  slot_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  run_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  validation_run_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  ordinal_in_run TINYINT UNSIGNED NOT NULL,
+  outcome VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  deterministic_outcome VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  semantic_outcome VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  failure_codes JSON NOT NULL,
+  model_id VARCHAR(128) NULL,
+  config_version VARCHAR(64) NULL,
+  guidelines_version VARCHAR(64) NULL,
+  generated_at DATETIME(3) NOT NULL,
+  evaluated_at DATETIME(3) NOT NULL,
+  schema_version TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY outcome_run_ordinal (slot_id, run_id, ordinal_in_run),
+  INDEX outcome_slot (slot_id, generated_at),
+  FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

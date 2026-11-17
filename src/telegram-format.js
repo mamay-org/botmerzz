@@ -15,6 +15,7 @@ const FAILURES = {
   ai_network_error: 'Penyedia AI tidak dapat dihubungi.',
   ai_provider_error: 'Penyedia AI mengalami gangguan.',
   ai_invalid_response: 'Penyedia AI mengirim respons yang tidak dapat digunakan.',
+  tebar_not_configured: 'Penyedia publikasi belum dikonfigurasi.',
   stale_facts: 'Informasi atau pengaturan berubah sebelum publikasi.',
   stale_generation: 'Pembuatan konten melewati batas waktu.',
   provider_error: 'Penyedia publikasi melaporkan kegagalan.',
@@ -67,10 +68,11 @@ function formatSlotNotice({ status, slotId, brand, time, timezone, pillar, capti
   if (next && !pending) parts.push(`${ok ? 'Posting Berikutnya' : 'Jadwal Berikutnya'}:\n${next}`);
   return bounded(parts.join('\n\n'), slotId ? `Slot ID: ${safe(String(slotId), 36)}` : '');
 }
-function formatDailyReport({ brand, date, timezone = 'Asia/Kuala_Lumpur', published = 0, failed = 0, unknown = 0, categories, failures, automationEnabled, nextAt, affectedSlotIds = [] } = {}) {
+function formatDailyReport({ brand, date, timezone = 'Asia/Kuala_Lumpur', published = 0, failed = 0, unknown = 0, adminClosedUnknown = 0, categories, failures, automationEnabled, nextAt, affectedSlotIds = [] } = {}) {
   const total = published + failed;
   const parts = ['BOTMERZZ — LAPORAN HARIAN', `Brand: ${safe(brand, 100) || 'Kedai Merzz'}${dateTime(date, timezone, true) ? `\nTanggal: ${dateTime(date, timezone, true)}` : ''}\nTimezone: ${safe(timezone, 60)}`,
     `Ringkasan Publikasi\nBerhasil: ${published} posting\nGagal: ${failed} posting\nBelum pasti: ${unknown} posting\nSuccess Rate: ${total ? `${Math.round(published / total * 100)}%` : 'Belum tersedia'}`];
+  if (Number.isSafeInteger(adminClosedUnknown) && adminClosedUnknown > 0) parts.push(`Ditutup admin, belum terverifikasi: ${adminClosedUnknown} posting`);
   if (categories && typeof categories === 'object') {
     const list = Object.entries(categories).filter(([key, count]) => CATEGORY[key] && Number.isInteger(count) && count > 0).map(([key, count]) => `• ${CATEGORY[key]}: ${count} posting`);
     if (list.length) parts.push(`Kategori Konten\n${list.join('\n')}`);

@@ -9,6 +9,7 @@ const { validateSettings } = require('../src/policy');
 
 function normalizePath(path) {
   return path
+    .split('?')[0]
     .replace(/\$\{[^}]+\}/gu, ':param')
     .replace(/:[A-Za-z][A-Za-z0-9_]*/gu, ':param');
 }

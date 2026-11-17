@@ -67,7 +67,9 @@ New schedule settings default to 60 minutes. Admins can configure whole hours an
 
 See [requirements](docs/REQUIREMENTS.md), [architecture](docs/ARCHITECTURE.md), [testing](docs/TESTING.md), [Docker workflow](docs/DOCKER.md), [deployment](docs/DEPLOYMENT.md), and [operations](docs/OPERATIONS.md).
 
-## CI/CD and VPS
+## Legacy CI/CD and VPS reference
+
+> This section describes the historical GHCR/VPS path and is not the current BotMerzz homelab release procedure. The target is the existing app in Proxmox LXC `10027`; preserve its Compose project, `.env`, MySQL volume, scheduler state, and Cloudflare Tunnel/Traefik ingress. Use [HOMELAB-SSOT](docs/HOMELAB-SSOT.md) and the [publication-resolution runbook](docs/publication-resolution-runbook.md). This work authorizes no deployment, workflow activation, or push.
 
 GitHub Actions runs dependency audit, syntax checks, unit/integration tests against MySQL, and Docker build validation. After a successful CI run on `main`, a separate workflow publishes the tested commit to GHCR using its full commit SHA plus a moving `main` tag, and records the content digest in the workflow summary. Prefer that digest in `APP_IMAGE` when deploying; use the full commit-SHA tag as the versioned fallback.
 
