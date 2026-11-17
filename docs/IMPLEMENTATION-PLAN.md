@@ -1,4 +1,6 @@
-# Implementation status and next steps
+# [Historical archive] Implementation Status and Next Steps — VPS/Staging Baseline
+
+> **Archived and superseded. Do not use this as a current release or deployment plan.** This document records the earlier development/staging implementation before the BotMerzz migration to Proxmox homelab. Its GHCR, VPS, staging, scheduler, and verification instructions describe an older repository state. The current deployment target and procedure are Proxmox LXC 10027 in [Deployment](DEPLOYMENT.md).
 
 ## Completed in this development/staging implementation
 
